@@ -18,6 +18,7 @@ import {
   engineButtonState,
   isActive,
 } from "./useDownloads";
+import { useBottles } from "./useBottles";
 import { Button, SPRINGS, type IconComp } from "./ui";
 import {
   HomePage,
@@ -48,6 +49,7 @@ export default function App() {
   const { info: sys, scanning, scan } = useSystem(); // فحص حقيقي يبدأ تلقائياً
   const { logs, clear } = useLogs(); // السجل المباشر
   const dl = useDownloads(); // محرّك التنزيل (يُدار في Rust)
+  const bottles = useBottles(); // القوارير (تُدار في Rust)
 
   // نرجعك لآخر صفحة كنت فيها (وأول مرة: الرئيسية)
   const [page, setPage] = useState<Page>(() => {
@@ -264,7 +266,7 @@ export default function App() {
                 <Button
                   variant="filled"
                   icon={<Icon.Plus size={15} />}
-                  onClick={() => notify(t("soonBottles"))}
+                  onClick={() => bottles.create("private")}
                 >
                   {t("newBottle")}
                 </Button>
@@ -312,7 +314,7 @@ export default function App() {
                   />
                 )}
                 {page === "library" && <LibraryPage notify={notify} />}
-                {page === "bottles" && <BottlesPage notify={notify} />}
+                {page === "bottles" && <BottlesPage bottles={bottles} sys={sys} />}
                 {page === "settings" && <SettingsPage sys={sys} dl={dl} />}
                 {page === "logs" && <LogsPage logs={logs} onClear={onClear} />}
               </motion.div>

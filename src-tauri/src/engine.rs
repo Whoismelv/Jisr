@@ -106,6 +106,18 @@ pub fn is_installed(id: &str) -> bool {
     find_root(&install_dir(id)).is_some()
 }
 
+/// مسار ملف تشغيل Wine داخل محرك مثبّت (bin/wine ثم bin/wine64)
+pub fn wine_bin(engine_id: &str) -> Option<PathBuf> {
+    let root = find_root(&install_dir(engine_id))?;
+    for exe in ["wine", "wine64"] {
+        let p = root.join("bin").join(exe);
+        if std::fs::symlink_metadata(&p).is_ok() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 /// نظّف بقايا محاولات فك سابقة (تشتغل عند بدء التطبيق)
 pub fn cleanup_staging() {
     let Ok(rd) = std::fs::read_dir(engines_dir()) else {

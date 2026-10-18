@@ -747,6 +747,32 @@ html.is-macos[dir="rtl"] .toolbar {
   }
 }
 
+/* ---------- القوارير ---------- */
+.bottle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.bottle-row .value {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: plaintext;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
 /* ---------- الحالة الفاضية ---------- */
 .filter-row {
   display: flex;

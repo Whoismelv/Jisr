@@ -18,7 +18,7 @@ import {
   StatusRow,
 } from "./ui";
 import * as Icon from "./Icons";
-import type { DownloadProgress, LogEntry, SystemInfo } from "./api";
+import type { Bottle, DownloadProgress, LogEntry, SystemInfo } from "./api";
 import {
   ENGINE_ID,
   engineButtonState,
@@ -27,6 +27,7 @@ import {
   isActive,
   type Downloads,
 } from "./useDownloads";
+import type { Bottles } from "./useBottles";
 
 export type Page = "home" | "library" | "bottles" | "settings" | "logs";
 
@@ -326,29 +327,55 @@ export const LibraryPage = memo(function LibraryPage({
 //  القوارير
 // ============================================================
 export const BottlesPage = memo(function BottlesPage({
-  notify,
+  bottles,
+  sys,
 }: {
-  notify: (m: string) => void;
+  bottles: Bottles;
+  sys: SystemInfo | null;
 }) {
   const { t } = useI18n();
+  const main = bottles.items.find((b) => b.kind === "main");
+  const privates = bottles.items.filter((b) => b.kind !== "main");
+  const engineReady = !!sys?.engine_installed;
+
   return (
     <div className="stack">
-      <Card>
-        <Empty
-          icon={<Icon.Bottle size={26} />}
-          title={t("bottlesEmptyTitle")}
-          desc={t("bottlesEmptyDesc")}
-          action={
-            <Button
-              variant="filled"
-              icon={<Icon.Plus size={15} />}
-              onClick={() => notify(t("soonBottles"))}
-            >
-              {t("newBottle")}
-            </Button>
-          }
-        />
-      </Card>
+      {!main ? (
+        <Card>
+          <Empty
+            icon={<Icon.Bottle size={26} />}
+            title={t("bottleSetupTitle")}
+            desc={engineReady ? t("bottleSetupDesc") : t("bottleNeedEngine")}
+            action={
+              <Button
+                variant="filled"
+                icon={<Icon.Bolt size={15} />}
+                disabled={!engineReady}
+                onClick={() => bottles.create("main")}
+              >
+                {t("bottleSetup")}
+              </Button>
+            }
+          />
+        </Card>
+      ) : (
+        <BottleCard b={main} bottles={bottles} sys={sys} />
+      )}
+
+      {privates.map((b) => (
+        <BottleCard key={b.id} b={b} bottles={bottles} sys={sys} />
+      ))}
+
+      <div className="row-actions">
+        <Button
+          variant="plain"
+          icon={<Icon.Plus size={15} />}
+          disabled={!engineReady}
+          onClick={() => bottles.create("private")}
+        >
+          {t("newBottle")}
+        </Button>
+      </div>
 
       <Card title={t("bottleWhatTitle")} icon={<Icon.Sparkle size={16} />}>
         <p className="muted">{t("bottleWhatDesc")}</p>
@@ -356,6 +383,87 @@ export const BottlesPage = memo(function BottlesPage({
     </div>
   );
 });
+
+/** بطاقة قارورة واحدة: النبض (الحالة) + الحجم + الأزرار حسب الحالة */
+function BottleCard({
+  b,
+  bottles,
+  sys,
+}: {
+  b: Bottle;
+  bottles: Bottles;
+  sys: SystemInfo | null;
+}) {
+  const { t } = useI18n();
+  const [confirm, setConfirm] = useState(false);
+  const busy = b.state === "creating";
+  const ready = b.state === "ready";
+  const isWindows = (sys?.os_name ?? "").toLowerCase().includes("windows");
+
+  return (
+    <Card title={b.name} icon={<Icon.Bottle size={16} />}>
+      <div className="bottle-row">
+        <span className={"dot " + (ready ? "ok" : busy ? "busy" : "off")} />
+        <span className="value">
+          {busy
+            ? t("bottleSettingUp")
+            : ready
+              ? t("bottleReadyNow")
+              : t("bottleFailedTitle")}
+        </span>
+        <span className="muted small">
+          {b.size_bytes > 0 ? fmtBytes(b.size_bytes) : ""}
+        </span>
+      </div>
+
+      {busy && <ProgressBar value={-1} />}
+      {busy && <p className="muted small">{t("bottleSettingUpHint")}</p>}
+      {!busy && b.state === "error" && b.error && (
+        <p className="muted small">{b.error}</p>
+      )}
+
+      <div className="row-actions">
+        {b.state === "error" && (
+          <Button variant="tinted" onClick={() => bottles.retry(b.id)}>
+            {t("bottleRetry")}
+          </Button>
+        )}
+        {b.state === "error" && isWindows && (
+          <Button variant="plain" onClick={() => bottles.retry(b.id, true)}>
+            {t("bottleDevSim")}
+          </Button>
+        )}
+        {b.kind !== "main" && !busy && !confirm && (
+          <Button
+            variant="plain"
+            icon={<Icon.Trash size={15} />}
+            onClick={() => setConfirm(true)}
+          >
+            {t("bottleDelete")}
+          </Button>
+        )}
+      </div>
+
+      {confirm && (
+        <div className="row-actions">
+          <span className="muted small">{t("bottleDeleteWarn")}</span>
+          <Button
+            variant="tinted"
+            onClick={() => {
+              bottles.remove(b.id);
+              setConfirm(false);
+            }}
+          >
+            {t("bottleDeleteYes")}
+          </Button>
+          <Button variant="plain" onClick={() => setConfirm(false)}>
+            {t("bottleDeleteNo")}
+          </Button>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 // ============================================================
 //  الإعدادات — كل تغيير يُحفظ تلقائياً وفوراً

@@ -71,13 +71,26 @@ const ar = {
   libraryEmptyDesc: "أضف أول لعبة، وبنضبط كل شي تلقائياً — من ستيم أو ملف .exe.",
 
   // القوارير
-  bottlesEmptyTitle: "ما فيه قوارير بعد",
-  bottlesEmptyDesc:
-    "كل ألعابك راح تشتغل في «القارورة الرئيسية» — بيئة ويندوز واحدة جاهزة تُنشأ تلقائياً. تقنية القوارير الخاصة موجودة للاستثناءات (لعبة قديمة أو متطلبات خاصة).",
   bottleWhatTitle: "شنو القارورة؟",
   bottleWhatDesc:
     "القارورة = بيئة ويندوز مصغّرة داخل الماك، وكل ألعابك تشتغل فيها افتراضياً: الحفظ والإعدادات بمكان واحد آمن. وإذا احتاجت لعبة معينة عزل كامل، تقدر تعطيها قارورة خاصة فيها لحالها.",
   newBottle: "قارورة خاصة",
+  bottleSetupTitle: "جهّز القارورة الرئيسية",
+  bottleSetup: "جهّزها الآن",
+  bottleSetupDesc:
+    "بيئة ويندوز مصغّرة تُجهّز مرة وحدة (~دقيقة) — كل ألعابك تشتغل فيها.",
+  bottleNeedEngine: "ثبّت محرك Wine أول — من الرئيسية أو الإعدادات.",
+  bottleSettingUp: "جاري التجهيز…",
+  bottleSettingUpHint: "أول تجهيز ياخذ شوي — لا تسكّر التطبيق.",
+  bottleReadyNow: "جاهزة للاستخدام",
+  bottleFailedTitle: "التجهيز ما كمّل",
+  bottleRetry: "أعد المحاولة",
+  bottleDevSim: "تخطَّ الفحص (وضع التطوير)",
+  bottleDelete: "حذف",
+  bottleDeleteWarn:
+    "متأكد؟ راح ينمسح كل شي داخل هذي القارورة — بما فيه الحفظ.",
+  bottleDeleteYes: "احذف نهائياً",
+  bottleDeleteNo: "تراجع",
 
   // الإعدادات
   appearance: "المظهر",
@@ -144,6 +157,10 @@ const ar = {
   "log.extractFailed": "فشل فك ضغط {name}: {error}",
   "log.extractSkipped": "تخطّينا {count} رابطاً رمزياً أثناء الفك (خارج مجلد التثبيت أو غير مدعوم على ويندوز)",
   "log.engineReady": "المحرك جاهز ✓ — {path}",
+  "log.bottleStarted": "بدأ تجهيز {name}…",
+  "log.bottleReady": "{name} جاهزة ✓",
+  "log.bottleFailed": "فشل تجهيز {name}: {error}",
+  "log.bottleDeleted": "حُذفت {name}",
 };
 
 export type TKey = keyof typeof ar;
@@ -205,13 +222,26 @@ const en: Record<TKey, string> = {
   libraryEmptyDesc:
     "Add your first game and we'll handle the setup — from Steam or an .exe file.",
 
-  bottlesEmptyTitle: "No bottles yet",
-  bottlesEmptyDesc:
-    "All your games will run in the Main Bottle — one ready Windows environment created automatically. Private bottles remain available for exceptions (old games, special requirements).",
   bottleWhatTitle: "What's a bottle?",
   bottleWhatDesc:
     "A bottle is a mini Windows environment inside your Mac where your games run by default: saves and settings live in one safe place. If a specific game needs full isolation, you can give it its own private bottle.",
   newBottle: "Private bottle",
+  bottleSetupTitle: "Set up the Main Bottle",
+  bottleSetup: "Set it up now",
+  bottleSetupDesc:
+    "One mini Windows environment, set up once (~1 min) — all your games run in it.",
+  bottleNeedEngine: "Install the Wine engine first — from Home or Settings.",
+  bottleSettingUp: "Setting up…",
+  bottleSettingUpHint: "First setup takes a moment — keep the app open.",
+  bottleReadyNow: "Ready to use",
+  bottleFailedTitle: "Setup didn't finish",
+  bottleRetry: "Try again",
+  bottleDevSim: "Skip check (dev mode)",
+  bottleDelete: "Delete",
+  bottleDeleteWarn:
+    "Sure? Everything inside this bottle will be erased — including saves.",
+  bottleDeleteYes: "Delete permanently",
+  bottleDeleteNo: "Cancel",
 
   appearance: "Appearance",
   themeLight: "Light",
@@ -275,6 +305,10 @@ const en: Record<TKey, string> = {
   "log.extractFailed": "Failed to extract {name}: {error}",
   "log.extractSkipped": "Skipped {count} symlinks during extraction (outside the install folder or unsupported on Windows)",
   "log.engineReady": "Engine ready ✓ — {path}",
+  "log.bottleStarted": "Setting up {name}…",
+  "log.bottleReady": "{name} is ready ✓",
+  "log.bottleFailed": "Failed to set up {name}: {error}",
+  "log.bottleDeleted": "Deleted {name}",
 };
 
 export const dicts = { ar, en };

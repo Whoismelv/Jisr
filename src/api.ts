@@ -94,3 +94,33 @@ export const cancelDownload = (id: string) =>
 /** آخر حالة معروفة لكل تنزيل (لما تُفتح الواجهة من جديد) */
 export const downloadsSnapshot = () =>
   invoke<DownloadProgress[]>("downloads_snapshot");
+
+// ============================================================
+//  القوارير
+// ============================================================
+export type Bottle = {
+  id: string;
+  name: string;
+  /** main | private */
+  kind: string;
+  /** creating | ready | error */
+  state: string;
+  error: string | null;
+  path: string;
+  size_bytes: number;
+  created_ms: number;
+};
+
+/** كل القوارير مع أحجامها */
+export const bottlesList = () => invoke<Bottle[]>("bottles_list");
+
+/** إنشاء قارورة — kind: "main" | "private" (simulate للتطوير على ويندوز فقط) */
+export const bottleCreate = (kind: "main" | "private", simulate = false) =>
+  invoke<void>("bottle_create", { name: null, kind, simulate });
+
+/** إعادة محاولة تجهيز قارورة فشلت */
+export const bottleRetry = (id: string, simulate = false) =>
+  invoke<void>("bottle_retry", { id, simulate });
+
+/** حذف قارورة خاصة (الرئيسية محميّة في الخلفية) */
+export const bottleDelete = (id: string) => invoke<void>("bottle_delete", { id });

@@ -10,6 +10,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
+mod bottle;
 mod download;
 mod engine;
 
@@ -70,11 +71,16 @@ pub mod log_keys {
     pub const EXTRACT_FAILED: &str = "log.extractFailed";
     pub const EXTRACT_SKIPPED: &str = "log.extractSkipped";
     pub const ENGINE_READY: &str = "log.engineReady";
+    // القوارير
+    pub const BOTTLE_STARTED: &str = "log.bottleStarted";
+    pub const BOTTLE_READY: &str = "log.bottleReady";
+    pub const BOTTLE_FAILED: &str = "log.bottleFailed";
+    pub const BOTTLE_DELETED: &str = "log.bottleDeleted";
 }
 
 const MAX_LOGS: usize = 800;
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -127,7 +133,7 @@ fn run_env(cmd: &str, args: &[&str], envs: &[(&str, &str)]) -> Option<String> {
 }
 
 /// مجلد بيانات جسر
-fn data_dir() -> PathBuf {
+pub(crate) fn data_dir() -> PathBuf {
     if cfg!(target_os = "macos") {
         PathBuf::from(std::env::var("HOME").unwrap_or_default())
             .join("Library")
@@ -393,6 +399,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(LogState::default())
         .manage(download::DownloadsState::default())
+        .manage(bottle::BottlesState::default())
         .invoke_handler(tauri::generate_handler![
             system_info,
             get_logs,
@@ -401,7 +408,11 @@ pub fn run() {
             download::download_catalog,
             download::download_start,
             download::download_cancel,
-            download::downloads_snapshot
+            download::downloads_snapshot,
+            bottle::bottles_list,
+            bottle::bottle_create,
+            bottle::bottle_retry,
+            bottle::bottle_delete
         ])
         .setup(|app| {
             // نظافة: نمسح بقايا أي فك ضغط مات في جلسة سابقة
