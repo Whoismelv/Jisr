@@ -190,20 +190,21 @@ const ar = {
   "log.gameLaunchFailed": "فشل تشغيل {name}: {error}",
 
   // ستيم
+  steamCardTitle: "ستيم — نسخة ويندوز",
   steamDesc:
-    "الطريقة الرسمية لألعاب ويندوز — ننزّل مثبّت Valve الرسمي ونجهّزه داخل القارورة الرئيسية بضغطة.",
+    "ننزّل مثبّت Valve الرسمي ونجهّزه داخل القارورة الرئيسية. ملاحظة: هذي نسخة الويندوز من ستيم — مستقلة تماماً عن نسخة الماك اللي عندك.",
   steamNeedBottle:
     "جهّز القارورة الرئيسية أول (صفحة القوارير) — بعدها نكمّل تثبيت ستيم.",
-  steamStepDownload: "الخطوة ١ — نزّل مثبّت ستيم الرسمي",
+  steamStepDownload: "الخطوة ١ — نزّل مثبّت ستيم (نسخة الويندوز) الرسمي",
   steamStepDownloadHint: "2.3 MB من سيرفرات Valve — نتحقق من البصمة تلقائياً.",
   steamDownloadBtn: "نزّل المثبّت",
-  steamInstallerReady: "المثبّت جاهز ✓ — ثبّته داخل القارورة.",
-  steamStepInstall: "الخطوة ٢ — ثبّت ستيم داخل القارورة",
+  steamInstallerReady: "المثبّت جاهز ✓ — ثبّت نسخة الويندوز داخل القارورة.",
+  steamStepInstall: "الخطوة ٢ — ثبّت ستيم (نسخة الويندوز) داخل القارورة",
   steamStepInstallHint:
-    "بتنفتح نافذة المثبّت — كمّل الخطوات العادية (Next ثم Install). أول تشغيل لستيم ياخذ شوي عشان التحديثات.",
-  steamInstallBtn: "ثبّت ستيم",
+    "هذي نسخة الويندوز من ستيم — مستقلّة عن ستيم الماك. بتنفتح نافذة المثبّت — كمّل الخطوات العادية (Next ثم Install). أول تشغيل ياخذ شوي عشان التحديثات.",
+  steamInstallBtn: "ثبّت ستيم للويندوز",
   steamInstalling: "التثبيت شغّال… كمّل النافذة",
-  steamStepRun: "ستيم جاهز للتشغيل",
+  steamStepRun: "ستيم (نسخة ويندوز) جاهز للتشغيل",
   steamRunBtn: "شغّل ستيم",
   steamRunningNow: "ستيم شغّال الآن",
   steamStop: "أوقف",
@@ -397,20 +398,21 @@ const en: Record<TKey, string> = {
   "log.gameLaunchFailed": "Failed to launch {name}: {error}",
 
   // Steam
+  steamCardTitle: "Steam — Windows build",
   steamDesc:
-    "The official way to play Windows games — we download Valve's official installer and set it up inside your main bottle in one click.",
+    "Downloads Valve's official installer and sets it up inside your main bottle. Note: this is the Windows build of Steam — fully separate from your Mac Steam.",
   steamNeedBottle:
     "Set up the main bottle first (Bottles page) — then we can set up Steam.",
-  steamStepDownload: "Step 1 — download the official Steam installer",
+  steamStepDownload: "Step 1 — download the official Steam installer (Windows build)",
   steamStepDownloadHint: "2.3 MB from Valve's servers — checksum verified automatically.",
   steamDownloadBtn: "Download installer",
-  steamInstallerReady: "Installer ready ✓ — install it into the bottle.",
-  steamStepInstall: "Step 2 — install Steam into the bottle",
+  steamInstallerReady: "Installer ready ✓ — install the Windows build into the bottle.",
+  steamStepInstall: "Step 2 — install Steam (Windows build) into the bottle",
   steamStepInstallHint:
-    "The installer window will open — follow the usual steps (Next, then Install). The first Steam launch takes a bit while it updates.",
-  steamInstallBtn: "Install Steam",
+    "This is the Windows build of Steam — completely separate from Mac Steam. The installer window will open — follow the usual steps (Next, then Install). The first launch takes a bit while it updates.",
+  steamInstallBtn: "Install Steam for Windows",
   steamInstalling: "Installing… finish the window",
-  steamStepRun: "Steam is ready to launch",
+  steamStepRun: "Steam (Windows) is ready to launch",
   steamRunBtn: "Launch Steam",
   steamRunningNow: "Steam is running",
   steamStop: "Stop",
@@ -428,7 +430,7 @@ const en: Record<TKey, string> = {
   "log.steamLaunchFailed": "Failed to launch Steam: {error}",
 };
 
-export const dicts = { ar, en };
+export const dicts = { ar, en }; // قواميس اللغة (يستخدمها الاختبار والواجهة)
 
 // ---------- الأنواع ----------
 export type Lang = "ar" | "en";

@@ -376,7 +376,7 @@ function SteamCard({ steam, dl }: { steam: Steam; dl: Downloads }) {
   const running = !!s?.running;
 
   return (
-    <Card title="Steam" icon={<Icon.Download size={16} />}>
+    <Card title={t("steamCardTitle")} icon={<Icon.Download size={16} />}>
       <div className="bottle-row">
         <span
           className={
