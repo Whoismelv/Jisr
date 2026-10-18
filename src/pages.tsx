@@ -592,6 +592,21 @@ const GameCard = memo(function GameCard({
   );
 });
 
+/** اسم القارورة من نوعها — يُترجم حسب لغة الواجهة (الاسم مو نص مخزّن) */
+function bottleName(kind: string, t: (k: TKey) => string): string {
+  return t(kind === "main" ? "bottleMainName" : "bottlePrivateName");
+}
+
+/** سطور سجل القوارير تجي بنوعها (main/private) — نحوّله لاسم مترجم قبل العرض */
+function logParams(
+  params: Record<string, unknown> | undefined,
+  t: (k: TKey) => string,
+): Record<string, unknown> | undefined {
+  const kind = params?.kind;
+  if (kind !== "main" && kind !== "private") return params;
+  return { ...params, name: bottleName(kind, t) };
+}
+
 // ============================================================
 //  القوارير
 // ============================================================
@@ -670,7 +685,10 @@ const BottleCard = memo(function BottleCard({
   const isWindows = (sys?.os_name ?? "").toLowerCase().includes("windows");
 
   return (
-    <Card title={b.name} icon={<Icon.Bottle size={16} />}>
+    <Card
+      title={bottleName(b.kind, t)}
+      icon={<Icon.Bottle size={16} />}
+    >
       <div className="bottle-row">
         <span className={"dot " + (ready ? "ok" : busy ? "busy" : "danger")} />
         <span className={"value " + (ready ? "ok" : busy ? "busy" : "danger")}>
@@ -883,7 +901,9 @@ export const LogsPage = memo(function LogsPage({
                 <span className={"log-level " + l.level}>
                   {l.level.toUpperCase()}
                 </span>
-                <span className="log-msg">{t(l.key as TKey, l.params)}</span>
+                <span className="log-msg">
+                  {t(l.key as TKey, logParams(l.params, t))}
+                </span>
               </div>
             ))
           )}

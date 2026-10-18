@@ -96,6 +96,8 @@ const ar = {
   bottleWhatDesc:
     "القارورة = بيئة ويندوز مصغّرة داخل الماك، وكل ألعابك تشتغل فيها افتراضياً: الحفظ والإعدادات بمكان واحد آمن. وإذا احتاجت لعبة معينة عزل كامل، تقدر تعطيها قارورة خاصة فيها لحالها.",
   newBottle: "قارورة خاصة",
+  bottleMainName: "القارورة الرئيسية",
+  bottlePrivateName: "قارورة خاصة",
   bottleSetupTitle: "جهّز القارورة الرئيسية",
   bottleSetup: "جهّزها الآن",
   bottleSetupDesc:
@@ -304,6 +306,8 @@ const en: Record<TKey, string> = {
   bottleWhatDesc:
     "A bottle is a mini Windows environment inside your Mac where your games run by default: saves and settings live in one safe place. If a specific game needs full isolation, you can give it its own private bottle.",
   newBottle: "Private bottle",
+  bottleMainName: "Main Bottle",
+  bottlePrivateName: "Private Bottle",
   bottleSetupTitle: "Set up the Main Bottle",
   bottleSetup: "Set it up now",
   bottleSetupDesc:

@@ -231,7 +231,7 @@ async fn begin_provision(
         meta.state = "ready".into();
         meta.error = None;
         write_meta(&meta).map_err(|e| format!("تعذّر حفظ حالة القارورة: {e}"))?;
-        log(app, "info", log_keys::BOTTLE_READY, json!({ "name": meta.name }));
+        log(app, "info", log_keys::BOTTLE_READY, json!({ "kind": meta.kind }));
         emit(app);
         return Ok(());
     }
@@ -239,7 +239,7 @@ async fn begin_provision(
     meta.state = "creating".into();
     meta.error = None;
     write_meta(&meta).map_err(|e| format!("تعذّر حفظ حالة القارورة: {e}"))?;
-    log(app, "info", log_keys::BOTTLE_STARTED, json!({ "name": meta.name }));
+    log(app, "info", log_keys::BOTTLE_STARTED, json!({ "kind": meta.kind }));
     emit(app);
 
     if let Ok(mut s) = st.0.lock() {
@@ -248,7 +248,7 @@ async fn begin_provision(
 
     let app2 = app.clone();
     let id2 = meta.id.clone();
-    let name2 = meta.name.clone();
+    let kind2 = meta.kind.clone();
     tauri::async_runtime::spawn(async move {
         let res = run_wineboot(&id2).await;
 
@@ -265,13 +265,13 @@ async fn begin_provision(
                 m.state = "ready".into();
                 m.error = None;
                 let _ = write_meta(&m);
-                log(&app2, "info", log_keys::BOTTLE_READY, json!({ "name": name2 }));
+                log(&app2, "info", log_keys::BOTTLE_READY, json!({ "kind": kind2 }));
             }
             Err(msg) => {
                 m.state = "error".into();
                 m.error = Some(msg.clone());
                 let _ = write_meta(&m);
-                log(&app2, "error", log_keys::BOTTLE_FAILED, json!({ "name": name2, "error": msg }));
+                log(&app2, "error", log_keys::BOTTLE_FAILED, json!({ "kind": kind2, "error": msg }));
             }
         }
         emit(&app2);
@@ -434,9 +434,12 @@ pub async fn bottle_delete(
         return Err("القارورة غير موجودة".into());
     }
 
-    let name = read_meta(&id).map(|m| m.name).unwrap_or_else(|| id.clone());
+    // اسم القارورة مو نص مخزّن — نوعها يكفي والواجهة تترجمها حسب اللغة
+    let kind = read_meta(&id)
+        .map(|m| m.kind)
+        .unwrap_or_else(|| if id == MAIN_ID { "main".into() } else { "private".into() });
     std::fs::remove_dir_all(&dir).map_err(|e| format!("تعذّر حذف القارورة: {e}"))?;
-    log(&app, "warn", log_keys::BOTTLE_DELETED, json!({ "name": name }));
+    log(&app, "warn", log_keys::BOTTLE_DELETED, json!({ "kind": kind }));
     emit(&app);
     Ok(())
 }
