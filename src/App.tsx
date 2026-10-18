@@ -1,7 +1,10 @@
-import { useEffect, useState, type ComponentType } from "react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useI18n, type TKey } from "./i18n";
 import { useTheme } from "./useTheme";
+import { useSystem } from "./useSystem";
+import { useLogs } from "./useLogs";
+import type { LogEntry, SystemInfo } from "./api";
 import * as Icon from "./Icons";
 import type { IconProps } from "./Icons";
 import "./App.css";
@@ -30,6 +33,8 @@ export default function App() {
   const [page, setPage] = useState<Page>("home");
   const [toast, setToast] = useState<{ id: number; msg: string } | null>(null);
   const [isMac] = useState(() => /Mac|iPhone|iPad/.test(navigator.userAgent));
+  const { info: sys, scanning, scan } = useSystem(); // فحص الجهاز الحقيقي
+  const { logs, clear } = useLogs(); // السجل المباشر
 
   // إشعار صغير يختفي لحاله (بأسلوب آبل)
   const notify = (msg: string) => setToast({ id: Date.now(), msg });
@@ -202,11 +207,19 @@ export default function App() {
               exit={{ opacity: 0, y: reduce ? 0 : -8 }}
               transition={pageSpring}
             >
-              {page === "home" && <Home go={setPage} notify={notify} />}
+              {page === "home" && (
+                <Home
+                  go={setPage}
+                  notify={notify}
+                  sys={sys}
+                  scanning={scanning}
+                  onScan={() => void scan()}
+                />
+              )}
               {page === "library" && <Library notify={notify} />}
               {page === "bottles" && <Bottles notify={notify} />}
-              {page === "settings" && <Settings notify={notify} />}
-              {page === "logs" && <Logs notify={notify} />}
+              {page === "settings" && <Settings notify={notify} sys={sys} />}
+              {page === "logs" && <Logs logs={logs} onClear={() => void clear()} />}
             </motion.div>
           </AnimatePresence>
         </div>
@@ -367,19 +380,42 @@ function Segmented<T extends string>({
 function StatusRow({
   label,
   state,
+  value,
 }: {
   label: string;
-  state: "ok" | "off" | "busy";
+  state: "ok" | "off" | "busy" | "na";
+  value?: string;
 }) {
   const { t } = useI18n();
   const text =
-    state === "ok" ? t("ready") : state === "busy" ? t("installing") : t("notInstalled");
+    value ??
+    (state === "ok"
+      ? t("ready")
+      : state === "busy"
+        ? t("scanningLabel")
+        : state === "na"
+          ? t("unavailable")
+          : t("notInstalled"));
+  const dotClass = state === "ok" ? "ok" : state === "na" ? "na" : "off";
+
   return (
     <div className="status-row">
       <span className="status-label">{label}</span>
       <span className="status-value">
-        <span className={"dot " + (state === "ok" ? "ok" : "off")} />
+        <span className={"dot " + dotClass} />
         {text}
+      </span>
+    </div>
+  );
+}
+
+/** سطر معلومة في كرت الجهاز */
+function DeviceRow({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="device-row">
+      <span className="device-key">{k}</span>
+      <span className="device-val" title={v}>
+        {v}
       </span>
     </div>
   );
@@ -413,9 +449,15 @@ function Empty({
 function Home({
   go,
   notify,
+  sys,
+  scanning,
+  onScan,
 }: {
   go: (p: Page) => void;
   notify: (m: string) => void;
+  sys: SystemInfo | null;
+  scanning: boolean;
+  onScan: () => void;
 }) {
   const { t } = useI18n();
   const reduce = useReducedMotion();
@@ -458,9 +500,27 @@ function Home({
       {/* كروت الحالة */}
       <div className="grid">
         <Card title={t("readiness")} icon={<Icon.Chip size={16} />}>
-          <StatusRow label={t("rosetta")} state="off" />
-          <StatusRow label={t("wineEngine")} state="off" />
-          <StatusRow label={t("graphicsDxmt")} state="off" />
+          <StatusRow
+            label={t("rosetta")}
+            state={
+              !sys
+                ? "busy"
+                : sys.is_apple_silicon
+                  ? sys.rosetta_installed
+                    ? "ok"
+                    : "off"
+                  : "na"
+            }
+          />
+          <StatusRow
+            label={t("wineEngine")}
+            state={!sys ? "busy" : sys.engine_installed ? "ok" : "off"}
+          />
+          <StatusRow
+            label={t("graphicsDxmt")}
+            state={!sys ? "busy" : sys.graphics_layer ? "ok" : "off"}
+            value={sys?.graphics_layer ?? undefined}
+          />
         </Card>
 
         <Card title={t("yourLibrary")} icon={<Icon.Gamepad size={16} />}>
@@ -472,17 +532,48 @@ function Home({
         </Card>
 
         <Card title={t("yourDevice")} icon={<Icon.Monitor size={16} />}>
-          <p className="muted small">{t("detectedAutomatically")}</p>
-          <div className="kv">
-            <span className="muted">Mac</span>
-            <span className="muted">—</span>
-          </div>
-          <div className="kv">
-            <span className="muted">GPU</span>
-            <span className="muted">—</span>
-          </div>
-          <Button variant="plain" onClick={() => notify(t("soonDevice"))}>
-            {t("checkDevice")}
+          {scanning ? (
+            <p className="muted small">{t("scanningLabel")}</p>
+          ) : !sys ? (
+            <p className="muted small">{t("unavailable")}</p>
+          ) : (
+            <div className="device-list">
+              <DeviceRow
+                k={t("systemLabel")}
+                v={`${sys.os_name} ${sys.os_version}`.trim()}
+              />
+              <DeviceRow
+                k={t("chipLabel")}
+                v={
+                  `${sys.chip || sys.arch}${
+                    sys.cpu_cores ? ` · ${sys.cpu_cores} ${t("coresSuffix")}` : ""
+                  }`
+                }
+              />
+              <DeviceRow
+                k={t("memoryLabel")}
+                v={
+                  sys.memory_mb
+                    ? `${Math.round(sys.memory_mb / 1024)} GB`
+                    : t("unavailable")
+                }
+              />
+              <DeviceRow
+                k={t("graphicsLabel")}
+                v={
+                  sys.gpus.length > 0
+                    ? `${sys.gpus[0].name}${
+                        sys.gpus[0].cores
+                          ? ` · ${sys.gpus[0].cores} ${t("coresSuffix")}`
+                          : ""
+                      }`
+                    : t("unavailable")
+                }
+              />
+            </div>
+          )}
+          <Button variant="plain" onClick={onScan}>
+            {scanning ? t("scanningLabel") : t("refresh")}
           </Button>
         </Card>
       </div>
@@ -578,7 +669,13 @@ function Bottles({ notify }: { notify: (m: string) => void }) {
   );
 }
 
-function Settings({ notify }: { notify: (m: string) => void }) {
+function Settings({
+  notify,
+  sys,
+}: {
+  notify: (m: string) => void;
+  sys: SystemInfo | null;
+}) {
   const { t, choice: langChoice, setChoice: setLangChoice } = useI18n();
   const { theme, setTheme } = useTheme();
   const [gfx, setGfx] = useState<"dxmt" | "dxvk" | "wined3d">("dxmt");
@@ -627,7 +724,10 @@ function Settings({ notify }: { notify: (m: string) => void }) {
 
       {/* المحرك والرسومات */}
       <Card title={t("engineSection")} icon={<Icon.Chip size={16} />}>
-        <Row label={t("wineEngine")} hint="Wine 11.x">
+        <Row
+          label={t("wineEngine")}
+          hint={sys?.engine_installed ? t("ready") : "Wine 11.x"}
+        >
           <Button variant="tinted" onClick={() => notify(t("soonEngine"))}>
             {t("install")}
           </Button>
@@ -652,19 +752,48 @@ function Settings({ notify }: { notify: (m: string) => void }) {
   );
 }
 
-function Logs({ notify }: { notify: (m: string) => void }) {
+function Logs({
+  logs,
+  onClear,
+}: {
+  logs: LogEntry[];
+  onClear: () => void;
+}) {
   const { t } = useI18n();
+  const endRef = useRef<HTMLDivElement>(null);
+
+  // نتابع آخر سطر تلقائياً (مثل تطبيقات الطرفية)
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [logs.length]);
+
   return (
     <div className="stack">
       <Card title={t("logsTitle")} icon={<Icon.Doc size={16} />}>
-        <div className="logbox">
-          <span className="muted">{t("logsEmpty")}</span>
+        <div className="loglist">
+          {logs.length === 0 ? (
+            <span className="muted">{t("logsEmpty")}</span>
+          ) : (
+            logs.map((l, i) => (
+              <div className="logline" key={`${l.time_ms}-${i}`}>
+                <span className="log-time">
+                  {new Date(l.time_ms).toLocaleTimeString()}
+                </span>
+                <span className={"log-level " + l.level}>
+                  {l.level.toUpperCase()}
+                </span>
+                <span className="log-msg">{l.message}</span>
+              </div>
+            ))
+          )}
+          <div ref={endRef} />
         </div>
+
         <div className="log-actions">
           <Button
             variant="plain"
             icon={<Icon.Trash size={15} />}
-            onClick={() => notify(t("soonLogs"))}
+            onClick={onClear}
           >
             {t("clearLogs")}
           </Button>

@@ -253,6 +253,12 @@ html.is-macos[dir="rtl"] .toolbar {
   opacity: 0.55;
 }
 
+.dot.na {
+  background: transparent;
+  border: 1.5px solid var(--text-muted);
+  opacity: 0.6;
+}
+
 /* ---------- المحتوى ---------- */
 .main {
   flex: 1;
@@ -659,18 +665,90 @@ html.is-macos[dir="rtl"] .toolbar {
   margin-top: 10px;
 }
 
-/* ---------- السجل ---------- */
-.logbox {
-  min-height: 132px;
-  padding: 12px 14px;
+/* ---------- كرت الجهاز ---------- */
+.device-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.device-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 12.5px;
+}
+
+.device-row + .device-row {
+  border-top: 1px solid var(--separator);
+}
+
+.device-key {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.device-val {
+  font-weight: 500;
+  text-align: end;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- السجل المباشر ---------- */
+.loglist {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 330px;
+  overflow-y: auto;
+  padding: 11px 13px;
   border-radius: 10px;
   background: var(--control-bg);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.7;
-  direction: ltr; /* السجل كود — يبقى من اليسار */
+  font-size: 11.5px;
+  line-height: 1.75;
+  direction: ltr; /* الوقت والمستوى من اليسار، والرسالة تتبع لغتها */
   text-align: left;
   user-select: text;
+}
+
+.logline {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.log-time {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.log-level {
+  flex-shrink: 0;
+  width: 42px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.log-level.info {
+  color: var(--accent);
+}
+
+.log-level.warn {
+  color: #ff9f0a;
+}
+
+.log-level.error {
+  color: #ff453a;
+}
+
+.log-msg {
+  unicode-bidi: plaintext; /* العربي يطلع من اليمين تلقائياً */
+  text-align: start;
 }
 
 .log-actions {
