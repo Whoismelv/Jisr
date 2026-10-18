@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "jisr",
-        "width": 800,
-        "height": 600
+        "title": "جسر — ألعاب ويندوز على الماك",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 940,
+        "minHeight": 620
       }
     ],
     "security": {
