@@ -3,7 +3,7 @@
 //  • يحمّل القائمة عند الفتح + يستمع لحدث "jisr-bottles" من الخلفية
 //  • العمليات (إنشاء/إعادة/حذف) تُنعش القائمة تلقائياً بعدها
 // ============================================================
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   bottleCreate,
@@ -66,5 +66,9 @@ export function useBottles(): Bottles {
     [refresh],
   );
 
-  return { items, create, retry, remove, refresh };
+  // هوية ثابتة للكائن ⇒ صفحات المكتبة والقوارير ما تُعاد رسمها بلا داعي
+  return useMemo(
+    () => ({ items, create, retry, remove, refresh }),
+    [items, create, retry, remove, refresh],
+  );
 }

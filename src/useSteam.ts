@@ -4,7 +4,7 @@
 //  • التثبيت/التشغيل/الإيقاف أوامر قصيرة + إشعار عند أي خطأ
 //  • عند اكتمال التثبيت → إشعار لطيف تلقائياً
 // ============================================================
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useI18n } from "./i18n";
 import {
@@ -77,5 +77,9 @@ export function useSteam(notify: (m: string) => void): Steam {
   const run = useCallback(() => wrap(steamRun), [wrap]);
   const stop = useCallback(() => wrap(steamStop), [wrap]);
 
-  return { status, install, run, stop, refresh };
+  // هوية ثابتة للكائن ⇒ بطاقات ستيم ما تُعاد رسمها إلا عند تغيّر فعلي
+  return useMemo(
+    () => ({ status, install, run, stop, refresh }),
+    [status, install, run, stop, refresh],
+  );
 }

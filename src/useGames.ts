@@ -4,7 +4,7 @@
 //  • "jisr-game-exit" يجيب نهاية اللعبة → تنبيه لطيف بالمدة/السبب
 //  • الإضافة: نفتح نافذة اختيار الملف الأصلية (.exe) ثم نحفظها في الخلفية
 // ============================================================
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useI18n } from "./i18n";
@@ -143,5 +143,9 @@ export function useGames(notify: (m: string) => void): Games {
     [notify, refresh],
   );
 
-  return { items, add, remove, launch, stop, refresh };
+  // هوية ثابتة للكائن ⇒ بطاقات المكتبة ما تُعاد رسمها إلا عند تغيّر فعلي
+  return useMemo(
+    () => ({ items, add, remove, launch, stop, refresh }),
+    [items, add, remove, launch, stop, refresh],
+  );
 }

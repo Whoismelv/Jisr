@@ -10,11 +10,12 @@ import type { IconProps } from "./Icons";
 
 export type IconComp = ComponentType<IconProps>;
 
-/** نوابض موحّدة: إيقاع قصير بلا ارتداد زايد (فلسفة آبل: استجابة فورية) */
+/** نوابض موحّدة على قاعدة آبل: بلا ارتداد افتراضياً (damping 1.0) —
+ *  والإيقاع قصير عشان الإحساس فوري. الارتداد الخفيف للإشعار فقط. */
 export const SPRINGS = {
-  fast: { type: "spring", stiffness: 700, damping: 42, mass: 0.85 },
-  page: { type: "spring", stiffness: 480, damping: 40, mass: 0.9 },
-  toast: { type: "spring", stiffness: 560, damping: 38, mass: 0.8 },
+  fast: { type: "spring", bounce: 0, duration: 0.28 }, // أزرار ومقاطع (response ≈ 0.28)
+  page: { type: "spring", bounce: 0, duration: 0.4 }, // بطاقات وصفحات (response ≈ 0.4)
+  toast: { type: "spring", bounce: 0.15, duration: 0.45 }, // إشعار: حياة خفيفة
 } as const;
 
 // ---------- زر ----------
@@ -27,7 +28,7 @@ export const Button = memo(function Button({
   title,
 }: {
   children: ReactNode;
-  variant?: "filled" | "tinted" | "plain";
+  variant?: "filled" | "tinted" | "plain" | "danger";
   icon?: ReactNode;
   onClick?: () => void;
   disabled?: boolean;
@@ -219,14 +220,19 @@ export const Empty = memo(function Empty({
 // ---------- شريط التقدّم ----------
 export const ProgressBar = memo(function ProgressBar({
   value,
+  tone = "accent",
 }: {
   /** 0..1 = نسبة محددة · سالب = غير محدد (شريط يتحرك مثل أشرطة آبل) */
   value: number;
+  /** لون الشريط بحسب النتيجة: أزرق=جاري · أخضر=تم · أحمر=فشل */
+  tone?: "accent" | "ok" | "danger";
 }) {
   const indeterminate = value < 0;
   return (
     <div
-      className={"bar" + (indeterminate ? " indeterminate" : "")}
+      className={
+        "bar" + (indeterminate ? " indeterminate" : "") + (tone !== "accent" ? " " + tone : "")
+      }
       role="progressbar"
       aria-valuemin={0}
       aria-valuemax={100}

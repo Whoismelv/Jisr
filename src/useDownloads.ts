@@ -3,7 +3,7 @@
 //  • snapshot عند الفتح + أحداث لحظية
 //  • أدوات عرض: حجم/سرعة مقروءة، وهل التنزيل شغّال؟
 // ============================================================
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   cancelDownload,
@@ -80,7 +80,8 @@ export function useDownloads(): Downloads {
     cancelDownload(id).catch(() => {});
   }, []);
 
-  return { items, start, cancel };
+  // هوية ثابتة للكائن ⇒ الصفحات المغلّفة بـmemo ما تُعاد رسمها إلا عند تغيّر فعلي
+  return useMemo(() => ({ items, start, cancel }), [items, start, cancel]);
 }
 
 /** حجم بصيغة مقروءة: 190.9 MB / 1.2 GB */

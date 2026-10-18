@@ -20,6 +20,16 @@ html[data-theme="light"] {
   --accent: #007aff;
   --accent-soft: rgba(0, 122, 255, 0.14);
   --accent-contrast: #ffffff;
+  /* الألوان تشرح نفسها: أخضر = جاهز · كهرماني = يحتاج انتباهك · أحمر = خطأ/خطر */
+  --ok: #34c759;
+  --ok-soft: rgba(52, 199, 89, 0.14);
+  --ok-text: #248a3d;
+  --warn: #ff9f0a;
+  --warn-soft: rgba(255, 159, 10, 0.16);
+  --warn-text: #b25000;
+  --danger: #ff3b30;
+  --danger-soft: rgba(255, 59, 48, 0.13);
+  --danger-text: #d70015;
   --control-bg: rgba(120, 120, 128, 0.12);
   --control-bg-strong: rgba(120, 120, 128, 0.2);
   --seg-pill-bg: #ffffff;
@@ -43,6 +53,16 @@ html[data-theme="dark"] {
   --accent: #0a84ff;
   --accent-soft: rgba(10, 132, 255, 0.22);
   --accent-contrast: #ffffff;
+  /* الألوان تشرح نفسها (الوضع الداكن) */
+  --ok: #30d158;
+  --ok-soft: rgba(48, 209, 88, 0.2);
+  --ok-text: #30d158;
+  --warn: #ffd60a;
+  --warn-soft: rgba(255, 214, 10, 0.18);
+  --warn-text: #ffd60a;
+  --danger: #ff453a;
+  --danger-soft: rgba(255, 69, 58, 0.2);
+  --danger-text: #ff453a;
   --control-bg: rgba(120, 120, 128, 0.24);
   --control-bg-strong: rgba(120, 120, 128, 0.4);
   --seg-pill-bg: #5a5a5f;
@@ -76,6 +96,14 @@ body {
   text-rendering: optimizeLegibility;
   user-select: none; /* تطبيق حقيقي، مو صفحة ويب */
   overflow: hidden;
+}
+
+/* تبديل ناعم للمظهر (فاتح ↔ داكن) — بلا قفزات لونية */
+body,
+.main,
+.sidebar,
+.toolbar {
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* العربي يحتاج تنفّس أكثر في الأسطر */
@@ -262,7 +290,23 @@ html.is-macos[dir="rtl"] .toolbar {
 }
 
 .dot.ok {
-  background: var(--accent);
+  background: var(--ok);
+}
+
+/* نقطة "شغّالة الآن" — خضراء تنبض (تمييزها عن الأزرق = جاري عمل) */
+.dot.live {
+  background: var(--ok);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* نقطة "يحتاج انتباهك" — كهرماني */
+.dot.warn {
+  background: var(--warn);
+}
+
+/* نقطة خطأ — أحمر */
+.dot.danger {
+  background: var(--danger);
 }
 
 /* نقطة "جاري العمل" — تنبض بلطف */
@@ -298,6 +342,7 @@ html.is-macos[dir="rtl"] .toolbar {
 
 /* ---------- المحتوى ---------- */
 .main {
+  position: relative; /* شريط الأدوات يُرسم فوقه — والمحتوى يمرّ تحته */
   flex: 1;
   min-width: 0;
   display: flex;
@@ -305,8 +350,11 @@ html.is-macos[dir="rtl"] .toolbar {
   background: var(--content-bg);
 }
 
-/* شريط الأدوات (مادة شفافة، والمحتوى يمرّ تحته) */
+/* شريط الأدوات: مادة شفافة عائمة — الصفحة تمرّ تحته أثناء التمرير (مثل تطبيقات الماك) */
 .toolbar {
+  position: absolute;
+  top: 0;
+  inset-inline: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -317,7 +365,7 @@ html.is-macos[dir="rtl"] .toolbar {
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
   border-bottom: 1px solid var(--separator);
-  z-index: 2;
+  z-index: 3;
 }
 
 .toolbar-title {
@@ -339,7 +387,7 @@ html.is-macos[dir="rtl"] .toolbar {
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 22px 24px 44px;
+  padding: 74px 24px 44px; /* مساحة شريط الأدوات العائم + الهامش */
   scrollbar-gutter: stable;
 }
 
@@ -370,7 +418,6 @@ html.is-macos[dir="rtl"] .toolbar {
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
-  will-change: transform;
 }
 
 .btn-icon {
@@ -405,9 +452,25 @@ html.is-macos[dir="rtl"] .toolbar {
   background: var(--control-bg-strong);
 }
 
+/* زر خطر (إيقاف/حذف نهائي) — أحمر = الفعل هذا يوقّف أو يمسح */
+.btn.danger {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+
+.btn.danger:hover {
+  filter: brightness(1.06);
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* نرفع الطبقة الرسومية لحظة الضغط فقط — ذاكرة أقل ونص أحدّ بحالة السكون */
+.btn:active,
+.seg:active {
+  will-change: transform;
 }
 
 .btn:focus-visible,
@@ -545,6 +608,23 @@ html.is-macos[dir="rtl"] .toolbar {
   font-size: 13px;
 }
 
+/* نص الحالة يتلوّن بنفس معنى النقطة (أخضر/أزرق/كهرماني/أحمر) */
+.value.ok {
+  color: var(--ok-text);
+}
+
+.value.busy {
+  color: var(--accent);
+}
+
+.value.warn {
+  color: var(--warn-text);
+}
+
+.value.danger {
+  color: var(--danger-text);
+}
+
 /* ---------- المقاطع (Segmented) ---------- */
 .segmented {
   display: inline-flex;
@@ -569,7 +649,6 @@ html.is-macos[dir="rtl"] .toolbar {
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
-  will-change: transform;
 }
 
 .seg.active {
@@ -708,6 +787,14 @@ html.is-macos[dir="rtl"] .toolbar {
   unicode-bidi: plaintext;
 }
 
+.dl-label.ok {
+  color: var(--ok-text);
+}
+
+.dl-label.danger {
+  color: var(--danger-text);
+}
+
 /* شريط التقدّم (نحيف مثل أشرطة آبل) */
 .bar {
   position: relative;
@@ -715,13 +802,22 @@ html.is-macos[dir="rtl"] .toolbar {
   border-radius: 999px;
   background: var(--control-bg);
   overflow: hidden;
+  --bar-color: var(--accent); /* اللون يتبع النتيجة: أزرق=شغّال · أخضر=تم · أحمر=فشل */
+}
+
+.bar.ok {
+  --bar-color: var(--ok);
+}
+
+.bar.danger {
+  --bar-color: var(--danger);
 }
 
 .bar > i {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--accent);
+  background: var(--bar-color);
   transition: width 0.25s ease;
 }
 
@@ -733,7 +829,7 @@ html.is-macos[dir="rtl"] .toolbar {
   left: 0;
   width: 42%;
   border-radius: inherit;
-  background: var(--accent);
+  background: var(--bar-color);
   opacity: 0.85;
   animation: bar-slide 1.15s ease-in-out infinite;
 }
@@ -887,11 +983,11 @@ html.is-macos[dir="rtl"] .toolbar {
 }
 
 .log-level.warn {
-  color: #ff9f0a;
+  color: var(--warn-text);
 }
 
 .log-level.error {
-  color: #ff453a;
+  color: var(--danger-text);
 }
 
 .log-msg {
@@ -928,11 +1024,7 @@ html.is-macos[dir="rtl"] .toolbar {
   box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.45);
 }
 
-/* ---------- الحركة: مخففة (قرار النظام أو اختيار المستخدم من الإعدادات) ---------- */
-html[data-motion="reduced"] * {
-  animation-duration: 0.01ms !important;
-  transition-duration: 0.01ms !important;
-}
+/* ---------- الحركة: كاملة دائماً (قرار تصميمي ثابت — بلا إعداد يتغيّر) ---------- */
 
 @media (prefers-reduced-transparency: reduce) {
   .sidebar,

@@ -2,14 +2,13 @@
 //  جسر — الهيكل الرئيسي (بأسلوب تطبيقات macOS)
 //  • شريط جانبي شفاف + شريط أدوات بمواد آبل، تبديل صفحات بنوابض
 //  • لغة تلقائية (عربي/إنجليزي) ومظهر (فاتح/داكن/تلقائي)
-//  • الحركة: كاملة/مخففة/تلقائي — وMotionConfig يحترم القرار تلقائياً
+//  • الحركة: كاملة دائماً (نوابض آبل) — بلا إعداد يتغيّر
 //  • الإعدادات تُحفظ تلقائياً + تذكّر آخر صفحة + اختصار ⌘,
 // ============================================================
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { useI18n, type TKey } from "./i18n";
 import { useTheme } from "./useTheme";
-import { useMotion } from "./useMotion";
 import { useSystem } from "./useSystem";
 import { useLogs } from "./useLogs";
 import {
@@ -46,7 +45,6 @@ const LAST_PAGE_KEY = "jisr.page";
 export default function App() {
   const { t } = useI18n();
   useTheme(); // الحالة مشتركة — استدعاؤها يضمن تطبيق المظهر من أول لحظة
-  const { reduced } = useMotion(); // قرار الحركة (نظام أو اختيار المستخدم)
 
   const { info: sys, scanning, scan } = useSystem(); // فحص حقيقي يبدأ تلقائياً
   const { logs, clear } = useLogs(); // السجل المباشر
@@ -176,8 +174,8 @@ export default function App() {
   }, [steam.status, dl, notify, t]);
 
   return (
-    // reducedMotion: "always" لما الحركة مخففة ⇒ Motion يتوقف عن الحركات تلقائياً
-    <MotionConfig reducedMotion={reduced ? "always" : "never"}>
+    // الحركة كاملة دائماً — بلا استثناءات وبلا إعداد يتغيّر (قرار التصميم)
+    <MotionConfig reducedMotion="never">
       <div className="app">
         {/* ===== الشريط الجانبي ===== */}
         <aside className="sidebar">

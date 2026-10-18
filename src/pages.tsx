@@ -6,7 +6,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useI18n, type TKey } from "./i18n";
 import { useTheme } from "./useTheme";
-import { useMotion } from "./useMotion";
 import {
   Button,
   Card,
@@ -91,10 +90,23 @@ function EngineDownloadBox({
       <div className="dl-head">
         <span
           className={
-            "dot " + (p.phase === "done" ? "ok" : active ? "busy" : "off")
+            "dot " +
+            (p.phase === "done"
+              ? "ok"
+              : p.phase === "error"
+                ? "danger"
+                : active
+                  ? "busy"
+                  : "off")
           }
         />
-        <span className="dl-label" title={label}>
+        <span
+          className={
+            "dl-label" +
+            (p.phase === "done" ? " ok" : p.phase === "error" ? " danger" : "")
+          }
+          title={label}
+        >
           {label}
         </span>
         {active && (
@@ -106,6 +118,8 @@ function EngineDownloadBox({
       {active && (
         <ProgressBar value={p.total > 0 ? p.received / p.total : -1} />
       )}
+      {p.phase === "done" && <ProgressBar value={1} tone="ok" />}
+      {p.phase === "error" && <ProgressBar value={1} tone="danger" />}
     </div>
   );
 }
@@ -368,22 +382,45 @@ export const LibraryPage = memo(function LibraryPage({
 // ============================================================
 //  بطاقة ستيم — المسار الرسمي (تنزيل المثبّت → تثبيت داخل القارورة → تشغيل)
 // ============================================================
-function SteamCard({ steam, dl }: { steam: Steam; dl: Downloads }) {
+const SteamCard = memo(function SteamCard({
+  steam,
+  dl,
+}: {
+  steam: Steam;
+  dl: Downloads;
+}) {
   const { t } = useI18n();
   const s = steam.status;
   const p = dl.items[STEAM_SETUP_ID];
   const du = isActive(p);
   const running = !!s?.running;
+  // الألوان تشرح الحالة: أخضر=جاهز/شغّال · أزرق=جاري عمل · كهرماني=يحتاج ضغطة منك · رمادي=ما بدأنا
+  const dotCls = !s
+    ? "off"
+    : running
+      ? "live"
+      : s.installing || du
+        ? "busy"
+        : s.installed
+          ? "ok"
+          : s.installer_ready
+            ? "warn"
+            : "off";
+  const valCls = !s
+    ? ""
+    : running || s.installed
+      ? " ok"
+      : s.installing || du
+        ? " busy"
+        : s.installer_ready
+          ? " warn"
+          : "";
 
   return (
     <Card title={t("steamCardTitle")} icon={<Icon.Download size={16} />}>
       <div className="bottle-row">
-        <span
-          className={
-            "dot " + (running || du || s?.installing ? "busy" : s?.installed ? "ok" : "off")
-          }
-        />
-        <span className="value">
+        <span className={"dot " + dotCls} />
+        <span className={"value" + valCls}>
           {!s
             ? t("dlPreparing")
             : running
@@ -404,7 +441,7 @@ function SteamCard({ steam, dl }: { steam: Steam; dl: Downloads }) {
         <div className="row-actions">
           {running ? (
             <Button
-              variant="tinted"
+              variant="danger"
               icon={<Icon.Stop size={13} />}
               onClick={steam.stop}
             >
@@ -422,7 +459,7 @@ function SteamCard({ steam, dl }: { steam: Steam; dl: Downloads }) {
         </div>
       ) : s.installing ? (
         <div className="row-actions">
-          <Button variant="plain" onClick={steam.stop}>
+          <Button variant="danger" onClick={steam.stop}>
             {t("steamStop")}
           </Button>
         </div>
@@ -466,10 +503,10 @@ function SteamCard({ steam, dl }: { steam: Steam; dl: Downloads }) {
       </p>
     </Card>
   );
-}
+});
 
 /** بطاقة لعبة: الحالة + وقت اللعب + الأزرار حسب الحالة */
-function GameCard({
+const GameCard = memo(function GameCard({
   g,
   games,
   bottleReady,
@@ -485,8 +522,8 @@ function GameCard({
   return (
     <Card title={g.name} icon={<Icon.Gamepad size={16} />}>
       <div className="bottle-row">
-        <span className={"dot " + (running ? "busy" : "ok")} />
-        <span className="value">
+        <span className={"dot " + (running ? "live" : "ok")} />
+        <span className={"value" + (running ? " ok" : "")}>
           {running
             ? t("gameRunningNow")
             : t("gamePlayed", { dur: fmtPlayed(g.played_ms) })}
@@ -499,7 +536,7 @@ function GameCard({
       <div className="row-actions">
         {running ? (
           <Button
-            variant="tinted"
+            variant="danger"
             icon={<Icon.Stop size={13} />}
             onClick={() => games.stop(g.id)}
           >
@@ -538,7 +575,7 @@ function GameCard({
         <div className="row-actions">
           <span className="muted small">{t("gameRemoveWarn")}</span>
           <Button
-            variant="tinted"
+            variant="danger"
             onClick={() => {
               games.remove(g.id);
               setConfirm(false);
@@ -553,7 +590,7 @@ function GameCard({
       )}
     </Card>
   );
-}
+});
 
 // ============================================================
 //  القوارير
@@ -617,7 +654,7 @@ export const BottlesPage = memo(function BottlesPage({
 });
 
 /** بطاقة قارورة واحدة: النبض (الحالة) + الحجم + الأزرار حسب الحالة */
-function BottleCard({
+const BottleCard = memo(function BottleCard({
   b,
   bottles,
   sys,
@@ -635,8 +672,8 @@ function BottleCard({
   return (
     <Card title={b.name} icon={<Icon.Bottle size={16} />}>
       <div className="bottle-row">
-        <span className={"dot " + (ready ? "ok" : busy ? "busy" : "off")} />
-        <span className="value">
+        <span className={"dot " + (ready ? "ok" : busy ? "busy" : "danger")} />
+        <span className={"value " + (ready ? "ok" : busy ? "busy" : "danger")}>
           {busy
             ? t("bottleSettingUp")
             : ready
@@ -680,7 +717,7 @@ function BottleCard({
         <div className="row-actions">
           <span className="muted small">{t("bottleDeleteWarn")}</span>
           <Button
-            variant="tinted"
+            variant="danger"
             onClick={() => {
               bottles.remove(b.id);
               setConfirm(false);
@@ -695,7 +732,7 @@ function BottleCard({
       )}
     </Card>
   );
-}
+});
 
 // ============================================================
 //  الإعدادات — كل تغيير يُحفظ تلقائياً وفوراً
@@ -709,7 +746,6 @@ export const SettingsPage = memo(function SettingsPage({
 }) {
   const { t, choice: langChoice, setChoice: setLangChoice } = useI18n();
   const { theme, setTheme } = useTheme();
-  const { motion: motionChoice, setMotion } = useMotion();
   const [gfx, setGfx] = usePersisted<"dxmt" | "dxvk" | "wined3d">(
     "jisr.gfx",
     "dxmt",
@@ -731,18 +767,6 @@ export const SettingsPage = memo(function SettingsPage({
               { value: "light", label: t("themeLight"), icon: Icon.Sun },
               { value: "dark", label: t("themeDark"), icon: Icon.Moon },
               { value: "system", label: t("themeAuto"), icon: Icon.Monitor },
-            ]}
-          />
-        </Row>
-        <Row label={t("motionLabel")}>
-          <Segmented
-            id="motion"
-            value={motionChoice}
-            onChange={setMotion}
-            options={[
-              { value: "full", label: t("motionFull") },
-              { value: "reduced", label: t("motionLite") },
-              { value: "system", label: t("themeAuto") },
             ]}
           />
         </Row>
@@ -843,7 +867,7 @@ export const LogsPage = memo(function LogsPage({
     <div className="stack">
       <Card title={t("logsTitle")} icon={<Icon.Doc size={16} />}>
         <span className="live-tag">
-          <span className="dot" />
+          <span className="dot live" />
           {t("liveLabel")}
         </span>
 
