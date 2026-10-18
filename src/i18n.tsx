@@ -73,11 +73,11 @@ const ar = {
   // القوارير
   bottlesEmptyTitle: "ما فيه قوارير بعد",
   bottlesEmptyDesc:
-    "القارورة = بيئة ويندوز معزولة لكل لعبة، عشان ما تتعارض الألعاب مع بعض.",
+    "كل ألعابك راح تشتغل في «القارورة الرئيسية» — بيئة ويندوز واحدة جاهزة تُنشأ تلقائياً. تقنية القوارير الخاصة موجودة للاستثناءات (لعبة قديمة أو متطلبات خاصة).",
   bottleWhatTitle: "شنو القارورة؟",
   bottleWhatDesc:
-    "كل لعبة تشتغل داخل «قارورة» خاصة فيها: إعداداتها وخطوطها وملفاتها. تمسح القارورة = تمسح كل شي يخص اللعبة بدون ما تأثر على غيرها.",
-  newBottle: "قارورة جديدة",
+    "القارورة = بيئة ويندوز مصغّرة داخل الماك، وكل ألعابك تشتغل فيها افتراضياً: الحفظ والإعدادات بمكان واحد آمن. وإذا احتاجت لعبة معينة عزل كامل، تقدر تعطيها قارورة خاصة فيها لحالها.",
+  newBottle: "قارورة خاصة",
 
   // الإعدادات
   appearance: "المظهر",
@@ -207,11 +207,11 @@ const en: Record<TKey, string> = {
 
   bottlesEmptyTitle: "No bottles yet",
   bottlesEmptyDesc:
-    "A bottle is an isolated Windows environment per game, so games never clash.",
+    "All your games will run in the Main Bottle — one ready Windows environment created automatically. Private bottles remain available for exceptions (old games, special requirements).",
   bottleWhatTitle: "What's a bottle?",
   bottleWhatDesc:
-    "Each game runs inside its own bottle: its own settings, fonts and files. Delete a bottle and everything for that game goes with it, leaving the others untouched.",
-  newBottle: "New bottle",
+    "A bottle is a mini Windows environment inside your Mac where your games run by default: saves and settings live in one safe place. If a specific game needs full isolation, you can give it its own private bottle.",
+  newBottle: "Private bottle",
 
   appearance: "Appearance",
   themeLight: "Light",
