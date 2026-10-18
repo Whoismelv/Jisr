@@ -21,24 +21,26 @@ export type Downloads = {
   cancel: (id: string) => void;
 };
 
-/** هل التنزيل وسط العمل (بداية/تنزيل/تحقق)؟ */
+/** هل التنزيل وسط العمل (بداية/تنزيل/تحقق/فك ضغط)؟ */
 export function isActive(p?: DownloadProgress | null): boolean {
   return (
     !!p &&
     (p.phase === "starting" ||
       p.phase === "downloading" ||
-      p.phase === "verifying")
+      p.phase === "verifying" ||
+      p.phase === "extracting")
   );
 }
 
 /** حالة زر «ثبّت المحرك»: شغّال / خلص / جاهز */
-export type EngineBtn = "busy" | "done" | "idle";
+export type EngineBtn = "busy" | "done" | "ready" | "idle";
 export function engineButtonState(
   p: DownloadProgress | undefined,
   installed: boolean,
 ): EngineBtn {
+  if (installed) return "ready";
   if (isActive(p)) return "busy";
-  if (p?.phase === "done" && !installed) return "done";
+  if (p?.phase === "done") return "done";
   return "idle";
 }
 

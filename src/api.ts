@@ -62,6 +62,7 @@ export type DownloadPhase =
   | "starting"
   | "downloading"
   | "verifying"
+  | "extracting"
   | "done"
   | "error"
   | "cancelled";
@@ -71,6 +72,10 @@ export type DownloadProgress = {
   received: number;
   total: number;
   speed_bps: number;
+  /** عدد الملفات المفكوكة (مرحلة الفك والتركيب) */
+  files: number;
+  /** أي مرحلة كانت آخر شي: download | install (لرسالة الخطأ) */
+  op: string;
   phase: DownloadPhase;
   error: string | null;
 };

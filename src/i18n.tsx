@@ -111,8 +111,12 @@ const ar = {
   // التنزيل
   dlPreparing: "جاري التحضير…",
   dlVerifying: "نتحقق من سلامة الملف (بصمة SHA-256)…",
+  dlExtracting: "جاري فك الضغط وتثبيت المحرك…",
+  filesSuffix: "ملف",
   dlDone: "تم التنزيل والتحقق ✓",
+  dlReady: "محرك Wine جاهز ✓",
   dlFailed: "فشل التنزيل",
+  dlInstallFailed: "فشل تثبيت المحرك",
   dlCancelled: "أُلغي التنزيل — تقدر تكمّل من وين وقف",
   dlCancel: "إلغاء",
 
@@ -135,6 +139,11 @@ const ar = {
   "log.downloadDone": "اكتمل تنزيل {name} {version} — البصمة مطابقة ✓",
   "log.downloadFailed": "فشل تنزيل {name}: {error}",
   "log.downloadCancelled": "أُلغي تنزيل {name} — المنزّل محفوظ للاستكمال",
+  "log.extractStarted": "بدأ فك ضغط {name} {version}…",
+  "log.extractDone": "تم فك الضغط: {files} ملف ({size})",
+  "log.extractFailed": "فشل فك ضغط {name}: {error}",
+  "log.extractSkipped": "تخطّينا {count} رابطاً رمزياً أثناء الفك (خارج مجلد التثبيت أو غير مدعوم على ويندوز)",
+  "log.engineReady": "المحرك جاهز ✓ — {path}",
 };
 
 export type TKey = keyof typeof ar;
@@ -234,8 +243,12 @@ const en: Record<TKey, string> = {
   // Downloads
   dlPreparing: "Preparing…",
   dlVerifying: "Verifying the file (SHA-256)…",
+  dlExtracting: "Extracting & installing the engine…",
+  filesSuffix: "files",
   dlDone: "Downloaded & verified ✓",
+  dlReady: "Wine engine is ready ✓",
   dlFailed: "Download failed",
+  dlInstallFailed: "Engine install failed",
   dlCancelled: "Download cancelled — you can resume anytime",
   dlCancel: "Cancel",
 
@@ -257,6 +270,11 @@ const en: Record<TKey, string> = {
   "log.downloadDone": "Finished {name} {version} — checksum verified ✓",
   "log.downloadFailed": "Failed to download {name}: {error}",
   "log.downloadCancelled": "Cancelled {name} — partial file kept for resume",
+  "log.extractStarted": "Extracting {name} {version}…",
+  "log.extractDone": "Extracted {files} files ({size})",
+  "log.extractFailed": "Failed to extract {name}: {error}",
+  "log.extractSkipped": "Skipped {count} symlinks during extraction (outside the install folder or unsupported on Windows)",
+  "log.engineReady": "Engine ready ✓ — {path}",
 };
 
 export const dicts = { ar, en };

@@ -50,9 +50,11 @@ function usePersisted<T extends string>(key: string, initial: T) {
 // ============================================================
 function EngineDownloadBox({
   p,
+  installed,
   onCancel,
 }: {
   p: DownloadProgress;
+  installed?: boolean;
   onCancel: () => void;
 }) {
   const { t } = useI18n();
@@ -67,12 +69,17 @@ function EngineDownloadBox({
     label = spd ? `${size} · ${spd}` : size;
   } else if (p.phase === "verifying") {
     label = t("dlVerifying");
+  } else if (p.phase === "extracting") {
+    const pct = p.total > 0 ? Math.round((p.received / p.total) * 100) : -1;
+    const filesStr = `${p.files.toLocaleString("en-US")} ${t("filesSuffix")}`;
+    label = `${t("dlExtracting")}${pct >= 0 ? ` ${pct}%` : ""} · ${filesStr}`;
   } else if (p.phase === "done") {
-    label = t("dlDone");
+    label = installed ? t("dlReady") : t("dlDone");
   } else if (p.phase === "cancelled") {
     label = t("dlCancelled");
   } else {
-    label = t("dlFailed") + (p.error ? ` — ${p.error}` : "");
+    const failLabel = p.op === "install" ? t("dlInstallFailed") : t("dlFailed");
+    label = failLabel + (p.error ? ` — ${p.error}` : "");
   }
 
   return (
@@ -139,7 +146,9 @@ export const HomePage = memo(function HomePage({
               ? t("installing")
               : engineBtn === "done"
                 ? t("dlDone")
-                : t("installEngine")}
+                : engineBtn === "ready"
+                  ? t("ready")
+                  : t("installEngine")}
           </Button>
           <Button
             variant="tinted"
@@ -156,6 +165,7 @@ export const HomePage = memo(function HomePage({
         <div className="dl-panel">
           <EngineDownloadBox
             p={engineDl}
+            installed={!!sys?.engine_installed}
             onCancel={() => dl.cancel(ENGINE_ID)}
           />
         </div>
@@ -437,13 +447,18 @@ export const SettingsPage = memo(function SettingsPage({
             </Button>
           ) : (
             <span className="value muted">
-              {engineBtn === "busy" ? t("installing") : t("dlDone")}
+              {engineBtn === "busy"
+                ? t("installing")
+                : engineBtn === "done"
+                  ? t("dlDone")
+                  : t("ready")}
             </span>
           )}
         </Row>
         {engineDl && (
           <EngineDownloadBox
             p={engineDl}
+            installed={!!sys?.engine_installed}
             onCancel={() => dl.cancel(ENGINE_ID)}
           />
         )}

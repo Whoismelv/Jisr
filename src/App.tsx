@@ -131,7 +131,7 @@ export default function App() {
   const engineDl = dl.items[ENGINE_ID];
   const engineBtn = engineButtonState(engineDl, !!sys?.engine_installed);
 
-  // لما يخلص تنزيل المحرك: إشعار + إعادة فحص تلقائي
+  // لما تخلص سلسلة التنزيل+التركيب: إشعار + إعادة فحص تلقائي
   const prevEnginePhase = useRef<string | null>(null);
   useEffect(() => {
     const phase = engineDl?.phase ?? null;
@@ -140,11 +140,12 @@ export default function App() {
       prevEnginePhase.current !== "done" &&
       !sys?.engine_installed
     ) {
-      notify(t("dlDone"));
+      // لو صار فك ضغط ضمن السلسلة → المحرك جاهز فعلاً
+      notify((engineDl?.files ?? 0) > 0 ? t("dlReady") : t("dlDone"));
       void scan();
     }
     prevEnginePhase.current = phase;
-  }, [engineDl?.phase, notify, scan, sys?.engine_installed, t]);
+  }, [engineDl?.phase, engineDl?.files, notify, scan, sys?.engine_installed, t]);
 
   return (
     // reducedMotion: "always" لما الحركة مخففة ⇒ Motion يتوقف عن الحركات تلقائياً
@@ -242,7 +243,9 @@ export default function App() {
                       ? t("installing")
                       : engineBtn === "done"
                         ? t("dlDone")
-                        : t("installEngine")}
+                        : engineBtn === "ready"
+                          ? t("ready")
+                          : t("installEngine")}
                   </Button>
                 </>
               )}

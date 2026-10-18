@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
 mod download;
+mod engine;
 
 // ---------- الأنواع اللي تروح للواجهة ----------
 #[derive(Serialize, Clone, Default)]
@@ -63,6 +64,12 @@ pub mod log_keys {
     pub const DOWNLOAD_DONE: &str = "log.downloadDone";
     pub const DOWNLOAD_FAILED: &str = "log.downloadFailed";
     pub const DOWNLOAD_CANCELLED: &str = "log.downloadCancelled";
+    // الفك والتركيب
+    pub const EXTRACT_STARTED: &str = "log.extractStarted";
+    pub const EXTRACT_DONE: &str = "log.extractDone";
+    pub const EXTRACT_FAILED: &str = "log.extractFailed";
+    pub const EXTRACT_SKIPPED: &str = "log.extractSkipped";
+    pub const ENGINE_READY: &str = "log.engineReady";
 }
 
 const MAX_LOGS: usize = 800;
@@ -148,8 +155,9 @@ fn engine_info() -> (bool, Option<String>, Option<String>) {
     for e in entries.flatten() {
         let path = e.path();
         if path.is_dir() {
-            // مجلد التنزيلات مو محرك — نتخطاه (المحرك = مجلد مستخرج حقيقي)
-            if path.file_name().and_then(|s| s.to_str()) == Some("downloads") {
+            // مجلد التنزيلات ومجلدات الفك المؤقتة مو محرك — نتخطاها
+            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if name == "downloads" || name.starts_with("staging-") {
                 continue;
             }
             let gfx = detect_graphics_layer(&path);
@@ -396,6 +404,9 @@ pub fn run() {
             download::downloads_snapshot
         ])
         .setup(|app| {
+            // نظافة: نمسح بقايا أي فك ضغط مات في جلسة سابقة
+            engine::cleanup_staging();
+
             log(
                 app.handle(),
                 "info",

@@ -1,9 +1,10 @@
 // ============================================================
-//  جسر — محرّك التنزيل الآمن
+//  جسر — محرّك التنزيل الآمن + سلسلة التركيب
 //  • HTTPS فقط، ومن نطاقات موثوقة حصراً (GitHub) — وفحص *كل* تحويلة
 //  • تحقق SHA-256 من بصمة رسمية مثبّتة — ملف مخترق/تالف = يُرفض ويُحذف
 //  • استكمال بعد الانقطاع (HTTP Range) + إلغاء بدون فقدان المنزّل
 //  • تقدّم لحظي (نسبة + سرعة) يروح للواجهة كأحداث
+//  • للمحركات: بعد التحقق نكمل تلقائياً → فك ضغط آمن → تركيب ذرّي → جاهز
 // ============================================================
 use serde::Serialize;
 use serde_json::json;
@@ -16,7 +17,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::AsyncWriteExt;
 
-use crate::{engines_dir, log, log_keys};
+use crate::{engine, engines_dir, log, log_keys};
 
 /// النطاقات المسموحة — البنية التحتية الرسمية لـ GitHub فقط.
 /// تُفحص عند بدء الطلب *وعند كل تحويلة* (redirect) — لا استثناءات.
@@ -88,8 +89,26 @@ pub struct Progress {
     pub received: u64,
     pub total: u64, // 0 = غير معروف
     pub speed_bps: u64,
-    pub phase: String, // starting|downloading|verifying|done|error|cancelled
+    pub files: u64, // عدد الملفات المفكوكة (مرحلة الفك)
+    pub op: String, // download | install — لأي مرحلة ترجع رسالة الخطأ
+    pub phase: String, // starting|downloading|verifying|extracting|done|error|cancelled
     pub error: Option<String>,
+}
+
+impl Progress {
+    /// حالة أساسية بمصفّرات — نكمل عليها بحقول محددة
+    fn p(id: &str, phase: &str) -> Progress {
+        Progress {
+            id: id.to_string(),
+            received: 0,
+            total: 0,
+            speed_bps: 0,
+            files: 0,
+            op: "download".to_string(),
+            phase: phase.to_string(),
+            error: None,
+        }
+    }
 }
 
 pub struct DownloadHandle {
@@ -140,11 +159,12 @@ fn set_running(app: &AppHandle, id: &str, running: bool) {
 }
 
 /// فشل مؤدّب: يكتب في السجل + ينشر حالة الخطأ + يحرّر الحالة
-fn fail(app: &AppHandle, asset: &Asset, msg: String) {
+/// op: "download" أو "install" — عشان الواجهة تعرض العنوان الصحيح
+fn fail(app: &AppHandle, asset: &Asset, key: &str, op: &str, msg: String) {
     log(
         app,
         "error",
-        log_keys::DOWNLOAD_FAILED,
+        key,
         json!({ "name": asset.name, "error": msg.clone() }),
     );
 
@@ -161,12 +181,11 @@ fn fail(app: &AppHandle, asset: &Asset, msg: String) {
     publish(
         app,
         Progress {
-            id: asset.id.to_string(),
             received,
             total,
-            speed_bps: 0,
-            phase: "error".into(),
             error: Some(msg),
+            op: op.to_string(),
+            ..Progress::p(asset.id, "error")
         },
     );
     set_running(app, asset.id, false);
@@ -196,26 +215,20 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
 
     let dir = downloads_dir();
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-        fail(&app, &asset, format!("تعذّر إنشاء مجلد التنزيل: {e}"));
+        fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر إنشاء مجلد التنزيل: {e}"));
         return;
     }
 
     // اسم الملف من الرابط + فحص أمان (ما فيه مسارات ولا رموز غريبة)
-    let file_name = asset.url.rsplit('/').next().unwrap_or("").to_string();
-    let name_ok = !file_name.is_empty()
-        && file_name.len() < 128
-        && file_name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
-    if !name_ok {
-        fail(&app, &asset, "اسم ملف غير صالح في الرابط".into());
+    let Some(file_name) = engine::safe_file_name(asset.url) else {
+        fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", "اسم ملف غير صالح في الرابط".into());
         return;
-    }
+    };
 
     let part = dir.join(format!("{file_name}.part"));
     let final_path = dir.join(&file_name);
 
-    // منزّل وموثّق من قبل؟ نتحقق ونكتفي — بدون إعادة تحميل
+    // منزّل وموثّق من قبل؟ نتحقق ونكمل — بدون إعادة تحميل
     if tokio::fs::metadata(&final_path)
         .await
         .map(|m| m.is_file())
@@ -228,32 +241,31 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         publish(
             &app,
             Progress {
-                id: id.into(),
                 received: sz,
                 total: asset.size,
-                speed_bps: 0,
-                phase: "verifying".into(),
-                error: None,
+                ..Progress::p(id, "verifying")
             },
         );
         match sha256_file(&final_path).await {
             Ok(h) if h.eq_ignore_ascii_case(asset.sha256) => {
-                publish(
-                    &app,
-                    Progress {
-                        id: id.into(),
-                        received: sz,
-                        total: sz,
-                        speed_bps: 0,
-                        phase: "done".into(),
-                        error: None,
-                    },
-                );
                 log(
                     &app,
                     "info",
                     log_keys::DOWNLOAD_DONE,
                     json!({ "name": asset.name, "version": asset.version }),
+                );
+                // محرك؟ نكمل سلسلة التركيب تلقائياً
+                if asset.kind == "engine" {
+                    install_engine(&app, &asset, Arc::clone(&cancel)).await;
+                    return;
+                }
+                publish(
+                    &app,
+                    Progress {
+                        received: sz,
+                        total: sz,
+                        ..Progress::p(id, "done")
+                    },
                 );
                 set_running(&app, id, false);
                 return;
@@ -286,7 +298,7 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     {
         Ok(c) => c,
         Err(e) => {
-            fail(&app, &asset, format!("تعذّر تجهيز الاتصال: {e}"));
+            fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر تجهيز الاتصال: {e}"));
             return;
         }
     };
@@ -299,7 +311,7 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     let mut resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
-            fail(&app, &asset, format!("تعذّر بدء التنزيل: {e}"));
+            fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر بدء التنزيل: {e}"));
             return;
         }
     };
@@ -308,6 +320,7 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         fail(
             &app,
             &asset,
+            log_keys::DOWNLOAD_FAILED, "download",
             format!("السيرفر رد بحالة غير متوقعة: {}", resp.status().as_u16()),
         );
         return;
@@ -324,7 +337,7 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     };
 
     if total > MAX_SIZE {
-        fail(&app, &asset, "حجم الملف أكبر من الحد المسموح — رفضناه".into());
+        fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", "حجم الملف أكبر من الحد المسموح — رفضناه".into());
         return;
     }
 
@@ -333,7 +346,7 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         match tokio::fs::OpenOptions::new().append(true).open(&part).await {
             Ok(f) => f,
             Err(e) => {
-                fail(&app, &asset, format!("تعذّر فتح ملف الجزء: {e}"));
+                fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر فتح ملف الجزء: {e}"));
                 return;
             }
         }
@@ -341,7 +354,7 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         match tokio::fs::File::create(&part).await {
             Ok(f) => f,
             Err(e) => {
-                fail(&app, &asset, format!("تعذّر إنشاء ملف التنزيل: {e}"));
+                fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر إنشاء ملف التنزيل: {e}"));
                 return;
             }
         }
@@ -362,12 +375,9 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     publish(
         &app,
         Progress {
-            id: id.into(),
             received,
             total,
-            speed_bps: 0,
-            phase: "downloading".into(),
-            error: None,
+            ..Progress::p(id, "downloading")
         },
     );
 
@@ -410,12 +420,10 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
                     publish(
                         &app,
                         Progress {
-                            id: id.into(),
                             received,
                             total,
                             speed_bps: speed,
-                            phase: "downloading".into(),
-                            error: None,
+                            ..Progress::p(id, "downloading")
                         },
                     );
                     last_tick = now;
@@ -438,12 +446,9 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         publish(
             &app,
             Progress {
-                id: id.into(),
                 received,
                 total,
-                speed_bps: 0,
-                phase: "cancelled".into(),
-                error: None,
+                ..Progress::p(id, "cancelled")
             },
         );
         log(
@@ -457,7 +462,7 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     }
 
     if let Some(msg) = failure {
-        fail(&app, &asset, msg);
+        fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", msg);
         return;
     }
 
@@ -465,19 +470,16 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     publish(
         &app,
         Progress {
-            id: id.into(),
             received,
             total,
-            speed_bps: 0,
-            phase: "verifying".into(),
-            error: None,
+            ..Progress::p(id, "verifying")
         },
     );
 
     let hash = match sha256_file(&part).await {
         Ok(h) => h,
         Err(e) => {
-            fail(&app, &asset, format!("تعذّر قراءة الملف للتحقق: {e}"));
+            fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر قراءة الملف للتحقق: {e}"));
             return;
         }
     };
@@ -488,6 +490,7 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         fail(
             &app,
             &asset,
+            log_keys::DOWNLOAD_FAILED, "download",
             "بصمة الملف لا تطابق البصمة الرسمية — حذفناه".into(),
         );
         return;
@@ -495,7 +498,20 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
 
     // البصمة صحيحة 100% → نثبّت الاسم النهائي
     if let Err(e) = tokio::fs::rename(&part, &final_path).await {
-        fail(&app, &asset, format!("تعذّر تثبيت الملف النهائي: {e}"));
+        fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر تثبيت الملف النهائي: {e}"));
+        return;
+    }
+
+    log(
+        &app,
+        "info",
+        log_keys::DOWNLOAD_DONE,
+        json!({ "name": asset.name, "version": asset.version }),
+    );
+
+    // ---------- سلسلة المحرك: نكمل تلقائياً → فك الضغط والتركيب ----------
+    if asset.kind == "engine" {
+        install_engine(&app, &asset, Arc::clone(&cancel)).await;
         return;
     }
 
@@ -507,21 +523,161 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     publish(
         &app,
         Progress {
-            id: id.into(),
             received: size,
             total: if total > 0 { total } else { size },
-            speed_bps: 0,
-            phase: "done".into(),
-            error: None,
+            ..Progress::p(id, "done")
         },
     );
+    set_running(&app, id, false);
+}
+
+// ============================================================
+//  تركيب المحرك: فك ضغط آمن → تحقق بنية → نقل ذرّي للمكان النهائي
+// ============================================================
+async fn install_engine(app: &AppHandle, asset: &Asset, cancel: Arc<AtomicBool>) {
+    let id = asset.id;
+
+    // مثبّت وجاهز من قبل؟ نعلن الجاهزية على طول
+    if engine::is_installed(id) {
+        publish(
+            app,
+            Progress {
+                received: asset.size,
+                total: asset.size,
+                ..Progress::p(id, "done")
+            },
+        );
+        log(
+            app,
+            "info",
+            log_keys::ENGINE_READY,
+            json!({ "path": engine::install_dir(id).display().to_string() }),
+        );
+        set_running(app, id, false);
+        return;
+    }
+
+    // الأرشيف المنزّل الموثّق (تحققنا منه قبل الوصول هنا)
+    let Some(archive) = engine::archive_path(asset.url) else {
+        fail(app, asset, log_keys::EXTRACT_FAILED, "install", "اسم ملف غير صالح في الرابط".into());
+        return;
+    };
+    if !archive.is_file() {
+        fail(
+            app,
+            asset,
+            log_keys::EXTRACT_FAILED, "install",
+            "ملف المحرك غير موجود — لازم ننزّله أول".into(),
+        );
+        return;
+    }
+
+    let archive_size = std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(asset.size);
+
     log(
-        &app,
+        app,
         "info",
-        log_keys::DOWNLOAD_DONE,
+        log_keys::EXTRACT_STARTED,
         json!({ "name": asset.name, "version": asset.version }),
     );
-    set_running(&app, id, false);
+
+    // نبدأ بمجلد فك نظيف دائماً
+    let staging = engine::staging_dir(id);
+    let _ = std::fs::remove_dir_all(&staging);
+
+    publish(
+        app,
+        Progress {
+            total: archive_size,
+            ..Progress::p(id, "extracting")
+        },
+    );
+
+    // الفك عمل ثقيل ومتزامن → خيط منفصل حتى ما تتجمد الواجهة أبداً
+    let app2 = app.clone();
+    let id2 = id.to_string();
+    let archive2 = archive.clone();
+    let staging2 = staging.clone();
+    let cancel2 = Arc::clone(&cancel);
+
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let cb_app = app2.clone();
+        let cb_id = id2.clone();
+        let cb = move |read: u64, total: u64, files: u64| {
+            publish(
+                &cb_app,
+                Progress {
+                    received: read,
+                    total,
+                    files,
+                    ..Progress::p(&cb_id, "extracting")
+                },
+            );
+        };
+        engine::install_pipeline(&id2, &archive2, &staging2, &cancel2, &cb)
+    })
+    .await;
+
+    let result: Result<engine::Installed, engine::ExtErr> = match joined {
+        Ok(r) => r,
+        Err(e) => Err(engine::ExtErr::Failed(format!("خطأ غير متوقع في خيط الفك: {e}"))),
+    };
+
+    match result {
+        Ok(done) => {
+            // نمسح الأرشيف (ما نحتاجه بعد التركيب) + بقايا مجلد الفك
+            let _ = tokio::fs::remove_file(&archive).await;
+            let _ = tokio::fs::remove_dir_all(&staging).await;
+
+            publish(
+                app,
+                Progress {
+                    received: archive_size,
+                    total: archive_size,
+                    files: done.files,
+                    ..Progress::p(id, "done")
+                },
+            );
+            log(
+                app,
+                "info",
+                log_keys::EXTRACT_DONE,
+                json!({ "files": done.files, "size": human_size(done.bytes) }),
+            );
+            // روابط تخطّيناها أثناء الفك (خبيثة أو غير مدعومة على ويندوز)؟
+            if done.skipped > 0 {
+                log(
+                    app,
+                    "warn",
+                    log_keys::EXTRACT_SKIPPED,
+                    json!({ "count": done.skipped }),
+                );
+            }
+            log(
+                app,
+                "info",
+                log_keys::ENGINE_READY,
+                json!({ "path": done.path }),
+            );
+            set_running(app, id, false);
+        }
+        Err(engine::ExtErr::Cancelled) => {
+            // إلغاء نظيف: نمحي مجلد الفك — الأرشيف يظل (الفك الثاني بلا تنزيل جديد)
+            let _ = tokio::fs::remove_dir_all(&staging).await;
+            publish(app, Progress::p(id, "cancelled"));
+            log(
+                app,
+                "warn",
+                log_keys::DOWNLOAD_CANCELLED,
+                json!({ "name": asset.name }),
+            );
+            set_running(app, id, false);
+        }
+        Err(engine::ExtErr::Failed(msg)) => {
+            let _ = tokio::fs::remove_dir_all(&staging).await;
+            fail(app, asset, log_keys::EXTRACT_FAILED, "install", msg);
+        }
+    }
 }
 
 // ============================================================
@@ -563,12 +719,8 @@ pub async fn download_start(
                 cancel: cancel.clone(),
                 running: true,
                 last: Progress {
-                    id: id.clone(),
-                    received: 0,
                     total: asset.size,
-                    speed_bps: 0,
-                    phase: "starting".into(),
-                    error: None,
+                    ..Progress::p(&id, "starting")
                 },
             },
         );
@@ -578,12 +730,8 @@ pub async fn download_start(
     publish(
         &app,
         Progress {
-            id,
-            received: 0,
             total: asset.size,
-            speed_bps: 0,
-            phase: "starting".into(),
-            error: None,
+            ..Progress::p(&id, "starting")
         },
     );
 
@@ -591,7 +739,7 @@ pub async fn download_start(
     Ok(())
 }
 
-/// ألغِ تنزيل — الجزء المنزّل يُحفظ (نستكمل أي وقت لاحق)
+/// ألغِ تنزيلاً/تركيباً — الجزء المنزّل والأرشيف يُحفظان (نستكمل أي وقت لاحق)
 #[tauri::command]
 pub fn download_cancel(state: State<'_, DownloadsState>, id: String) {
     if let Ok(m) = state.0.lock() {
