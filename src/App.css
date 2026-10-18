@@ -300,9 +300,10 @@ html.is-macos[dir="rtl"] .toolbar {
   animation: pulse 1.6s ease-in-out infinite;
 }
 
-/* نقطة "يحتاج انتباهك" — كهرماني */
+/* نقطة "يحتاج انتباهك" — كهرماني يتنفّس بنفس الإيقاع الهادي (حيّ + يطلب انتباهك) */
 .dot.warn {
   background: var(--warn);
+  animation: breathe 2.4s ease-in-out infinite;
 }
 
 /* نقطة خطأ — أحمر */
