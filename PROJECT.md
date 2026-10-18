@@ -131,6 +131,9 @@
 | [HeroicGamesLauncher](https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher) · [Bottles](https://github.com/bottlesdevs/Bottles) | مديرو قوارير (لينكس) | GPL-3.0 | مرجع UX: إدارة المكتبات والمتاجر |
 | [tauri-apps/tauri-action](https://github.com/tauri-apps/tauri-action) | بناء Tauri تلقائي على GitHub Actions | MIT | نستخدمه في M4 |
 | [sparkle-project/Sparkle](https://github.com/sparkle-project/Sparkle) | تحديثات تلقائية للماك | MIT | خيار M3 (بديل: Tauri updater) |
+| [Bourbon 26](https://www.youtube.com/watch?v=vH225rOa7AU) | تطبيق ماك جديد (يوليو 2026): يثبّت الأدوات + يهيئ Wine + Steam + تشغيل .exe بدعم D3DMetal | مجاني/مستقل | ⚠️ **منافس جديد** — نفس مسارنا تقريباً (بدون عربي/بدون التركيز على البساطة العربية) |
+| [Pixel Port](https://pixelport.gg/) | تجاري — Wine + DXMT تحت اسم «Prism» | مدفوع | تحقق جديد: **نفس تقنيتنا بالضبط** (يأكد إن المسار صح) |
+| Highball | أداة مجانية مفتوحة لألعاب ويندوز على أبل سيليكون + **قاعدة توافق مفتوحة CC0** (أي لعبة تشتغل وبأي طبقة رسومات + مصدر كل ادّعاء) | مفتوح (CC0 للبيانات) | 🎯 **كنز لمستشار الأداء لاحقاً** — نستخدم بياناتهم بدل ما نبني قاعدة من الصفر |
 
 ### ج) خلاصات مهمة من البحث
 
