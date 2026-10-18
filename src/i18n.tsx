@@ -45,6 +45,7 @@ const ar = {
   yourDevice: "جهازك",
   detectedAutomatically: "تُكتشف تلقائياً",
   checkDevice: "فحص الجهاز",
+  themeAuto: "تلقائي",
   systemLabel: "النظام",
   chipLabel: "المعالج",
   memoryLabel: "الذاكرة",
@@ -89,6 +90,10 @@ const ar = {
   font: "الخط",
   fontSystem: "خط النظام",
   fontDesc: "التطبيق يستخدم خط النظام (SF على الماك) عشان يطلع طبيعي",
+  motionLabel: "الحركة",
+  motionFull: "كاملة",
+  motionLite: "مخففة",
+  autoSaveNote: "الإعدادات تُحفظ تلقائياً بمجرد ما تغيّرها — بدون زر حفظ.",
   engineSection: "المحرك",
   install: "تثبيت",
   saved: "تم الحفظ",
@@ -109,6 +114,15 @@ const ar = {
   soonDevice: "فحص الجهاز يحتاج نشتغل على ماك 🍎",
   soonBottles: "إدارة القوارير بيجي في الخطوة الجاية 🚧",
   soonLogs: "التشخيص الكامل بيجي في الخطوة الجاية 🚧",
+
+  // سجل الحدث (نشأ في Rust بمفاتيح — نترجمها هنا)
+  "log.startup": "بدأ جسر — {os}/{arch}",
+  "log.scanDone": "اكتمل فحص الجهاز",
+  "log.engineFound": "محرك Wine: {path}",
+  "log.engineNotFound": "محرك Wine غير مثبت",
+  "log.rosettaReady": "Rosetta 2 جاهزة ✓",
+  "log.rosettaMissing": "Rosetta 2 غير مثبتة — نحتاجها لتشغيل ألعاب ويندوز",
+  "log.cleared": "تم تفريغ السجل",
 };
 
 export type TKey = keyof typeof ar;
@@ -145,6 +159,7 @@ const en: Record<TKey, string> = {
   yourDevice: "Your device",
   detectedAutomatically: "Detected automatically",
   checkDevice: "Check device",
+  themeAuto: "Auto",
   systemLabel: "System",
   chipLabel: "Chip",
   memoryLabel: "Memory",
@@ -187,6 +202,10 @@ const en: Record<TKey, string> = {
   font: "Font",
   fontSystem: "System font",
   fontDesc: "Jisr uses the system font (SF on Mac) so it feels native",
+  motionLabel: "Motion",
+  motionFull: "Full",
+  motionLite: "Reduced",
+  autoSaveNote: "Settings save automatically the moment you change them — no save button.",
   engineSection: "Engine",
   install: "Install",
   saved: "Saved",
@@ -205,6 +224,15 @@ const en: Record<TKey, string> = {
   soonDevice: "Device scan needs to run on a Mac 🍎",
   soonBottles: "Bottle management lands in the next step 🚧",
   soonLogs: "Full diagnostics land in the next step 🚧",
+
+  // Log events (Rust emits keys — we translate here)
+  "log.startup": "Jisr started — {os}/{arch}",
+  "log.scanDone": "Device scan complete",
+  "log.engineFound": "Wine engine: {path}",
+  "log.engineNotFound": "Wine engine is not installed",
+  "log.rosettaReady": "Rosetta 2 is ready ✓",
+  "log.rosettaMissing": "Rosetta 2 is not installed — required to run Windows games",
+  "log.cleared": "Log cleared",
 };
 
 export const dicts = { ar, en };
@@ -218,10 +246,18 @@ type I18nValue = {
   dir: "rtl" | "ltr";
   choice: LangChoice;
   setChoice: (c: LangChoice) => void;
-  t: (k: TKey) => string;
+  t: (k: TKey, params?: Record<string, unknown>) => string;
 };
 
 const Ctx = createContext<I18nValue | null>(null);
+
+/** تعويض المعاملات داخل النص: "بدأ {os}/{arch}" + {os:"mac"} → "بدأ mac/darwin" */
+function interpolate(s: string, params?: Record<string, unknown>): string {
+  if (!params) return s;
+  return s.replace(/\{(\w+)\}/g, (_, k) =>
+    params[k] != null ? String(params[k]) : `{${k}}`,
+  );
+}
 
 // لغة النظام: عربي؟ → عربي، غير كذا إنجليزي
 function detectLang(): Lang {
@@ -257,7 +293,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       dir,
       choice,
       setChoice,
-      t: (k: TKey) => dicts[lang][k],
+      t: (k: TKey, params?: Record<string, unknown>) =>
+        interpolate(dicts[lang][k] ?? k, params),
     }),
     [lang, dir, choice],
   );

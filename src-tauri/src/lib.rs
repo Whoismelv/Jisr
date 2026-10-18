@@ -1,9 +1,10 @@
 // ============================================================
 //  جسر — الخلفية (Rust)
 //  • فحص الجهاز الحقيقي (نفس الكود على macOS و Windows)
-//  • سجل أحداث مباشر يوصل للواجهة عبر Tauri events
+//  • سجل أحداث يُرسل للواجهة **بمفاتيح/معاملات** (لا نصوص) — الترجمة في الواجهة
 // ============================================================
 use serde::Serialize;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -34,21 +35,31 @@ pub struct SystemInfo {
     pub graphics_layer: Option<String>,
 }
 
+/// حدث سجل: مفتاح نصي + معاملات → الواجهة تترجم بأي لغة
 #[derive(Serialize, Clone, Default)]
 pub struct LogEntry {
     pub time_ms: u64,
-    pub level: String,
-    pub message: String,
+    pub level: String, // info | warn | error
+    pub key: String,   // مثال: "log.startup"
+    pub params: Value, // مثال: { "dir": "..." }
 }
 
 #[derive(Default)]
 pub struct LogState(pub Mutex<Vec<LogEntry>>);
 
+// مفاتيح السجل (تطابق مفاتيح القاموس في i18n)
+pub mod log_keys {
+    pub const STARTUP: &str = "log.startup";
+    pub const SCAN_DONE: &str = "log.scanDone";
+    pub const ENGINE_FOUND: &str = "log.engineFound";
+    pub const ENGINE_NOT_FOUND: &str = "log.engineNotFound";
+    pub const ROSETTA_OK: &str = "log.rosettaReady";
+    pub const ROSETTA_MISSING: &str = "log.rosettaMissing";
+    pub const CLEARED: &str = "log.cleared";
+}
+
 const MAX_LOGS: usize = 800;
 
-// ============================================================
-//  السجل
-// ============================================================
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -56,12 +67,13 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// نكتب سطر في السجل + نرسله للواجهة فوراً (live)
-fn log(app: &AppHandle, level: &str, message: &str) {
+/// نضيف سطر للسجل + نرسله للواجهة فوراً
+fn log(app: &AppHandle, level: &str, key: &str, params: Value) {
     let entry = LogEntry {
         time_ms: now_ms(),
         level: level.to_string(),
-        message: message.to_string(),
+        key: key.to_string(),
+        params,
     };
 
     if let Some(state) = app.try_state::<LogState>() {
@@ -73,12 +85,11 @@ fn log(app: &AppHandle, level: &str, message: &str) {
             }
         }
     }
-
     let _ = app.emit("jisr-log", entry);
 }
 
 // ============================================================
-//  أدوات تنفيذ أوامر النظام
+//  تنفيذ أوامر النظام
 // ============================================================
 fn run_cmd(cmd: &str, args: &[&str]) -> Option<String> {
     Command::new(cmd)
@@ -89,7 +100,6 @@ fn run_cmd(cmd: &str, args: &[&str]) -> Option<String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-/// نفس الشي لكن مع متغيّر بيئة (مثلاً نجبر الإخراج يكون إنجليزي)
 fn run_env(cmd: &str, args: &[&str], envs: &[(&str, &str)]) -> Option<String> {
     let mut c = Command::new(cmd);
     c.args(args);
@@ -102,88 +112,79 @@ fn run_env(cmd: &str, args: &[&str], envs: &[(&str, &str)]) -> Option<String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-/// مجلد بيانات جسر:
-/// macOS: ~/Library/Application Support/Jisr
-/// Windows: %LOCALAPPDATA%\Jisr
+/// مجلد بيانات جسر
 fn data_dir() -> PathBuf {
     if cfg!(target_os = "macos") {
-        let home = std::env::var("HOME").unwrap_or_default();
-        PathBuf::from(home)
+        PathBuf::from(std::env::var("HOME").unwrap_or_default())
             .join("Library")
             .join("Application Support")
             .join("Jisr")
     } else {
-        let base = std::env::var("LOCALAPPDATA")
-            .or_else(|_| std::env::var("APPDATA"))
-            .unwrap_or_default();
-        PathBuf::from(base).join("Jisr")
+        PathBuf::from(
+            std::env::var("LOCALAPPDATA").or_else(|_| std::env::var("APPDATA")).unwrap_or_default(),
+        )
+        .join("Jisr")
     }
 }
 
-/// هل عندنا محرك مثبت؟ وشنو طبقة الرسومات؟
+fn engines_dir() -> PathBuf {
+    data_dir().join("engines")
+}
+
+/// أول محرك موجود داخل engines؟
 fn engine_info() -> (bool, Option<String>, Option<String>) {
-    let dir = data_dir().join("engines");
+    let dir = engines_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return (false, None, None);
     };
 
     for e in entries.flatten() {
         let path = e.path();
-        if !path.is_dir() {
-            continue;
+        if path.is_dir() {
+            let gfx = detect_graphics_layer(&path);
+            return (true, path.to_str().map(String::from), gfx);
         }
-        let gfx = detect_graphics_layer(&path);
-        return (true, path.to_str().map(String::from), gfx);
     }
-
     (false, None, None)
 }
 
-/// نبحث في مجلد المحرك عن ملفات الطبقات المعروفة
+/// هل المجلد/النظام يملك طبقة رسومات؟
 fn detect_graphics_layer(engine_path: &std::path::Path) -> Option<String> {
-    let mut has_dxmt = false;
-    let mut has_dxvk = false;
-    let mut has_moltenvk = false;
+    // نظرة سريعة: هل حزمة المحرك داخلها dxmt (بدون عدّ كل ملفات القرص)؟
+    let name = engine_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
 
-    let mut stack = vec![engine_path.to_path_buf()];
-    let mut visited = 0;
+    // نحاول أن نقرأ ملف تعريف بسيط لو المحرك أُعدّ مسبقاً، وإلا اعتمد الاسم
+    if name.contains("dxmt") {
+        return Some("DXMT".into());
+    } else if name.contains("dxvk") {
+        return Some("DXVK".into());
+    } else if name.contains("moltenvk") {
+        return Some("MoltenVK".into());
+    }
 
-    while let Some(dir) = stack.pop() {
-        visited += 1;
-        if visited > 60 {
-            break;
-        }
-        let Ok(rd) = std::fs::read_dir(&dir) else {
-            continue;
-        };
+    // مجرّد بحث في مجلد ضمني (سريع)
+    if let Ok(rd) = std::fs::read_dir(engine_path) {
         for e in rd.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-                continue;
-            }
-            let name = p
+            let n = e
+                .path()
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-            if name.contains("dxmt") {
-                has_dxmt = true;
-            } else if name.contains("dxvk") {
-                has_dxvk = true;
-            } else if name.contains("moltenvk") {
-                has_moltenvk = true;
+            if n.contains("d3dmt") || n.contains("dxmt") {
+                return Some("DXMT".into());
+            }
+            if n.contains("dxvk") {
+                return Some("DXVK".into());
             }
         }
     }
 
-    if has_dxmt {
-        Some("DXMT".into())
-    } else if has_dxvk {
-        Some(if has_moltenvk { "DXVK + MoltenVK" } else { "DXVK" }.into())
-    } else {
-        None
-    }
+    None
 }
 
 // ============================================================
@@ -205,37 +206,29 @@ fn detect_system() -> SystemInfo {
             .and_then(|s| s.parse::<u64>().ok())
             .map(|b| b / 1024 / 1024);
         info.gpus = macos_gpus();
-        // Rosetta 2: مسارها المعروف على أبل سيليكون
         info.rosetta_installed = cfg!(target_arch = "aarch64")
             && std::path::Path::new("/Library/Apple/usr/libexec/oah").exists();
     } else {
         windows_info(&mut info);
-        info.os_name = if info.os_name.is_empty() {
-            std::env::consts::OS.to_string()
-        } else {
-            info.os_name.clone()
-        };
+        if info.os_name.is_empty() {
+            info.os_name = std::env::consts::OS.to_string();
+        }
     }
 
     let (engine, path, gfx) = engine_info();
     info.engine_installed = engine;
     info.engine_path = path;
     info.graphics_layer = gfx;
-
     info
 }
 
-/// كروت الشاشة على الماك — نستخدم إخراج JSON (ما يتأثر بلغة النظام)
+/// كروت الشاشة على الماك — JSON (ما يتأثر بلغة النظام)
 fn macos_gpus() -> Vec<GpuInfo> {
-    let Some(out) = run_env(
-        "system_profiler",
-        &["-json", "SPDisplaysDataType"],
-        &[("LC_ALL", "en_US.UTF-8")],
-    ) else {
+    let Some(out) = run_env("system_profiler", &["-json", "SPDisplaysDataType"], &[("LC_ALL", "en_US.UTF-8")]) else {
         return vec![];
     };
 
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) else {
+    let Ok(v) = serde_json::from_str::<Value>(&out) else {
         return vec![];
     };
 
@@ -259,11 +252,10 @@ fn macos_gpus() -> Vec<GpuInfo> {
         .collect()
 }
 
-/// نص مهما كان نوعه (نص أو رقم)
-fn as_text(v: Option<&serde_json::Value>) -> String {
+fn as_text(v: Option<&Value>) -> String {
     match v {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => n.to_string(),
         _ => String::new(),
     }
 }
@@ -280,10 +272,7 @@ $cs = Get-CimInstance Win32_ComputerSystem
 Get-CimInstance Win32_VideoController | ForEach-Object { 'gpu=' + $_.Name + '|' + $_.AdapterRAM }
 "#;
 
-    let Some(out) = run_cmd(
-        "powershell",
-        &["-NoProfile", "-NonInteractive", "-Command", script],
-    ) else {
+    let Some(out) = run_cmd("powershell", &["-NoProfile", "-NonInteractive", "-Command", script]) else {
         return;
     };
 
@@ -321,68 +310,21 @@ Get-CimInstance Win32_VideoController | ForEach-Object { 'gpu=' + $_.Name + '|' 
 }
 
 // ============================================================
-//  أوامر Tauri (تنادى من الواجهة)
+//  أوامر Tauri
 // ============================================================
 
-/// فحص الجهاز + كتابة النتائج في السجل
+/// فحص الجهاز + أحداث سجل بمفاتيح
 #[tauri::command]
 fn system_info(app: AppHandle) -> SystemInfo {
     let info = detect_system();
 
-    log(
-        &app,
-        "info",
-        &format!(
-            "فحص الجهاز: {} {} ({})",
-            if info.os_name.is_empty() {
-                "?"
-            } else {
-                &info.os_name
-            },
-            info.os_version,
-            info.arch
-        ),
-    );
-
-    if !info.chip.is_empty() {
-        log(
-            &app,
-            "info",
-            &format!(
-                "المعالج: {}{}",
-                info.chip,
-                info.cpu_cores
-                    .map(|c| format!(" — {} نواة", c))
-                    .unwrap_or_default()
-            ),
-        );
-    }
-
-    if let Some(mb) = info.memory_mb {
-        log(&app, "info", &format!("الذاكرة: {} جيجابايت", mb / 1024));
-    }
-
-    for g in &info.gpus {
-        log(
-            &app,
-            "info",
-            &format!(
-                "كرت الشاشة: {}{}",
-                g.name,
-                g.cores.map(|c| format!(" — {} نواة", c)).unwrap_or_default()
-            ),
-        );
-    }
+    log(&app, "info", log_keys::SCAN_DONE, json!({}));
 
     if info.is_apple_silicon {
         if info.rosetta_installed {
-            log(&app, "info", "Rosetta 2 مثبتة ✓");
+            log(&app, "info", log_keys::ROSETTA_OK, json!({}));
         } else {
-            log(
-                &app,
-                "warn",
-                "Rosetta 2 غير مثبتة — نحتاجها لتشغيل ألعاب ويندوز",
-            );
+            log(&app, "warn", log_keys::ROSETTA_MISSING, json!({}));
         }
     }
 
@@ -390,17 +332,11 @@ fn system_info(app: AppHandle) -> SystemInfo {
         log(
             &app,
             "info",
-            &format!(
-                "محرك Wine مثبت: {}{}",
-                info.engine_path.clone().unwrap_or_default(),
-                info.graphics_layer
-                    .as_ref()
-                    .map(|g| format!(" — طبقة الرسومات: {}", g))
-                    .unwrap_or_default()
-            ),
+            log_keys::ENGINE_FOUND,
+            json!({ "path": info.engine_path.clone().unwrap_or_default() }),
         );
     } else {
-        log(&app, "warn", "محرك Wine غير مثبت بعد");
+        log(&app, "warn", log_keys::ENGINE_NOT_FOUND, json!({}));
     }
 
     info
@@ -420,13 +356,13 @@ fn clear_logs(app: AppHandle) {
             v.clear();
         }
     }
-    log(&app, "info", "تم تفريغ السجل");
+    log(&app, "info", log_keys::CLEARED, json!({}));
 }
 
-/// الواجهة تقدر تكتب في السجل (للأحداث اللي تصير في الواجهة)
+/// الواجهة تكتب سجل (بمفتاح محلي)
 #[tauri::command]
-fn log_line(app: AppHandle, level: String, message: String) {
-    log(&app, &level, &message);
+fn log_line(app: AppHandle, level: String, key: String, params: Option<Value>) {
+    log(&app, &level, &key, params.unwrap_or(json!({})));
 }
 
 // ============================================================
@@ -447,16 +383,11 @@ pub fn run() {
             log(
                 app.handle(),
                 "info",
-                &format!(
-                    "بدأ جسر — {}/{}",
-                    std::env::consts::OS,
-                    std::env::consts::ARCH
-                ),
-            );
-            log(
-                app.handle(),
-                "info",
-                &format!("مجلد البيانات: {}", data_dir().display()),
+                log_keys::STARTUP,
+                json!({
+                    "os": std::env::consts::OS,
+                    "arch": std::env::consts::ARCH,
+                }),
             );
             Ok(())
         })

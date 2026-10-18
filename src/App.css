@@ -21,6 +21,7 @@ html[data-theme="light"] {
   --accent-soft: rgba(0, 122, 255, 0.14);
   --accent-contrast: #ffffff;
   --control-bg: rgba(120, 120, 128, 0.12);
+  --control-bg-strong: rgba(120, 120, 128, 0.2);
   --seg-pill-bg: #ffffff;
   --seg-pill-shadow: 0 1px 3px rgba(0, 0, 0, 0.14), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
   --toast-bg: rgba(28, 28, 30, 0.86);
@@ -43,6 +44,7 @@ html[data-theme="dark"] {
   --accent-soft: rgba(10, 132, 255, 0.22);
   --accent-contrast: #ffffff;
   --control-bg: rgba(120, 120, 128, 0.24);
+  --control-bg-strong: rgba(120, 120, 128, 0.4);
   --seg-pill-bg: #5a5a5f;
   --seg-pill-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
   --toast-bg: rgba(240, 240, 245, 0.9);
@@ -259,6 +261,41 @@ html.is-macos[dir="rtl"] .toolbar {
   opacity: 0.6;
 }
 
+.dot.ok {
+  background: var(--accent);
+}
+
+/* نقطة "جاري العمل" — تنبض بلطف */
+.dot.busy {
+  background: var(--accent);
+  animation: pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.78);
+  }
+}
+
+/* شارة "مباشر" */
+.live-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
 /* ---------- المحتوى ---------- */
 .main {
   flex: 1;
@@ -354,6 +391,18 @@ html.is-macos[dir="rtl"] .toolbar {
 .btn.plain {
   background: var(--control-bg);
   color: var(--text);
+}
+
+.btn.filled:hover {
+  filter: brightness(1.07);
+}
+
+.btn.tinted:hover {
+  filter: brightness(1.05);
+}
+
+.btn.plain:hover {
+  background: var(--control-bg-strong);
 }
 
 .btn:disabled {
@@ -524,6 +573,10 @@ html.is-macos[dir="rtl"] .toolbar {
 }
 
 .seg.active {
+  color: var(--text);
+}
+
+.seg:hover:not(.active) {
   color: var(--text);
 }
 
@@ -780,12 +833,10 @@ html.is-macos[dir="rtl"] .toolbar {
   box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.45);
 }
 
-/* ---------- احترام تفضيلات المستخدم ---------- */
-@media (prefers-reduced-motion: reduce) {
-  * {
-    animation-duration: 0.01ms !important;
-    transition-duration: 0.01ms !important;
-  }
+/* ---------- الحركة: مخففة (قرار النظام أو اختيار المستخدم من الإعدادات) ---------- */
+html[data-motion="reduced"] * {
+  animation-duration: 0.01ms !important;
+  transition-duration: 0.01ms !important;
 }
 
 @media (prefers-reduced-transparency: reduce) {

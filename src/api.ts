@@ -28,7 +28,8 @@ export type SystemInfo = {
 export type LogEntry = {
   time_ms: number;
   level: string;
-  message: string;
+  key: string;
+  params?: Record<string, unknown>;
 };
 
 /** فحص الجهاز (نظام، معالج، ذاكرة، رسومات، Rosetta، المحرك) */
@@ -40,6 +41,6 @@ export const getLogs = () => invoke<LogEntry[]>("get_logs");
 /** تفريغ السجل */
 export const clearLogs = () => invoke<void>("clear_logs");
 
-/** نكتب سطر في السجل من الواجهة */
-export const logLine = (level: string, message: string) =>
-  invoke<void>("log_line", { level, message });
+/** نكتب سطر في السجل من الواجهة (بمفتاح + معاملات) */
+export const logLine = (level: string, key: string, params?: Record<string, unknown>) =>
+  invoke<void>("log_line", { level, key, params: params ?? {} });

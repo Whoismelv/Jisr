@@ -32,6 +32,7 @@ export function useLogs() {
   }, []);
 
   const clear = useCallback(async () => {
+    setLogs([]); // نفضّي الواجهة فوراً (استجابة فورية)، والخلفية تضيف سطر "تم التفريغ"
     try {
       await clearLogs();
     } catch {
