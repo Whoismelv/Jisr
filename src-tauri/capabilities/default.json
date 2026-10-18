@@ -1,10 +1,24 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "صلاحيات النافذة الرئيسية — الأقل الممكن (مبدأ الامتياز الأدنى)",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:default"
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/*" },
+        { "url": "https://*.github.com/*" },
+        { "url": "https://githubusercontent.com/*" },
+        { "url": "https://*.githubusercontent.com/*" },
+        { "url": "https://store.steampowered.com/*" },
+        { "url": "https://steampowered.com/*" },
+        { "url": "https://developer.apple.com/*" },
+        { "url": "https://apple.com/*" },
+        { "url": "https://*.apple.com/*" }
+      ]
+    },
+    "opener:allow-reveal-item-in-dir"
   ]
 }
