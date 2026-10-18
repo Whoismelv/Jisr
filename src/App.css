@@ -291,6 +291,7 @@ html.is-macos[dir="rtl"] .toolbar {
 
 .dot.ok {
   background: var(--ok);
+  animation: breathe 2.4s ease-in-out infinite; /* تنفّس هادئ = حيّ وجاهز */
 }
 
 /* نقطة "شغّالة الآن" — خضراء تنبض (تمييزها عن الأزرق = جاري عمل) */
@@ -324,6 +325,20 @@ html.is-macos[dir="rtl"] .toolbar {
   50% {
     opacity: 0.4;
     transform: scale(0.78);
+  }
+}
+
+/* تنفّس هادئ للنقطة الخضراء "جاهزة" — أخف وأبطأ من نبض "شغّالة الآن"
+   (الهرم: هادي = جاهز · نشِط = يشتغل الآن · أزرق سريع = جاري عمل) */
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.86);
   }
 }
 
