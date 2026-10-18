@@ -29,6 +29,7 @@ import {
 } from "./useDownloads";
 import type { Bottles } from "./useBottles";
 import { fmtPlayed, type Games } from "./useGames";
+import { STEAM_SETUP_ID, type Steam } from "./useSteam";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 export type Page = "home" | "library" | "bottles" | "settings" | "logs";
@@ -285,9 +286,13 @@ export const HomePage = memo(function HomePage({
 export const LibraryPage = memo(function LibraryPage({
   games,
   bottles,
+  steam,
+  dl,
 }: {
   games: Games;
   bottles: Bottles;
+  steam: Steam;
+  dl: Downloads;
 }) {
   const { t } = useI18n();
   const [filter, setFilter] = useState<"all" | "steam" | "files">("all");
@@ -305,6 +310,8 @@ export const LibraryPage = memo(function LibraryPage({
 
   return (
     <div className="stack">
+      <SteamCard steam={steam} dl={dl} />
+
       <div className="filter-row">
         <Segmented
           id="library-filter"
@@ -357,6 +364,109 @@ export const LibraryPage = memo(function LibraryPage({
     </div>
   );
 });
+
+// ============================================================
+//  بطاقة ستيم — المسار الرسمي (تنزيل المثبّت → تثبيت داخل القارورة → تشغيل)
+// ============================================================
+function SteamCard({ steam, dl }: { steam: Steam; dl: Downloads }) {
+  const { t } = useI18n();
+  const s = steam.status;
+  const p = dl.items[STEAM_SETUP_ID];
+  const du = isActive(p);
+  const running = !!s?.running;
+
+  return (
+    <Card title="Steam" icon={<Icon.Download size={16} />}>
+      <div className="bottle-row">
+        <span
+          className={
+            "dot " + (running || du || s?.installing ? "busy" : s?.installed ? "ok" : "off")
+          }
+        />
+        <span className="value">
+          {!s
+            ? t("dlPreparing")
+            : running
+              ? t("steamRunningNow")
+              : s.installing
+                ? t("steamInstalling")
+                : s.installed
+                  ? t("steamStepRun")
+                  : s.installer_ready
+                    ? t("steamInstallerReady")
+                    : t("steamStepDownload")}
+        </span>
+      </div>
+
+      {!s ? null : !s.bottle_ready ? (
+        <p className="muted small">{t("steamNeedBottle")}</p>
+      ) : s.installed ? (
+        <div className="row-actions">
+          {running ? (
+            <Button
+              variant="tinted"
+              icon={<Icon.Stop size={13} />}
+              onClick={steam.stop}
+            >
+              {t("steamStop")}
+            </Button>
+          ) : (
+            <Button
+              variant="filled"
+              icon={<Icon.Play size={13} />}
+              onClick={steam.run}
+            >
+              {t("steamRunBtn")}
+            </Button>
+          )}
+        </div>
+      ) : s.installing ? (
+        <div className="row-actions">
+          <Button variant="plain" onClick={steam.stop}>
+            {t("steamStop")}
+          </Button>
+        </div>
+      ) : s.installer_ready ? (
+        <div className="row-actions">
+          <Button
+            variant="filled"
+            icon={<Icon.Download size={15} />}
+            onClick={steam.install}
+          >
+            {t("steamInstallBtn")}
+          </Button>
+        </div>
+      ) : (
+        <>
+          {p && (isActive(p) || p.phase === "error" || p.phase === "cancelled") && (
+            <EngineDownloadBox p={p} onCancel={() => dl.cancel(STEAM_SETUP_ID)} />
+          )}
+          {!isActive(p) && (
+            <div className="row-actions">
+              <Button
+                variant="filled"
+                icon={<Icon.Download size={15} />}
+                onClick={() => dl.start(STEAM_SETUP_ID)}
+              >
+                {t("steamDownloadBtn")}
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+
+      <p className="muted small">
+        {s?.installed
+          ? t("steamNote")
+          : s?.installer_ready
+            ? t("steamStepInstallHint")
+            : isActive(p)
+              ? t("steamStepDownloadHint")
+              : t("steamDesc")}
+      </p>
+    </Card>
+  );
+}
 
 /** بطاقة لعبة: الحالة + وقت اللعب + الأزرار حسب الحالة */
 function GameCard({

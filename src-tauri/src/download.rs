@@ -19,7 +19,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{engine, engines_dir, log, log_keys};
 
-/// النطاقات المسموحة — البنية التحتية الرسمية لـ GitHub فقط.
+/// النطاقات المسموحة — بنية GitHub الرسمية + سيرفر ستيم الرسمي (Valve).
 /// تُفحص عند بدء الطلب *وعند كل تحويلة* (redirect) — لا استثناءات.
 const ALLOWED_HOSTS: &[&str] = &[
     "github.com",
@@ -27,6 +27,7 @@ const ALLOWED_HOSTS: &[&str] = &[
     "release-assets.githubusercontent.com",
     "github-releases.githubusercontent.com",
     "codeload.github.com",
+    "cdn.akamai.steamstatic.com",
 ];
 
 /// سقف الحجم — حماية من رد ضخم غير منطقي (2GB)
@@ -69,15 +70,34 @@ pub struct Asset {
 }
 
 pub fn catalog() -> Vec<Asset> {
-    vec![Asset {
-        id: "wine-11.18",
-        name: "Wine",
-        version: "11.18",
-        kind: "engine",
-        url: "https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.18/wine-devel-11.18-osx64.tar.xz",
-        sha256: "aa0ea4c82e636ae7bca2076387cb0a5affa26509ad13f119ecd0d62bd7ba6f82",
-        size: 190_974_384,
-    }]
+    vec![
+        Asset {
+            id: "wine-11.18",
+            name: "Wine",
+            version: "11.18",
+            kind: "engine",
+            url: "https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.18/wine-devel-11.18-osx64.tar.xz",
+            sha256: "aa0ea4c82e636ae7bca2076387cb0a5affa26509ad13f119ecd0d62bd7ba6f82",
+            size: 190_974_384,
+        },
+        // مثبّت ستيم الرسمي من Valve.
+        // ⚠️ البصمة مربوطة بملف اليوم — Valve يحدّث الملف دورياً؛ لو تغيّر،
+        // التنزيل يُرفض بأمان حتى نحدّث البصمة هنا (ننزّل الملف يدوياً ونتحقق).
+        Asset {
+            id: "steam-setup",
+            name: "Steam Setup",
+            version: "official",
+            kind: "installer",
+            url: "https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe",
+            sha256: "7d3654531c32d941b8cae81c4137fc542172bfa9635f169cb392f245a0a12bcb",
+            size: 2_380_800,
+        },
+    ]
+}
+
+/// عنصر من الكتالوج بمعرّفه (المحركات + المثبّتات)
+pub fn find_asset(id: &str) -> Option<Asset> {
+    catalog().into_iter().find(|a| a.id == id)
 }
 
 // ============================================================
@@ -192,7 +212,7 @@ fn fail(app: &AppHandle, asset: &Asset, key: &str, op: &str, msg: String) {
 }
 
 /// بصمة SHA-256 للملف — قراءة متدفقة (ما نحمّل الملف كامل في الذاكرة)
-async fn sha256_file(path: &Path) -> std::io::Result<String> {
+pub(crate) async fn sha256_file(path: &Path) -> std::io::Result<String> {
     use tokio::io::AsyncReadExt;
     let mut f = tokio::fs::File::open(path).await?;
     let mut hasher = Sha256::new();
@@ -697,10 +717,7 @@ pub async fn download_start(
     state: State<'_, DownloadsState>,
     id: String,
 ) -> Result<(), String> {
-    let asset = catalog()
-        .into_iter()
-        .find(|a| a.id == id)
-        .ok_or_else(|| "معرّف غير معروف".to_string())?;
+    let asset = find_asset(&id).ok_or_else(|| "معرّف غير معروف".to_string())?;
 
     // الحارس الأول: الرابط HTTPS ومن نطاق مسموح — قبل أي اتصال
     if !url_allowed(asset.url) {

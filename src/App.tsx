@@ -20,6 +20,7 @@ import {
 } from "./useDownloads";
 import { useBottles } from "./useBottles";
 import { useGames } from "./useGames";
+import { useSteam } from "./useSteam";
 import { Button, SPRINGS, type IconComp } from "./ui";
 import {
   HomePage,
@@ -74,6 +75,7 @@ export default function App() {
   }, [toast]);
 
   const games = useGames(notify); // مكتبة الألعاب (تحتاج الإشعار — بعد تعريفه)
+  const steam = useSteam(notify); // ستيم (المثبّت الرسمي + التشغيل)
 
   // نافذة الماك: فئة على <html> تضبط أضواء النافذة فوق المحتوى
   const [isMac] = useState(() => /Mac|iPhone|iPad/.test(navigator.userAgent));
@@ -151,6 +153,27 @@ export default function App() {
     }
     prevEnginePhase.current = phase;
   }, [engineDl?.phase, engineDl?.files, notify, scan, sys?.engine_installed, t]);
+
+  // ستيم: تحقق تلقائي — القارورة الرئيسية جاهزة وستيم مو مثبّت والمثبّت مو
+  // منزّل؟ ننزّله تلقائياً مرة وحدة (وإذا ألغاه أو فشل — الزر اليدوي باقي)
+  const steamAuto = useRef(false);
+  useEffect(() => {
+    const s = steam.status;
+    if (!s || steamAuto.current) return;
+    const sp = dl.items["steam-setup"];
+    if (
+      s.bottle_ready &&
+      !s.installed &&
+      !s.installer_ready &&
+      !isActive(sp) &&
+      sp?.phase !== "error" &&
+      sp?.phase !== "cancelled"
+    ) {
+      steamAuto.current = true;
+      notify(t("steamAutoDl"));
+      dl.start("steam-setup");
+    }
+  }, [steam.status, dl, notify, t]);
 
   return (
     // reducedMotion: "always" لما الحركة مخففة ⇒ Motion يتوقف عن الحركات تلقائياً
@@ -316,7 +339,9 @@ export default function App() {
                     dl={dl}
                   />
                 )}
-                {page === "library" && <LibraryPage games={games} bottles={bottles} />}
+                {page === "library" && (
+                  <LibraryPage games={games} bottles={bottles} steam={steam} dl={dl} />
+                )}
                 {page === "bottles" && <BottlesPage bottles={bottles} sys={sys} />}
                 {page === "settings" && <SettingsPage sys={sys} dl={dl} />}
                 {page === "logs" && <LogsPage logs={logs} onClear={onClear} />}

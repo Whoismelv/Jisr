@@ -128,16 +128,6 @@ fn fmt_dur(ms: u64) -> String {
     }
 }
 
-/// آخر أسطر من مخرجات الخطأ (للرسالة عند الفشل السريع)
-fn tail_lines(bytes: &[u8], n: usize) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    let mut lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-    if lines.len() > n {
-        lines = lines.split_off(lines.len() - n);
-    }
-    lines.join(" | ").chars().take(300).collect()
-}
-
 // ============================================================
 //  المسارات — البديل الآمن عن Z:
 // ============================================================
@@ -416,7 +406,7 @@ pub async fn game_launch(
         let code = res.as_ref().ok().and_then(|o| o.status.code());
         let stderr_tail = res
             .as_ref()
-            .map(|o| tail_lines(&o.stderr, 3))
+            .map(|o| crate::tail_lines(&o.stderr, 3))
             .unwrap_or_default();
 
         // نجمع وقت اللعب + ننظف حالة الشغل

@@ -14,6 +14,7 @@ mod bottle;
 mod download;
 mod engine;
 mod game;
+mod steam;
 
 // ---------- الأنواع اللي تروح للواجهة ----------
 #[derive(Serialize, Clone, Default)]
@@ -84,6 +85,16 @@ pub mod log_keys {
     pub const GAME_EXITED: &str = "log.gameExited";
     pub const GAME_STOPPED: &str = "log.gameStopped";
     pub const GAME_LAUNCH_FAILED: &str = "log.gameLaunchFailed";
+    // ستيم
+    pub const STEAM_INSTALLING: &str = "log.steamInstalling";
+    pub const STEAM_INSTALLED: &str = "log.steamInstalled";
+    pub const STEAM_INSTALL_EXITED: &str = "log.steamInstallExited";
+    pub const STEAM_INSTALL_FAILED: &str = "log.steamInstallFailed";
+    pub const STEAM_INSTALL_STOPPED: &str = "log.steamInstallStopped";
+    pub const STEAM_LAUNCHING: &str = "log.steamLaunching";
+    pub const STEAM_EXITED: &str = "log.steamExited";
+    pub const STEAM_STOPPED: &str = "log.steamStopped";
+    pub const STEAM_LAUNCH_FAILED: &str = "log.steamLaunchFailed";
 }
 
 const MAX_LOGS: usize = 800;
@@ -93,6 +104,16 @@ pub(crate) fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// آخر أسطر من مخرجات الخطأ (للرسائل عند الفشل السريع)
+pub(crate) fn tail_lines(bytes: &[u8], n: usize) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.len() > n {
+        lines = lines.split_off(lines.len() - n);
+    }
+    lines.join(" | ").chars().take(300).collect()
 }
 
 /// نضيف سطر للسجل + نرسله للواجهة فوراً
@@ -410,6 +431,7 @@ pub fn run() {
         .manage(download::DownloadsState::default())
         .manage(bottle::BottlesState::default())
         .manage(game::GamesState::default())
+        .manage(steam::SteamState::default())
         .invoke_handler(tauri::generate_handler![
             system_info,
             get_logs,
@@ -427,7 +449,11 @@ pub fn run() {
             game::game_add,
             game::game_remove,
             game::game_launch,
-            game::game_stop
+            game::game_stop,
+            steam::steam_status,
+            steam::steam_install,
+            steam::steam_run,
+            steam::steam_stop
         ])
         .setup(|app| {
             // نظافة: نمسح بقايا أي فك ضغط مات في جلسة سابقة

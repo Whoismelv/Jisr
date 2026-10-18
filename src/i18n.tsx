@@ -188,6 +188,37 @@ const ar = {
   "log.gameExited": "انتهت {name} — مدة اللعب {dur}",
   "log.gameStopped": "أوقفت {name} — مدة اللعب {dur}",
   "log.gameLaunchFailed": "فشل تشغيل {name}: {error}",
+
+  // ستيم
+  steamDesc:
+    "الطريقة الرسمية لألعاب ويندوز — ننزّل مثبّت Valve الرسمي ونجهّزه داخل القارورة الرئيسية بضغطة.",
+  steamNeedBottle:
+    "جهّز القارورة الرئيسية أول (صفحة القوارير) — بعدها نكمّل تثبيت ستيم.",
+  steamStepDownload: "الخطوة ١ — نزّل مثبّت ستيم الرسمي",
+  steamStepDownloadHint: "2.3 MB من سيرفرات Valve — نتحقق من البصمة تلقائياً.",
+  steamDownloadBtn: "نزّل المثبّت",
+  steamInstallerReady: "المثبّت جاهز ✓ — ثبّته داخل القارورة.",
+  steamStepInstall: "الخطوة ٢ — ثبّت ستيم داخل القارورة",
+  steamStepInstallHint:
+    "بتنفتح نافذة المثبّت — كمّل الخطوات العادية (Next ثم Install). أول تشغيل لستيم ياخذ شوي عشان التحديثات.",
+  steamInstallBtn: "ثبّت ستيم",
+  steamInstalling: "التثبيت شغّال… كمّل النافذة",
+  steamStepRun: "ستيم جاهز للتشغيل",
+  steamRunBtn: "شغّل ستيم",
+  steamRunningNow: "ستيم شغّال الآن",
+  steamStop: "أوقف",
+  steamNote:
+    "من داخل ستيم: سجّل دخولك ونزّل لعبتك (جرّب LIMBO Demo المجانية) — بعدها تقدر تلعب مباشرة من ستيم، أو تضيف ملف اللعبة لجسر عشان تشغّلها بضغطة من هنا.",
+  steamAutoDl: "ننزّل مثبّت ستيم الرسمي تلقائياً — ياخذ ثواني…",
+  "log.steamInstalling": "بدأنا تثبيت ستيم داخل القارورة الرئيسية…",
+  "log.steamInstalled": "تم تثبيت ستيم ✓ — جاهز للتشغيل",
+  "log.steamInstallExited": "المثبّت انتهى بدون ما يظهر ستيم — جرّب مرة ثانية",
+  "log.steamInstallFailed": "فشل تثبيت ستيم: {error}",
+  "log.steamInstallStopped": "أوقفت تثبيت ستيم",
+  "log.steamLaunching": "جاري تشغيل ستيم…",
+  "log.steamExited": "انسكّر ستيم",
+  "log.steamStopped": "أوقفت ستيم",
+  "log.steamLaunchFailed": "فشل تشغيل ستيم: {error}",
 };
 
 export type TKey = keyof typeof ar;
@@ -364,6 +395,37 @@ const en: Record<TKey, string> = {
   "log.gameExited": "{name} ended — played {dur}",
   "log.gameStopped": "Stopped {name} — played {dur}",
   "log.gameLaunchFailed": "Failed to launch {name}: {error}",
+
+  // Steam
+  steamDesc:
+    "The official way to play Windows games — we download Valve's official installer and set it up inside your main bottle in one click.",
+  steamNeedBottle:
+    "Set up the main bottle first (Bottles page) — then we can set up Steam.",
+  steamStepDownload: "Step 1 — download the official Steam installer",
+  steamStepDownloadHint: "2.3 MB from Valve's servers — checksum verified automatically.",
+  steamDownloadBtn: "Download installer",
+  steamInstallerReady: "Installer ready ✓ — install it into the bottle.",
+  steamStepInstall: "Step 2 — install Steam into the bottle",
+  steamStepInstallHint:
+    "The installer window will open — follow the usual steps (Next, then Install). The first Steam launch takes a bit while it updates.",
+  steamInstallBtn: "Install Steam",
+  steamInstalling: "Installing… finish the window",
+  steamStepRun: "Steam is ready to launch",
+  steamRunBtn: "Launch Steam",
+  steamRunningNow: "Steam is running",
+  steamStop: "Stop",
+  steamNote:
+    "Inside Steam: sign in and download a game (try the free LIMBO Demo) — then play right from Steam, or add the game's .exe to Jisr for one-click launch from here.",
+  steamAutoDl: "Downloading the official Steam installer automatically — a few seconds…",
+  "log.steamInstalling": "Started installing Steam into the main bottle…",
+  "log.steamInstalled": "Steam installed ✓ — ready to launch",
+  "log.steamInstallExited": "The installer ended without Steam appearing — try again",
+  "log.steamInstallFailed": "Steam install failed: {error}",
+  "log.steamInstallStopped": "Stopped the Steam install",
+  "log.steamLaunching": "Launching Steam…",
+  "log.steamExited": "Steam exited",
+  "log.steamStopped": "Stopped Steam",
+  "log.steamLaunchFailed": "Failed to launch Steam: {error}",
 };
 
 export const dicts = { ar, en };

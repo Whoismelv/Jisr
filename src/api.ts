@@ -155,3 +155,30 @@ export const gameLaunch = (id: string) => invoke<void>("game_launch", { id });
 
 /** إيقاف لعبة شغّالة */
 export const gameStop = (id: string) => invoke<void>("game_stop", { id });
+
+// ============================================================
+//  ستيم (المسار الرسمي)
+// ============================================================
+export type SteamStatus = {
+  /** مثبّت ستيم الرسمي منزّل ومحفوظ؟ */
+  installer_ready: boolean;
+  /** ستيم مثبّت داخل القارورة الرئيسية؟ */
+  installed: boolean;
+  /** مسار تشغيل ستيم داخل القارورة (ويندوزي) */
+  steam_exe: string | null;
+  installing: boolean;
+  running: boolean;
+  bottle_ready: boolean;
+};
+
+/** حالة ستيم الكاملة */
+export const steamStatus = () => invoke<SteamStatus>("steam_status");
+
+/** ثبّت ستيم داخل القارورة الرئيسية بالمثبّت الرسمي */
+export const steamInstall = () => invoke<void>("steam_install");
+
+/** شغّل ستيم */
+export const steamRun = () => invoke<void>("steam_run");
+
+/** أوقف ستيم (أو التثبيت الجاري) */
+export const steamStop = () => invoke<void>("steam_stop");
