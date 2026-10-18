@@ -10,6 +10,8 @@ use std::process::Command;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
+mod download;
+
 // ---------- الأنواع اللي تروح للواجهة ----------
 #[derive(Serialize, Clone, Default)]
 pub struct GpuInfo {
@@ -56,6 +58,11 @@ pub mod log_keys {
     pub const ROSETTA_OK: &str = "log.rosettaReady";
     pub const ROSETTA_MISSING: &str = "log.rosettaMissing";
     pub const CLEARED: &str = "log.cleared";
+    // التنزيل
+    pub const DOWNLOAD_STARTED: &str = "log.downloadStarted";
+    pub const DOWNLOAD_DONE: &str = "log.downloadDone";
+    pub const DOWNLOAD_FAILED: &str = "log.downloadFailed";
+    pub const DOWNLOAD_CANCELLED: &str = "log.downloadCancelled";
 }
 
 const MAX_LOGS: usize = 800;
@@ -68,7 +75,7 @@ fn now_ms() -> u64 {
 }
 
 /// نضيف سطر للسجل + نرسله للواجهة فوراً
-fn log(app: &AppHandle, level: &str, key: &str, params: Value) {
+pub(crate) fn log(app: &AppHandle, level: &str, key: &str, params: Value) {
     let entry = LogEntry {
         time_ms: now_ms(),
         level: level.to_string(),
@@ -127,7 +134,7 @@ fn data_dir() -> PathBuf {
     }
 }
 
-fn engines_dir() -> PathBuf {
+pub(crate) fn engines_dir() -> PathBuf {
     data_dir().join("engines")
 }
 
@@ -141,6 +148,10 @@ fn engine_info() -> (bool, Option<String>, Option<String>) {
     for e in entries.flatten() {
         let path = e.path();
         if path.is_dir() {
+            // مجلد التنزيلات مو محرك — نتخطاه (المحرك = مجلد مستخرج حقيقي)
+            if path.file_name().and_then(|s| s.to_str()) == Some("downloads") {
+                continue;
+            }
             let gfx = detect_graphics_layer(&path);
             return (true, path.to_str().map(String::from), gfx);
         }
@@ -373,11 +384,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(LogState::default())
+        .manage(download::DownloadsState::default())
         .invoke_handler(tauri::generate_handler![
             system_info,
             get_logs,
             clear_logs,
-            log_line
+            log_line,
+            download::download_catalog,
+            download::download_start,
+            download::download_cancel,
+            download::downloads_snapshot
         ])
         .setup(|app| {
             log(

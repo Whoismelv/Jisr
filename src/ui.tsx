@@ -215,3 +215,30 @@ export const Empty = memo(function Empty({
     </div>
   );
 });
+
+// ---------- شريط التقدّم ----------
+export const ProgressBar = memo(function ProgressBar({
+  value,
+}: {
+  /** 0..1 = نسبة محددة · سالب = غير محدد (شريط يتحرك مثل أشرطة آبل) */
+  value: number;
+}) {
+  const indeterminate = value < 0;
+  return (
+    <div
+      className={"bar" + (indeterminate ? " indeterminate" : "")}
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={indeterminate ? undefined : Math.round(value * 100)}
+    >
+      {!indeterminate && (
+        <i
+          style={{
+            width: `${Math.round(Math.min(1, Math.max(0, value)) * 100)}%`,
+          }}
+        />
+      )}
+    </div>
+  );
+});

@@ -108,6 +108,14 @@ const ar = {
   clearLogs: "تفريغ",
   logsEmpty: "ما فيه أحداث بعد — أي شي يصير بينكتب هنا.",
 
+  // التنزيل
+  dlPreparing: "جاري التحضير…",
+  dlVerifying: "نتحقق من سلامة الملف (بصمة SHA-256)…",
+  dlDone: "تم التنزيل والتحقق ✓",
+  dlFailed: "فشل التنزيل",
+  dlCancelled: "أُلغي التنزيل — تقدر تكمّل من وين وقف",
+  dlCancel: "إلغاء",
+
   // رسائل
   soonEngine: "تثبيت المحرك بيجي في الخطوة الجاية 🚧",
   soonGames: "إضافة الألعاب بيجي في الخطوة الجاية 🚧",
@@ -123,6 +131,10 @@ const ar = {
   "log.rosettaReady": "Rosetta 2 جاهزة ✓",
   "log.rosettaMissing": "Rosetta 2 غير مثبتة — نحتاجها لتشغيل ألعاب ويندوز",
   "log.cleared": "تم تفريغ السجل",
+  "log.downloadStarted": "بدأ تنزيل {name} {version} — {size}",
+  "log.downloadDone": "اكتمل تنزيل {name} {version} — البصمة مطابقة ✓",
+  "log.downloadFailed": "فشل تنزيل {name}: {error}",
+  "log.downloadCancelled": "أُلغي تنزيل {name} — المنزّل محفوظ للاستكمال",
 };
 
 export type TKey = keyof typeof ar;
@@ -219,6 +231,14 @@ const en: Record<TKey, string> = {
   clearLogs: "Clear",
   logsEmpty: "Nothing logged yet — anything that happens shows up here.",
 
+  // Downloads
+  dlPreparing: "Preparing…",
+  dlVerifying: "Verifying the file (SHA-256)…",
+  dlDone: "Downloaded & verified ✓",
+  dlFailed: "Download failed",
+  dlCancelled: "Download cancelled — you can resume anytime",
+  dlCancel: "Cancel",
+
   soonEngine: "Engine install lands in the next step 🚧",
   soonGames: "Adding games lands in the next step 🚧",
   soonDevice: "Device scan needs to run on a Mac 🍎",
@@ -233,6 +253,10 @@ const en: Record<TKey, string> = {
   "log.rosettaReady": "Rosetta 2 is ready ✓",
   "log.rosettaMissing": "Rosetta 2 is not installed — required to run Windows games",
   "log.cleared": "Log cleared",
+  "log.downloadStarted": "Downloading {name} {version} — {size}",
+  "log.downloadDone": "Finished {name} {version} — checksum verified ✓",
+  "log.downloadFailed": "Failed to download {name}: {error}",
+  "log.downloadCancelled": "Cancelled {name} — partial file kept for resume",
 };
 
 export const dicts = { ar, en };

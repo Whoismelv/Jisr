@@ -7,9 +7,26 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useI18n, type TKey } from "./i18n";
 import { useTheme } from "./useTheme";
 import { useMotion } from "./useMotion";
-import { Button, Card, DeviceRow, Empty, Row, Segmented, StatusRow } from "./ui";
+import {
+  Button,
+  Card,
+  DeviceRow,
+  Empty,
+  ProgressBar,
+  Row,
+  Segmented,
+  StatusRow,
+} from "./ui";
 import * as Icon from "./Icons";
-import type { LogEntry, SystemInfo } from "./api";
+import type { DownloadProgress, LogEntry, SystemInfo } from "./api";
+import {
+  ENGINE_ID,
+  engineButtonState,
+  fmtBytes,
+  fmtSpeed,
+  isActive,
+  type Downloads,
+} from "./useDownloads";
 
 export type Page = "home" | "library" | "bottles" | "settings" | "logs";
 
@@ -29,22 +46,78 @@ function usePersisted<T extends string>(key: string, initial: T) {
 }
 
 // ============================================================
+//  صندوق التنزيل (يُعرض في الرئيسية والإعدادات)
+// ============================================================
+function EngineDownloadBox({
+  p,
+  onCancel,
+}: {
+  p: DownloadProgress;
+  onCancel: () => void;
+}) {
+  const { t } = useI18n();
+  const active = isActive(p);
+
+  let label: string;
+  if (p.phase === "starting") {
+    label = t("dlPreparing");
+  } else if (p.phase === "downloading") {
+    const size = `${fmtBytes(p.received)} / ${p.total > 0 ? fmtBytes(p.total) : "…"}`;
+    const spd = fmtSpeed(p.speed_bps);
+    label = spd ? `${size} · ${spd}` : size;
+  } else if (p.phase === "verifying") {
+    label = t("dlVerifying");
+  } else if (p.phase === "done") {
+    label = t("dlDone");
+  } else if (p.phase === "cancelled") {
+    label = t("dlCancelled");
+  } else {
+    label = t("dlFailed") + (p.error ? ` — ${p.error}` : "");
+  }
+
+  return (
+    <div className="dl">
+      <div className="dl-head">
+        <span
+          className={
+            "dot " + (p.phase === "done" ? "ok" : active ? "busy" : "off")
+          }
+        />
+        <span className="dl-label" title={label}>
+          {label}
+        </span>
+        {active && (
+          <Button variant="plain" onClick={onCancel}>
+            {t("dlCancel")}
+          </Button>
+        )}
+      </div>
+      {active && (
+        <ProgressBar value={p.total > 0 ? p.received / p.total : -1} />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 //  الرئيسية
 // ============================================================
 export const HomePage = memo(function HomePage({
   go,
-  notify,
   sys,
   scanning,
   onScan,
+  dl,
 }: {
   go: (p: Page) => void;
-  notify: (m: string) => void;
   sys: SystemInfo | null;
   scanning: boolean;
   onScan: () => void;
+  dl: Downloads;
 }) {
   const { t } = useI18n();
+  const engineDl = dl.items[ENGINE_ID];
+  const engineBtn = engineButtonState(engineDl, !!sys?.engine_installed);
 
   return (
     <div className="stack">
@@ -59,9 +132,14 @@ export const HomePage = memo(function HomePage({
           <Button
             variant="filled"
             icon={<Icon.Download size={15} />}
-            onClick={() => notify(t("soonEngine"))}
+            disabled={engineBtn !== "idle"}
+            onClick={() => dl.start(ENGINE_ID)}
           >
-            {t("installEngine")}
+            {engineBtn === "busy"
+              ? t("installing")
+              : engineBtn === "done"
+                ? t("dlDone")
+                : t("installEngine")}
           </Button>
           <Button
             variant="tinted"
@@ -72,6 +150,16 @@ export const HomePage = memo(function HomePage({
           </Button>
         </div>
       </section>
+
+      {/* شريط التنزيل — يظهر بس لما يكون فيه تنزيل */}
+      {engineDl && (
+        <div className="dl-panel">
+          <EngineDownloadBox
+            p={engineDl}
+            onCancel={() => dl.cancel(ENGINE_ID)}
+          />
+        </div>
+      )}
 
       {/* كروت الحالة */}
       <div className="grid">
@@ -263,11 +351,11 @@ export const BottlesPage = memo(function BottlesPage({
 //  الإعدادات — كل تغيير يُحفظ تلقائياً وفوراً
 // ============================================================
 export const SettingsPage = memo(function SettingsPage({
-  notify,
   sys,
+  dl,
 }: {
-  notify: (m: string) => void;
   sys: SystemInfo | null;
+  dl: Downloads;
 }) {
   const { t, choice: langChoice, setChoice: setLangChoice } = useI18n();
   const { theme, setTheme } = useTheme();
@@ -276,6 +364,9 @@ export const SettingsPage = memo(function SettingsPage({
     "jisr.gfx",
     "dxmt",
   );
+
+  const engineDl = dl.items[ENGINE_ID];
+  const engineBtn = engineButtonState(engineDl, !!sys?.engine_installed);
 
   return (
     <div className="stack narrow">
@@ -330,12 +421,32 @@ export const SettingsPage = memo(function SettingsPage({
       <Card title={t("engineSection")} icon={<Icon.Chip size={16} />}>
         <Row
           label={t("wineEngine")}
-          hint={sys?.engine_installed ? t("ready") : "Wine 11.x"}
+          hint={
+            sys?.engine_installed
+              ? t("ready")
+              : engineBtn === "busy"
+                ? t("installing")
+                : engineBtn === "done"
+                  ? t("dlDone")
+                  : "Wine 11.18"
+          }
         >
-          <Button variant="tinted" onClick={() => notify(t("soonEngine"))}>
-            {t("install")}
-          </Button>
+          {engineBtn === "idle" ? (
+            <Button variant="tinted" onClick={() => dl.start(ENGINE_ID)}>
+              {t("install")}
+            </Button>
+          ) : (
+            <span className="value muted">
+              {engineBtn === "busy" ? t("installing") : t("dlDone")}
+            </span>
+          )}
         </Row>
+        {engineDl && (
+          <EngineDownloadBox
+            p={engineDl}
+            onCancel={() => dl.cancel(ENGINE_ID)}
+          />
+        )}
         <Row label={t("graphicsLayer")}>
           <Segmented
             id="gfx"

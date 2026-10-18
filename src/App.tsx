@@ -5,13 +5,19 @@
 //  • الحركة: كاملة/مخففة/تلقائي — وMotionConfig يحترم القرار تلقائياً
 //  • الإعدادات تُحفظ تلقائياً + تذكّر آخر صفحة + اختصار ⌘,
 // ============================================================
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { useI18n, type TKey } from "./i18n";
 import { useTheme } from "./useTheme";
 import { useMotion } from "./useMotion";
 import { useSystem } from "./useSystem";
 import { useLogs } from "./useLogs";
+import {
+  useDownloads,
+  ENGINE_ID,
+  engineButtonState,
+  isActive,
+} from "./useDownloads";
 import { Button, SPRINGS, type IconComp } from "./ui";
 import {
   HomePage,
@@ -41,6 +47,7 @@ export default function App() {
 
   const { info: sys, scanning, scan } = useSystem(); // فحص حقيقي يبدأ تلقائياً
   const { logs, clear } = useLogs(); // السجل المباشر
+  const dl = useDownloads(); // محرّك التنزيل (يُدار في Rust)
 
   // نرجعك لآخر صفحة كنت فيها (وأول مرة: الرئيسية)
   const [page, setPage] = useState<Page>(() => {
@@ -120,6 +127,25 @@ export default function App() {
 
   const current = NAV.find((n) => n.id === page)!;
 
+  // حالة تنزيل المحرك (لشارة الشريط الجانبي + الأزرار)
+  const engineDl = dl.items[ENGINE_ID];
+  const engineBtn = engineButtonState(engineDl, !!sys?.engine_installed);
+
+  // لما يخلص تنزيل المحرك: إشعار + إعادة فحص تلقائي
+  const prevEnginePhase = useRef<string | null>(null);
+  useEffect(() => {
+    const phase = engineDl?.phase ?? null;
+    if (
+      phase === "done" &&
+      prevEnginePhase.current !== "done" &&
+      !sys?.engine_installed
+    ) {
+      notify(t("dlDone"));
+      void scan();
+    }
+    prevEnginePhase.current = phase;
+  }, [engineDl?.phase, notify, scan, sys?.engine_installed, t]);
+
   return (
     // reducedMotion: "always" لما الحركة مخففة ⇒ Motion يتوقف عن الحركات تلقائياً
     <MotionConfig reducedMotion={reduced ? "always" : "never"}>
@@ -166,10 +192,21 @@ export default function App() {
           <div className="sidebar-foot">
             <div className="engine-pill">
               <span
-                className={"dot " + (sys?.engine_installed ? "ok" : "off")}
+                className={
+                  "dot " +
+                  (sys?.engine_installed
+                    ? "ok"
+                    : isActive(engineDl)
+                      ? "busy"
+                      : "off")
+                }
               />
               <span>
-                {sys?.engine_installed ? t("ready") : t("notInstalled")}
+                {sys?.engine_installed
+                  ? t("ready")
+                  : isActive(engineDl) && engineDl && engineDl.total > 0
+                    ? `${Math.round((engineDl.received / engineDl.total) * 100)}%`
+                    : t("notInstalled")}
               </span>
             </div>
             <span className="foot-note">
@@ -198,9 +235,14 @@ export default function App() {
                   <Button
                     variant="filled"
                     icon={<Icon.Download size={15} />}
-                    onClick={() => notify(t("soonEngine"))}
+                    disabled={engineBtn !== "idle"}
+                    onClick={() => dl.start(ENGINE_ID)}
                   >
-                    {t("installEngine")}
+                    {engineBtn === "busy"
+                      ? t("installing")
+                      : engineBtn === "done"
+                        ? t("dlDone")
+                        : t("installEngine")}
                   </Button>
                 </>
               )}
@@ -260,17 +302,15 @@ export default function App() {
                 {page === "home" && (
                   <HomePage
                     go={setPage}
-                    notify={notify}
                     sys={sys}
                     scanning={scanning}
                     onScan={onScan}
+                    dl={dl}
                   />
                 )}
                 {page === "library" && <LibraryPage notify={notify} />}
                 {page === "bottles" && <BottlesPage notify={notify} />}
-                {page === "settings" && (
-                  <SettingsPage notify={notify} sys={sys} />
-                )}
+                {page === "settings" && <SettingsPage sys={sys} dl={dl} />}
                 {page === "logs" && <LogsPage logs={logs} onClear={onClear} />}
               </motion.div>
             </AnimatePresence>

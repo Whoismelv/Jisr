@@ -44,3 +44,48 @@ export const clearLogs = () => invoke<void>("clear_logs");
 /** نكتب سطر في السجل من الواجهة (بمفتاح + معاملات) */
 export const logLine = (level: string, key: string, params?: Record<string, unknown>) =>
   invoke<void>("log_line", { level, key, params: params ?? {} });
+
+// ============================================================
+//  محرّك التنزيل
+// ============================================================
+export type EngineAsset = {
+  id: string;
+  name: string;
+  version: string;
+  kind: string;
+  url: string;
+  sha256: string;
+  size: number;
+};
+
+export type DownloadPhase =
+  | "starting"
+  | "downloading"
+  | "verifying"
+  | "done"
+  | "error"
+  | "cancelled";
+
+export type DownloadProgress = {
+  id: string;
+  received: number;
+  total: number;
+  speed_bps: number;
+  phase: DownloadPhase;
+  error: string | null;
+};
+
+/** كتالوج المحركات الرسمي (إصدارات وبصمات موثّقة من المصدر) */
+export const getEngineCatalog = () => invoke<EngineAsset[]>("download_catalog");
+
+/** ابدأ تنزيل عنصر من الكتالوج (id مثل "wine-11.18") */
+export const startDownload = (id: string) =>
+  invoke<void>("download_start", { id });
+
+/** ألغِ التنزيل — الجزء المنزّل يُحفظ ويُستكمل لاحقاً */
+export const cancelDownload = (id: string) =>
+  invoke<void>("download_cancel", { id });
+
+/** آخر حالة معروفة لكل تنزيل (لما تُفتح الواجهة من جديد) */
+export const downloadsSnapshot = () =>
+  invoke<DownloadProgress[]>("downloads_snapshot");

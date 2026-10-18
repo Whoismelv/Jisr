@@ -1,0 +1,612 @@
+// ============================================================
+//  جسر — محرّك التنزيل الآمن
+//  • HTTPS فقط، ومن نطاقات موثوقة حصراً (GitHub) — وفحص *كل* تحويلة
+//  • تحقق SHA-256 من بصمة رسمية مثبّتة — ملف مخترق/تالف = يُرفض ويُحذف
+//  • استكمال بعد الانقطاع (HTTP Range) + إلغاء بدون فقدان المنزّل
+//  • تقدّم لحظي (نسبة + سرعة) يروح للواجهة كأحداث
+// ============================================================
+use serde::Serialize;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::io::AsyncWriteExt;
+
+use crate::{engines_dir, log, log_keys};
+
+/// النطاقات المسموحة — البنية التحتية الرسمية لـ GitHub فقط.
+/// تُفحص عند بدء الطلب *وعند كل تحويلة* (redirect) — لا استثناءات.
+const ALLOWED_HOSTS: &[&str] = &[
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "github-releases.githubusercontent.com",
+    "codeload.github.com",
+];
+
+/// سقف الحجم — حماية من رد ضخم غير منطقي (2GB)
+const MAX_SIZE: u64 = 2 * 1024 * 1024 * 1024;
+
+fn host_allowed(host: &str) -> bool {
+    ALLOWED_HOSTS.iter().any(|h| host.eq_ignore_ascii_case(h))
+}
+
+/// فحص رابط كامل: HTTPS إجباري + نطاق من القائمة البيضاء
+fn url_allowed(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .rsplit('@') // أي userinfo خبيث يُرفض فعلياً (نتجاهله وأمامنا المضيف)
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
+    host_allowed(host)
+}
+
+// ============================================================
+//  الكتالوج الرسمي — الإصدارات والبصمات موثّقة من GitHub API
+// ============================================================
+#[derive(Serialize, Clone)]
+pub struct Asset {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub version: &'static str,
+    pub kind: &'static str, // engine | graphics | tool
+    pub url: &'static str,
+    pub sha256: &'static str,
+    pub size: u64,
+}
+
+pub fn catalog() -> Vec<Asset> {
+    vec![Asset {
+        id: "wine-11.18",
+        name: "Wine",
+        version: "11.18",
+        kind: "engine",
+        url: "https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.18/wine-devel-11.18-osx64.tar.xz",
+        sha256: "aa0ea4c82e636ae7bca2076387cb0a5affa26509ad13f119ecd0d62bd7ba6f82",
+        size: 190_974_384,
+    }]
+}
+
+// ============================================================
+//  حالة التنزيلات
+// ============================================================
+#[derive(Serialize, Clone)]
+pub struct Progress {
+    pub id: String,
+    pub received: u64,
+    pub total: u64, // 0 = غير معروف
+    pub speed_bps: u64,
+    pub phase: String, // starting|downloading|verifying|done|error|cancelled
+    pub error: Option<String>,
+}
+
+pub struct DownloadHandle {
+    cancel: Arc<AtomicBool>,
+    running: bool,
+    last: Progress,
+}
+
+#[derive(Default)]
+pub struct DownloadsState(pub Mutex<HashMap<String, DownloadHandle>>);
+
+fn downloads_dir() -> PathBuf {
+    engines_dir().join("downloads")
+}
+
+/// حجم بصيغة مقروءة للبشر (للسجل)
+fn human_size(n: u64) -> String {
+    let mb = n as f64 / 1_048_576.0;
+    if mb >= 1024.0 {
+        format!("{:.2} GB", mb / 1024.0)
+    } else if mb >= 100.0 {
+        format!("{:.0} MB", mb)
+    } else {
+        format!("{:.1} MB", mb)
+    }
+}
+
+/// ننشر الحالة للواجهة فوراً + نخزّن آخر حالة (للعرض بعد إعادة الفتح)
+fn publish(app: &AppHandle, p: Progress) {
+    if let Some(st) = app.try_state::<DownloadsState>() {
+        if let Ok(mut m) = st.0.lock() {
+            if let Some(h) = m.get_mut(&p.id) {
+                h.last = p.clone();
+            }
+        }
+    }
+    let _ = app.emit("jisr-download", p);
+}
+
+fn set_running(app: &AppHandle, id: &str, running: bool) {
+    if let Some(st) = app.try_state::<DownloadsState>() {
+        if let Ok(mut m) = st.0.lock() {
+            if let Some(h) = m.get_mut(id) {
+                h.running = running;
+            }
+        }
+    }
+}
+
+/// فشل مؤدّب: يكتب في السجل + ينشر حالة الخطأ + يحرّر الحالة
+fn fail(app: &AppHandle, asset: &Asset, msg: String) {
+    log(
+        app,
+        "error",
+        log_keys::DOWNLOAD_FAILED,
+        json!({ "name": asset.name, "error": msg.clone() }),
+    );
+
+    // نبقى على آخر قيم معروفة (نسبة/حجم) بدل ما نصفّرها
+    let (received, total) = app
+        .try_state::<DownloadsState>()
+        .and_then(|st| {
+            st.0.lock()
+                .ok()
+                .and_then(|m| m.get(asset.id).map(|h| (h.last.received, h.last.total)))
+        })
+        .unwrap_or((0, 0));
+
+    publish(
+        app,
+        Progress {
+            id: asset.id.to_string(),
+            received,
+            total,
+            speed_bps: 0,
+            phase: "error".into(),
+            error: Some(msg),
+        },
+    );
+    set_running(app, asset.id, false);
+}
+
+/// بصمة SHA-256 للملف — قراءة متدفقة (ما نحمّل الملف كامل في الذاكرة)
+async fn sha256_file(path: &Path) -> std::io::Result<String> {
+    use tokio::io::AsyncReadExt;
+    let mut f = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 262_144];
+    loop {
+        let n = f.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+// ============================================================
+//  التنزيل نفسه (يعمل في الخلفية — الواجهة ما تتجمّد)
+// ============================================================
+async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
+    let id = asset.id;
+
+    let dir = downloads_dir();
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        fail(&app, &asset, format!("تعذّر إنشاء مجلد التنزيل: {e}"));
+        return;
+    }
+
+    // اسم الملف من الرابط + فحص أمان (ما فيه مسارات ولا رموز غريبة)
+    let file_name = asset.url.rsplit('/').next().unwrap_or("").to_string();
+    let name_ok = !file_name.is_empty()
+        && file_name.len() < 128
+        && file_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    if !name_ok {
+        fail(&app, &asset, "اسم ملف غير صالح في الرابط".into());
+        return;
+    }
+
+    let part = dir.join(format!("{file_name}.part"));
+    let final_path = dir.join(&file_name);
+
+    // منزّل وموثّق من قبل؟ نتحقق ونكتفي — بدون إعادة تحميل
+    if tokio::fs::metadata(&final_path)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+    {
+        let sz = tokio::fs::metadata(&final_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(asset.size);
+        publish(
+            &app,
+            Progress {
+                id: id.into(),
+                received: sz,
+                total: asset.size,
+                speed_bps: 0,
+                phase: "verifying".into(),
+                error: None,
+            },
+        );
+        match sha256_file(&final_path).await {
+            Ok(h) if h.eq_ignore_ascii_case(asset.sha256) => {
+                publish(
+                    &app,
+                    Progress {
+                        id: id.into(),
+                        received: sz,
+                        total: sz,
+                        speed_bps: 0,
+                        phase: "done".into(),
+                        error: None,
+                    },
+                );
+                log(
+                    &app,
+                    "info",
+                    log_keys::DOWNLOAD_DONE,
+                    json!({ "name": asset.name, "version": asset.version }),
+                );
+                set_running(&app, id, false);
+                return;
+            }
+            // ملف قديم تالف/جزء ناقص — نمسحه ونحمّل من جديد
+            _ => {
+                let _ = tokio::fs::remove_file(&final_path).await;
+            }
+        }
+    }
+
+    // عندنا جزء منزّل سابق؟ نكمّل من وين وقفنا
+    let existing = tokio::fs::metadata(&part).await.map(|m| m.len()).unwrap_or(0);
+
+    // العميل: تتبّع تحويلات GitHub فقط + HTTPS إجباري
+    let client = match reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::custom(|a| {
+            if a.previous().len() >= 10 {
+                return a.stop();
+            }
+            match a.url().host_str() {
+                Some(h) if a.url().scheme() == "https" && host_allowed(h) => a.follow(),
+                _ => a.stop(), // تحويلة لنطاق غير مسموح = نقطع فوراً
+            }
+        }))
+        .user_agent("Jisr/0.1 (macOS game launcher)")
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            fail(&app, &asset, format!("تعذّر تجهيز الاتصال: {e}"));
+            return;
+        }
+    };
+
+    let mut req = client.get(asset.url);
+    if existing > 0 {
+        req = req.header(reqwest::header::RANGE, format!("bytes={existing}-"));
+    }
+
+    let mut resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            fail(&app, &asset, format!("تعذّر بدء التنزيل: {e}"));
+            return;
+        }
+    };
+
+    if !resp.status().is_success() {
+        fail(
+            &app,
+            &asset,
+            format!("السيرفر رد بحالة غير متوقعة: {}", resp.status().as_u16()),
+        );
+        return;
+    }
+
+    // السيرفر دعم الاستكمال؟ (206 = يكمل من حيث توقفنا)
+    let resuming = existing > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    let mut received: u64 = if resuming { existing } else { 0 };
+    let remaining = resp.content_length().unwrap_or(0);
+    let total = if resuming {
+        existing.saturating_add(remaining)
+    } else {
+        remaining
+    };
+
+    if total > MAX_SIZE {
+        fail(&app, &asset, "حجم الملف أكبر من الحد المسموح — رفضناه".into());
+        return;
+    }
+
+    // ملف التنزيل: استكمال (إضافة) أو بداية جديدة (يمسح الجزء القديم)
+    let mut file = if resuming {
+        match tokio::fs::OpenOptions::new().append(true).open(&part).await {
+            Ok(f) => f,
+            Err(e) => {
+                fail(&app, &asset, format!("تعذّر فتح ملف الجزء: {e}"));
+                return;
+            }
+        }
+    } else {
+        match tokio::fs::File::create(&part).await {
+            Ok(f) => f,
+            Err(e) => {
+                fail(&app, &asset, format!("تعذّر إنشاء ملف التنزيل: {e}"));
+                return;
+            }
+        }
+    };
+
+    let shown_total = if total > 0 { total } else { asset.size };
+    log(
+        &app,
+        "info",
+        log_keys::DOWNLOAD_STARTED,
+        json!({
+            "name": asset.name,
+            "version": asset.version,
+            "size": human_size(shown_total),
+        }),
+    );
+
+    publish(
+        &app,
+        Progress {
+            id: id.into(),
+            received,
+            total,
+            speed_bps: 0,
+            phase: "downloading".into(),
+            error: None,
+        },
+    );
+
+    // ---------- حلقة الاستقبال ----------
+    let mut last_tick = Instant::now();
+    let mut last_bytes = received;
+    let mut failure: Option<String> = None;
+    let mut cancelled = false;
+
+    loop {
+        let chunk = tokio::select! {
+            r = resp.chunk() => r,
+            // نصحى كل 300ms نتأكد من الإلغاء (حتى لو التحميل متجمّد)
+            _ = tokio::time::sleep(Duration::from_millis(300)) => continue,
+        };
+
+        if cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            break;
+        }
+
+        match chunk {
+            Ok(Some(bytes)) => {
+                if let Err(e) = file.write_all(&bytes).await {
+                    failure = Some(format!("تعذّر الكتابة على القرص: {e}"));
+                    break;
+                }
+                received += bytes.len() as u64;
+
+                if received > MAX_SIZE {
+                    failure = Some("تجاوز الحجم المسموح — أوقفنا التنزيل".into());
+                    break;
+                }
+
+                // ننشر التقدّم كل ربع ثانية تقريباً (مريح للعين وخفيف على الواجهة)
+                let now = Instant::now();
+                let dt = now.duration_since(last_tick);
+                if dt.as_millis() >= 250 {
+                    let speed = ((received - last_bytes) as f64 / dt.as_secs_f64()) as u64;
+                    publish(
+                        &app,
+                        Progress {
+                            id: id.into(),
+                            received,
+                            total,
+                            speed_bps: speed,
+                            phase: "downloading".into(),
+                            error: None,
+                        },
+                    );
+                    last_tick = now;
+                    last_bytes = received;
+                }
+            }
+            Ok(None) => break, // وصلنا لنهاية الملف
+            Err(e) => {
+                failure = Some(format!("انقطع الاتصال: {e}"));
+                break;
+            }
+        }
+    }
+
+    let _ = file.flush().await;
+    drop(file);
+
+    // ---------- الإلغاء: نحفظ الجزء للاستكمال لاحقاً ----------
+    if cancelled {
+        publish(
+            &app,
+            Progress {
+                id: id.into(),
+                received,
+                total,
+                speed_bps: 0,
+                phase: "cancelled".into(),
+                error: None,
+            },
+        );
+        log(
+            &app,
+            "warn",
+            log_keys::DOWNLOAD_CANCELLED,
+            json!({ "name": asset.name }),
+        );
+        set_running(&app, id, false);
+        return;
+    }
+
+    if let Some(msg) = failure {
+        fail(&app, &asset, msg);
+        return;
+    }
+
+    // ---------- التحقق من البصمة (أهم خطوة أمنية) ----------
+    publish(
+        &app,
+        Progress {
+            id: id.into(),
+            received,
+            total,
+            speed_bps: 0,
+            phase: "verifying".into(),
+            error: None,
+        },
+    );
+
+    let hash = match sha256_file(&part).await {
+        Ok(h) => h,
+        Err(e) => {
+            fail(&app, &asset, format!("تعذّر قراءة الملف للتحقق: {e}"));
+            return;
+        }
+    };
+
+    if !hash.eq_ignore_ascii_case(asset.sha256) {
+        // لا يطابق البصمة الرسمية → يمسح فوراً، ما نلمسه أبداً
+        let _ = tokio::fs::remove_file(&part).await;
+        fail(
+            &app,
+            &asset,
+            "بصمة الملف لا تطابق البصمة الرسمية — حذفناه".into(),
+        );
+        return;
+    }
+
+    // البصمة صحيحة 100% → نثبّت الاسم النهائي
+    if let Err(e) = tokio::fs::rename(&part, &final_path).await {
+        fail(&app, &asset, format!("تعذّر تثبيت الملف النهائي: {e}"));
+        return;
+    }
+
+    let size = tokio::fs::metadata(&final_path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(received);
+
+    publish(
+        &app,
+        Progress {
+            id: id.into(),
+            received: size,
+            total: if total > 0 { total } else { size },
+            speed_bps: 0,
+            phase: "done".into(),
+            error: None,
+        },
+    );
+    log(
+        &app,
+        "info",
+        log_keys::DOWNLOAD_DONE,
+        json!({ "name": asset.name, "version": asset.version }),
+    );
+    set_running(&app, id, false);
+}
+
+// ============================================================
+//  أوامر Tauri
+// ============================================================
+
+/// كتالوج المحركات (الواجهة تعرض الأسماء/الإصدارات/الأحجام)
+#[tauri::command]
+pub fn download_catalog() -> Vec<Asset> {
+    catalog()
+}
+
+/// ابدأ تنزيل عنصر من الكتالوج (id مثل "wine-11.18")
+#[tauri::command]
+pub async fn download_start(
+    app: AppHandle,
+    state: State<'_, DownloadsState>,
+    id: String,
+) -> Result<(), String> {
+    let asset = catalog()
+        .into_iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| "معرّف غير معروف".to_string())?;
+
+    // الحارس الأول: الرابط HTTPS ومن نطاق مسموح — قبل أي اتصال
+    if !url_allowed(asset.url) {
+        return Err("رفضنا التنزيل — الرابط خارج النطاقات المسموحة".into());
+    }
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut map = state.0.lock().map_err(|_| "خطأ داخلي".to_string())?;
+        if map.get(&id).map(|h| h.running).unwrap_or(false) {
+            return Err("التنزيل شغّال أصلاً".into());
+        }
+        map.insert(
+            id.clone(),
+            DownloadHandle {
+                cancel: cancel.clone(),
+                running: true,
+                last: Progress {
+                    id: id.clone(),
+                    received: 0,
+                    total: asset.size,
+                    speed_bps: 0,
+                    phase: "starting".into(),
+                    error: None,
+                },
+            },
+        );
+    }
+
+    // ننشر حالة البداية فوراً (الواجهة تعرض "جاري التحضير…")
+    publish(
+        &app,
+        Progress {
+            id,
+            received: 0,
+            total: asset.size,
+            speed_bps: 0,
+            phase: "starting".into(),
+            error: None,
+        },
+    );
+
+    tauri::async_runtime::spawn(run_download(app, asset, cancel));
+    Ok(())
+}
+
+/// ألغِ تنزيل — الجزء المنزّل يُحفظ (نستكمل أي وقت لاحق)
+#[tauri::command]
+pub fn download_cancel(state: State<'_, DownloadsState>, id: String) {
+    if let Ok(m) = state.0.lock() {
+        if let Some(h) = m.get(&id) {
+            h.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// آخر حالة معروفة لكل تنزيل (لما تُفتح الواجهة من جديد)
+#[tauri::command]
+pub fn downloads_snapshot(state: State<'_, DownloadsState>) -> Vec<Progress> {
+    state
+        .0
+        .lock()
+        .map(|m| m.values().map(|h| h.last.clone()).collect())
+        .unwrap_or_default()
+}
