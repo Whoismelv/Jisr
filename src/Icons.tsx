@@ -118,6 +118,12 @@ export const Play = (p: IconProps) => (
   </Svg>
 );
 
+export const Stop = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="6.4" y="6.4" width="11.2" height="11.2" rx="2.6" />
+  </Svg>
+);
+
 export const Monitor = (p: IconProps) => (
   <Svg {...p}>
     <rect x="3" y="4.6" width="18" height="12.2" rx="2.2" />

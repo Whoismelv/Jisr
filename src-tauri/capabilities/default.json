@@ -20,6 +20,7 @@
         { "url": "https://*.apple.com/*" }
       ]
     },
-    "opener:allow-reveal-item-in-dir"
+    "opener:allow-reveal-item-in-dir",
+    "dialog:allow-open"
   ]
 }

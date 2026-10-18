@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 mod bottle;
 mod download;
 mod engine;
+mod game;
 
 // ---------- الأنواع اللي تروح للواجهة ----------
 #[derive(Serialize, Clone, Default)]
@@ -76,6 +77,13 @@ pub mod log_keys {
     pub const BOTTLE_READY: &str = "log.bottleReady";
     pub const BOTTLE_FAILED: &str = "log.bottleFailed";
     pub const BOTTLE_DELETED: &str = "log.bottleDeleted";
+    // الألعاب
+    pub const GAME_ADDED: &str = "log.gameAdded";
+    pub const GAME_REMOVED: &str = "log.gameRemoved";
+    pub const GAME_LAUNCHING: &str = "log.gameLaunching";
+    pub const GAME_EXITED: &str = "log.gameExited";
+    pub const GAME_STOPPED: &str = "log.gameStopped";
+    pub const GAME_LAUNCH_FAILED: &str = "log.gameLaunchFailed";
 }
 
 const MAX_LOGS: usize = 800;
@@ -397,9 +405,11 @@ fn log_line(app: AppHandle, level: String, key: String, params: Option<Value>) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(LogState::default())
         .manage(download::DownloadsState::default())
         .manage(bottle::BottlesState::default())
+        .manage(game::GamesState::default())
         .invoke_handler(tauri::generate_handler![
             system_info,
             get_logs,
@@ -412,11 +422,19 @@ pub fn run() {
             bottle::bottles_list,
             bottle::bottle_create,
             bottle::bottle_retry,
-            bottle::bottle_delete
+            bottle::bottle_delete,
+            game::games_list,
+            game::game_add,
+            game::game_remove,
+            game::game_launch,
+            game::game_stop
         ])
         .setup(|app| {
             // نظافة: نمسح بقايا أي فك ضغط مات في جلسة سابقة
             engine::cleanup_staging();
+
+            // نحمّل مكتبة الألعاب المحفوظة
+            game::init(app.handle());
 
             log(
                 app.handle(),

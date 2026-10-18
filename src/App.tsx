@@ -19,6 +19,7 @@ import {
   isActive,
 } from "./useDownloads";
 import { useBottles } from "./useBottles";
+import { useGames } from "./useGames";
 import { Button, SPRINGS, type IconComp } from "./ui";
 import {
   HomePage,
@@ -71,6 +72,8 @@ export default function App() {
     const id = window.setTimeout(() => setToast(null), 2400);
     return () => window.clearTimeout(id);
   }, [toast]);
+
+  const games = useGames(notify); // مكتبة الألعاب (تحتاج الإشعار — بعد تعريفه)
 
   // نافذة الماك: فئة على <html> تضبط أضواء النافذة فوق المحتوى
   const [isMac] = useState(() => /Mac|iPhone|iPad/.test(navigator.userAgent));
@@ -256,7 +259,7 @@ export default function App() {
                 <Button
                   variant="filled"
                   icon={<Icon.Plus size={15} />}
-                  onClick={() => notify(t("soonGames"))}
+                  onClick={() => games.add()}
                 >
                   {t("addGame")}
                 </Button>
@@ -313,7 +316,7 @@ export default function App() {
                     dl={dl}
                   />
                 )}
-                {page === "library" && <LibraryPage notify={notify} />}
+                {page === "library" && <LibraryPage games={games} bottles={bottles} />}
                 {page === "bottles" && <BottlesPage bottles={bottles} sys={sys} />}
                 {page === "settings" && <SettingsPage sys={sys} dl={dl} />}
                 {page === "logs" && <LogsPage logs={logs} onClear={onClear} />}

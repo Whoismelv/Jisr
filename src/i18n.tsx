@@ -69,6 +69,27 @@ const ar = {
   filterFiles: "ملفات",
   libraryEmptyTitle: "مكتبتك فاضية",
   libraryEmptyDesc: "أضف أول لعبة، وبنضبط كل شي تلقائياً — من ستيم أو ملف .exe.",
+  exeFiles: "برامج ويندوز",
+  allFiles: "كل الملفات",
+  gamePlay: "شغّل",
+  gameStop: "أوقف",
+  gameRunningNow: "شغالة الآن",
+  gamePlayed: "لعبتها {dur}",
+  gameReveal: "إظهار في المجلد",
+  gameRemove: "حذف",
+  gameRemoveWarn: "متأكد؟ تنمسح من المكتبة فقط — ملفات اللعبة ما تنمسح.",
+  gameRemoveYes: "امسحها من المكتبة",
+  gameRemoveNo: "تراجع",
+  gameAddedToast: "أُضيفت «{name}» للمكتبة ✓",
+  gameExitToast: "انتهت «{name}» · مدة اللعب {dur}",
+  gameStopToast: "أوقفت «{name}»",
+  gameFailedToast: "«{name}» ما اشتغلت — السجل فيه التفاصيل",
+  gameNeedBottle:
+    "جهّز القارورة الرئيسية أول (صفحة القوارير) — بعدها زر التشغيل يصير جاهز.",
+  libraryNoMatch: "ما فيه ألعاب بهذا التصنيف حالياً.",
+  libraryNoteTitle: "وين ملفات ألعابي؟",
+  libraryNoteDesc:
+    "ملفات اللعبة تبقى بمكانها على الماك — جسر يشغلها من مكانها عبر قرص خاص لها فقط، وباقي ملفات جهازك تبقى بعيدة عن اللعبة (بديل Z: الآمن).",
 
   // القوارير
   bottleWhatTitle: "شنو القارورة؟",
@@ -161,6 +182,12 @@ const ar = {
   "log.bottleReady": "{name} جاهزة ✓",
   "log.bottleFailed": "فشل تجهيز {name}: {error}",
   "log.bottleDeleted": "حُذفت {name}",
+  "log.gameAdded": "أُضيفت {name} للمكتبة",
+  "log.gameRemoved": "حُذفت {name} من المكتبة",
+  "log.gameLaunching": "جاري تشغيل {name}…",
+  "log.gameExited": "انتهت {name} — مدة اللعب {dur}",
+  "log.gameStopped": "أوقفت {name} — مدة اللعب {dur}",
+  "log.gameLaunchFailed": "فشل تشغيل {name}: {error}",
 };
 
 export type TKey = keyof typeof ar;
@@ -221,6 +248,28 @@ const en: Record<TKey, string> = {
   libraryEmptyTitle: "Your library is empty",
   libraryEmptyDesc:
     "Add your first game and we'll handle the setup — from Steam or an .exe file.",
+  exeFiles: "Windows apps",
+  allFiles: "All files",
+  gamePlay: "Play",
+  gameStop: "Stop",
+  gameRunningNow: "Running now",
+  gamePlayed: "Played {dur}",
+  gameReveal: "Show in folder",
+  gameRemove: "Remove",
+  gameRemoveWarn:
+    "Sure? Removes it from the library only — game files are not deleted.",
+  gameRemoveYes: "Remove from library",
+  gameRemoveNo: "Cancel",
+  gameAddedToast: "Added “{name}” to your library ✓",
+  gameExitToast: "“{name}” ended · played {dur}",
+  gameStopToast: "Stopped “{name}”",
+  gameFailedToast: "“{name}” didn't start — check the log",
+  gameNeedBottle:
+    "Set up the Main Bottle first (Bottles page) — then Play becomes ready.",
+  libraryNoMatch: "No games in this category yet.",
+  libraryNoteTitle: "Where do my game files live?",
+  libraryNoteDesc:
+    "Game files stay where they are on your Mac — Jisr runs them from there through a dedicated drive for that game only, keeping the rest of your Mac out of reach (the safe Z: replacement).",
 
   bottleWhatTitle: "What's a bottle?",
   bottleWhatDesc:
@@ -309,6 +358,12 @@ const en: Record<TKey, string> = {
   "log.bottleReady": "{name} is ready ✓",
   "log.bottleFailed": "Failed to set up {name}: {error}",
   "log.bottleDeleted": "Deleted {name}",
+  "log.gameAdded": "Added {name} to library",
+  "log.gameRemoved": "Removed {name} from library",
+  "log.gameLaunching": "Launching {name}…",
+  "log.gameExited": "{name} ended — played {dur}",
+  "log.gameStopped": "Stopped {name} — played {dur}",
+  "log.gameLaunchFailed": "Failed to launch {name}: {error}",
 };
 
 export const dicts = { ar, en };

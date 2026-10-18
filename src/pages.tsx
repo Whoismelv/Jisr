@@ -18,7 +18,7 @@ import {
   StatusRow,
 } from "./ui";
 import * as Icon from "./Icons";
-import type { Bottle, DownloadProgress, LogEntry, SystemInfo } from "./api";
+import type { Bottle, DownloadProgress, Game, LogEntry, SystemInfo } from "./api";
 import {
   ENGINE_ID,
   engineButtonState,
@@ -28,6 +28,8 @@ import {
   type Downloads,
 } from "./useDownloads";
 import type { Bottles } from "./useBottles";
+import { fmtPlayed, type Games } from "./useGames";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 export type Page = "home" | "library" | "bottles" | "settings" | "logs";
 
@@ -281,12 +283,25 @@ export const HomePage = memo(function HomePage({
 //  المكتبة
 // ============================================================
 export const LibraryPage = memo(function LibraryPage({
-  notify,
+  games,
+  bottles,
 }: {
-  notify: (m: string) => void;
+  games: Games;
+  bottles: Bottles;
 }) {
   const { t } = useI18n();
   const [filter, setFilter] = useState<"all" | "steam" | "files">("all");
+
+  const mainReady = bottles.items.some(
+    (b) => b.kind === "main" && b.state === "ready",
+  );
+  const filtered = games.items.filter((g) =>
+    filter === "all"
+      ? true
+      : filter === "steam"
+        ? g.kind === "steam"
+        : g.kind !== "steam",
+  );
 
   return (
     <div className="stack">
@@ -303,25 +318,132 @@ export const LibraryPage = memo(function LibraryPage({
         />
       </div>
 
-      <Card>
-        <Empty
-          icon={<Icon.Gamepad size={26} />}
-          title={t("libraryEmptyTitle")}
-          desc={t("libraryEmptyDesc")}
-          action={
-            <Button
-              variant="filled"
-              icon={<Icon.Plus size={15} />}
-              onClick={() => notify(t("soonGames"))}
-            >
-              {t("addGame")}
-            </Button>
-          }
-        />
+      {games.items.length === 0 ? (
+        <Card>
+          <Empty
+            icon={<Icon.Gamepad size={26} />}
+            title={t("libraryEmptyTitle")}
+            desc={t("libraryEmptyDesc")}
+            action={
+              <Button
+                variant="filled"
+                icon={<Icon.Plus size={15} />}
+                onClick={() => games.add()}
+              >
+                {t("addGame")}
+              </Button>
+            }
+          />
+        </Card>
+      ) : (
+        <>
+          {!mainReady && (
+            <p className="muted small">{t("gameNeedBottle")}</p>
+          )}
+          {filtered.map((g) => (
+            <GameCard key={g.id} g={g} games={games} bottleReady={mainReady} />
+          ))}
+          {filtered.length === 0 && (
+            <Card>
+              <p className="muted">{t("libraryNoMatch")}</p>
+            </Card>
+          )}
+        </>
+      )}
+
+      <Card title={t("libraryNoteTitle")} icon={<Icon.Sparkle size={16} />}>
+        <p className="muted">{t("libraryNoteDesc")}</p>
       </Card>
     </div>
   );
 });
+
+/** بطاقة لعبة: الحالة + وقت اللعب + الأزرار حسب الحالة */
+function GameCard({
+  g,
+  games,
+  bottleReady,
+}: {
+  g: Game;
+  games: Games;
+  bottleReady: boolean;
+}) {
+  const { t } = useI18n();
+  const [confirm, setConfirm] = useState(false);
+  const running = g.running;
+
+  return (
+    <Card title={g.name} icon={<Icon.Gamepad size={16} />}>
+      <div className="bottle-row">
+        <span className={"dot " + (running ? "busy" : "ok")} />
+        <span className="value">
+          {running
+            ? t("gameRunningNow")
+            : t("gamePlayed", { dur: fmtPlayed(g.played_ms) })}
+        </span>
+        <span className="muted small">
+          {g.kind === "steam" ? t("filterSteam") : t("filterFiles")}
+        </span>
+      </div>
+
+      <div className="row-actions">
+        {running ? (
+          <Button
+            variant="tinted"
+            icon={<Icon.Stop size={13} />}
+            onClick={() => games.stop(g.id)}
+          >
+            {t("gameStop")}
+          </Button>
+        ) : (
+          <Button
+            variant="filled"
+            icon={<Icon.Play size={13} />}
+            disabled={!bottleReady}
+            onClick={() => games.launch(g.id)}
+          >
+            {t("gamePlay")}
+          </Button>
+        )}
+
+        <Button
+          variant="plain"
+          onClick={() => void revealItemInDir(g.exe).catch(() => {})}
+        >
+          {t("gameReveal")}
+        </Button>
+
+        {!running && !confirm && (
+          <Button
+            variant="plain"
+            icon={<Icon.Trash size={15} />}
+            onClick={() => setConfirm(true)}
+          >
+            {t("gameRemove")}
+          </Button>
+        )}
+      </div>
+
+      {confirm && (
+        <div className="row-actions">
+          <span className="muted small">{t("gameRemoveWarn")}</span>
+          <Button
+            variant="tinted"
+            onClick={() => {
+              games.remove(g.id);
+              setConfirm(false);
+            }}
+          >
+            {t("gameRemoveYes")}
+          </Button>
+          <Button variant="plain" onClick={() => setConfirm(false)}>
+            {t("gameRemoveNo")}
+          </Button>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 // ============================================================
 //  القوارير

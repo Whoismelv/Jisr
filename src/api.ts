@@ -124,3 +124,34 @@ export const bottleRetry = (id: string, simulate = false) =>
 
 /** حذف قارورة خاصة (الرئيسية محميّة في الخلفية) */
 export const bottleDelete = (id: string) => invoke<void>("bottle_delete", { id });
+
+// ============================================================
+//  الألعاب
+// ============================================================
+export type Game = {
+  id: string;
+  name: string;
+  /** exe | steam (ستيم: مرحلة لاحقة) */
+  kind: string;
+  exe: string;
+  dir: string;
+  bottle: string;
+  played_ms: number;
+  added_ms: number;
+  running: boolean;
+};
+
+/** كل الألعاب مع حالة التشغيل */
+export const gamesList = () => invoke<Game[]>("games_list");
+
+/** إضافة لعبة من مسار .exe (يجي من نافذة الاختيار الأصلية) */
+export const gameAdd = (exe: string) => invoke<Game>("game_add", { exe });
+
+/** حذف لعبة من المكتبة (ملفاتها ما تُمس) */
+export const gameRemove = (id: string) => invoke<void>("game_remove", { id });
+
+/** تشغيل لعبة داخل قارورتها */
+export const gameLaunch = (id: string) => invoke<void>("game_launch", { id });
+
+/** إيقاف لعبة شغّالة */
+export const gameStop = (id: string) => invoke<void>("game_stop", { id });

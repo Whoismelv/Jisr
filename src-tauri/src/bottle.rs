@@ -67,12 +67,18 @@ pub struct BottlesState(pub Mutex<HashSet<String>>);
 //  المسارات والملفات
 // ============================================================
 
-fn bottles_dir() -> PathBuf {
+pub(crate) fn bottles_dir() -> PathBuf {
     data_dir().join("bottles")
 }
 
-fn bottle_dir(id: &str) -> PathBuf {
+pub(crate) fn bottle_dir(id: &str) -> PathBuf {
     bottles_dir().join(id)
+}
+
+/// هل القارورة جاهزة فعلاً؟ (الحالة + وجود ملفات ويندوز)
+pub(crate) fn bottle_ready(id: &str) -> bool {
+    read_meta(id).map(|m| m.state == "ready").unwrap_or(false)
+        && bottle_dir(id).join("drive_c").is_dir()
 }
 
 fn meta_path(id: &str) -> PathBuf {
@@ -129,7 +135,7 @@ fn remove_z_drive(prefix: &Path) {
 }
 
 /// ملف تشغيل Wine من أول محرك بنوع engine في الكتالوج
-fn wine_bin() -> Option<PathBuf> {
+pub(crate) fn wine_bin() -> Option<PathBuf> {
     let id = download::catalog().into_iter().find(|a| a.kind == "engine")?.id;
     engine::wine_bin(id)
 }
