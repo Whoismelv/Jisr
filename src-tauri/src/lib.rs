@@ -172,6 +172,9 @@ pub struct SystemInfo {
     pub engine_installed: bool,
     pub engine_path: Option<String>,
     pub graphics_layer: Option<String>,
+    /// متطلب Wine على الماك — GStreamer.framework (أي إصدار 1.x حديث يكفي)
+    pub gstreamer_installed: bool,
+    pub gstreamer_version: Option<String>,
 }
 
 /// حدث سجل: مفتاح نصي + معاملات → الواجهة تترجم بأي لغة
@@ -445,6 +448,30 @@ fn detect_graphics_layer(engine_path: &std::path::Path) -> Option<String> {
 // ============================================================
 //  فحص الجهاز
 // ============================================================
+/// مسار إطار GStreamer الرسمي (متطلب Wine على الماك — يحتاج تثبيت «لكل المستخدمين»)
+pub const GSTREAMER_FRAMEWORK: &str = "/Library/Frameworks/GStreamer.framework";
+
+/// يكشف إصدار GStreamer من داخل الإطار (مثل «1.28.5») بلا أي تنزيل أو تعديل.
+/// أي إصدار 1.x حديث يكفي — ما نفرض رقماً محدداً.
+pub fn gstreamer_version() -> Option<String> {
+    let bin = format!("{GSTREAMER_FRAMEWORK}/Versions/1.0/bin/gst-launch-1.0");
+    if !std::path::Path::new(&bin).exists() {
+        return None;
+    }
+    let out = std::process::Command::new(&bin)
+        .arg("--version")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    // السطر الأول مثل: «gst-launch-1.0 version 1.28.5»
+    let v = text.split_whitespace().last()?.trim().to_string();
+    if v.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        Some(v)
+    } else {
+        None
+    }
+}
+
 /// فحص الماك — بمدخلات محقونة (شغّال أوامر + نتيجة فحص Rosetta + كروت الشاشة)
 /// ليش؟ لأن مسار الماك **ما يشتغل أبداً** على جهاز التطوير (ويندوز) —
 /// فبدون الحقن ما ينختبر أبداً. كذا نقدر نتحقق من قراءات الماك كلها.
@@ -453,6 +480,7 @@ fn detect_macos_with(
     gpus: Vec<GpuInfo>,
     rosetta_present: bool,
     arch: &str,
+    gstreamer: (bool, Option<String>),
 ) -> SystemInfo {
     let mut info = SystemInfo {
         arch: arch.to_string(),
@@ -468,6 +496,8 @@ fn detect_macos_with(
         .map(|b| b / 1024 / 1024);
     info.gpus = gpus;
     info.rosetta_installed = arch == "aarch64" && rosetta_present;
+    info.gstreamer_installed = gstreamer.0;
+    info.gstreamer_version = gstreamer.1;
     info
 }
 
@@ -483,6 +513,10 @@ fn detect_system() -> SystemInfo {
             macos_gpus(),
             std::path::Path::new("/Library/Apple/usr/libexec/oah").exists(),
             &info.arch.clone(),
+            (
+                std::path::Path::new(GSTREAMER_FRAMEWORK).exists(),
+                gstreamer_version(),
+            ),
         );
     } else {
         windows_info(&mut info);
@@ -991,6 +1025,9 @@ pub fn run() {
             } else {
                 std::env::consts::OS.to_string()
             };
+            // متطلب Wine على الماك — نكشفه ونعرض إصداره (أي إصدار 1.x حديث يكفي)
+            let gst_found = std::path::Path::new(GSTREAMER_FRAMEWORK).exists();
+            let gst_ver = if gst_found { gstreamer_version() } else { None };
             debuglog::raw(
                 "info",
                 "startup",
@@ -1009,9 +1046,20 @@ pub fn run() {
                     "log={} | rosetta={} | gstreamer={}",
                     log_path.display(),
                     std::path::Path::new("/Library/Apple/usr/libexec/oah").exists(),
-                    std::path::Path::new("/Library/Frameworks/GStreamer.framework").exists(),
+                    match &gst_ver {
+                        Some(v) => v.clone(),
+                        None if gst_found => "installed (version unknown)".to_string(),
+                        None => "missing".to_string(),
+                    },
                 ),
             );
+            if !gst_found {
+                debuglog::raw(
+                    "warn",
+                    "prereq",
+                    "gstreamer: not installed (Wine media needs it)",
+                );
+            }
             match bottle::wine_bin() {
                 Some(w) => {
                     let ver = std::process::Command::new(&w)

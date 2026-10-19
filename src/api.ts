@@ -46,6 +46,8 @@ export type SystemInfo = {
   engine_installed: boolean;
   engine_path: string | null;
   graphics_layer: string | null;
+  gstreamer_installed: boolean;
+  gstreamer_version: string | null;
 };
 
 export type LogEntry = {

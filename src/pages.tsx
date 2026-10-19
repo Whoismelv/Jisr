@@ -216,6 +216,19 @@ export const HomePage = memo(function HomePage({
             state={!sys ? "busy" : sys.graphics_layer ? "ok" : "off"}
             value={sys?.graphics_layer ?? undefined}
           />
+          <StatusRow
+            label={t("gstreamerLabel")}
+            state={
+              !sys
+                ? "busy"
+                : sys.os_name !== "macOS"
+                  ? "na"
+                  : sys.gstreamer_installed
+                    ? "ok"
+                    : "off"
+            }
+            value={sys?.gstreamer_version ?? undefined}
+          />
         </Card>
 
         <Card title={t("yourLibrary")} icon={<Icon.Gamepad size={16} />}>

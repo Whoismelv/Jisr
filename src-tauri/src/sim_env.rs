@@ -273,7 +273,7 @@ fn macos_detection_reads_the_real_values() {
         cores: Some(24),
         vram_mb: None,
     }];
-    let info = crate::detect_macos_with(&run, gpus, true, "aarch64");
+    let info = crate::detect_macos_with(&run, gpus, true, "aarch64", (true, Some("1.28.5".into())));
     assert_eq!(info.os_name, "macOS");
     assert_eq!(info.os_version, "26.6.1");
     assert!(info.is_apple_silicon);
@@ -281,17 +281,21 @@ fn macos_detection_reads_the_real_values() {
     assert_eq!(info.cpu_cores, Some(10));
     assert_eq!(info.memory_mb, Some(32768), "32GB لازم تطلع 32768");
     assert!(info.rosetta_installed);
+    assert!(info.gstreamer_installed, "متطلب Wine لازم يظهر في الفحص");
+    assert_eq!(info.gstreamer_version.as_deref(), Some("1.28.5"));
     assert_eq!(info.gpus.len(), 1);
     assert_eq!(info.gpus[0].name, "Apple M1 Max");
 
-    // إنتل بدون Rosetta
-    let intel = crate::detect_macos_with(&run, vec![], false, "x86_64");
+    // إنتل بدون Rosetta + بدون GStreamer
+    let intel = crate::detect_macos_with(&run, vec![], false, "x86_64", (false, None));
     assert!(!intel.is_apple_silicon);
     assert!(!intel.rosetta_installed);
+    assert!(!intel.gstreamer_installed);
+    assert_eq!(intel.gstreamer_version, None);
 
     // أوامر ناقصة — لازم ما ينهار
     let empty = |_: &str, _: &[&str]| -> Option<String> { None };
-    let bare = crate::detect_macos_with(&empty, vec![], false, "aarch64");
+    let bare = crate::detect_macos_with(&empty, vec![], false, "aarch64", (false, None));
     assert_eq!(bare.os_version, "");
     assert_eq!(bare.memory_mb, None);
     assert_eq!(bare.cpu_cores, None);
