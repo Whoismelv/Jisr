@@ -298,7 +298,7 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     }
 
     // عندنا جزء منزّل سابق؟ نكمّل من وين وقفنا
-    let existing = tokio::fs::metadata(&part).await.map(|m| m.len()).unwrap_or(0);
+    let mut existing = tokio::fs::metadata(&part).await.map(|m| m.len()).unwrap_or(0);
 
     // العميل: تتبّع تحويلات GitHub فقط + HTTPS إجباري
     let client = match reqwest::Client::builder()
@@ -336,7 +336,7 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         }
     };
 
-    if !resp.status().is_success() {
+    if !resp.status().is_success() && !(resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && existing > 0) {
         fail(
             &app,
             &asset,
@@ -344,6 +344,29 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
             format!("السيرفر رد بحالة غير متوقعة: {}", resp.status().as_u16()),
         );
         return;
+    }
+
+    // الجزء اللي عندنا طلع كامل أصلاً (416) → نمسحه ونطلب من جديد من الصفر
+    if resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        let _ = tokio::fs::remove_file(&part).await;
+        existing = 0;
+        let again = client.get(asset.url); // بلا ترويسة Range = طلب كامل جديد
+        resp = match again.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر بدء التنزيل: {e}"));
+                return;
+            }
+        };
+        if !resp.status().is_success() {
+            fail(
+                &app,
+                &asset,
+                log_keys::DOWNLOAD_FAILED, "download",
+                format!("السيرفر رد بحالة غير متوقعة: {}", resp.status().as_u16()),
+            );
+            return;
+        }
     }
 
     // السيرفر دعم الاستكمال؟ (206 = يكمل من حيث توقفنا)
@@ -409,15 +432,17 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
 
     loop {
         let chunk = tokio::select! {
-            r = resp.chunk() => r,
+            r = resp.chunk() => Some(r),
             // نصحى كل 300ms نتأكد من الإلغاء (حتى لو التحميل متجمّد)
-            _ = tokio::time::sleep(Duration::from_millis(300)) => continue,
+            _ = tokio::time::sleep(Duration::from_millis(300)) => None,
         };
 
         if cancel.load(Ordering::Relaxed) {
             cancelled = true;
             break;
         }
+
+        let Some(chunk) = chunk else { continue };
 
         match chunk {
             Ok(Some(bytes)) => {

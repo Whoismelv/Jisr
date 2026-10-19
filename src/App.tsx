@@ -335,6 +335,7 @@ export default function App() {
                     scanning={scanning}
                     onScan={onScan}
                     dl={dl}
+                    games={games}
                   />
                 )}
                 {page === "library" && (

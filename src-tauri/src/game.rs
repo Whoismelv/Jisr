@@ -128,6 +128,31 @@ fn fmt_dur(ms: u64) -> String {
     }
 }
 
+/// ملف تسجيل كلام اللعبة الكامل (stdout + stderr) لآخر تشغيل — لكل لعبة ملفها —
+/// تشخيص ميداني بلا نمو ذاكرة على الجلسات الطويلة (نفس أسلوب ستيم)
+fn run_log_path(id: &str) -> PathBuf {
+    data_dir().join("logs").join(format!("run-{id}.log"))
+}
+
+/// نوجّه كلام اللعبة كامل لملف (بدل الأنابيب اللي تضيع عند الإيقاف اليدوي)
+fn stdio_to_log(id: &str) -> (Stdio, Stdio) {
+    let path = run_log_path(id);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match std::fs::File::create(&path).and_then(|f| f.try_clone().map(|c| (f, c))) {
+        Ok((out, err)) => (Stdio::from(out), Stdio::from(err)),
+        Err(_) => (Stdio::null(), Stdio::null()),
+    }
+}
+
+/// آخر سطور من كلام اللعبة — تُضاف لرسائل الفشل السريع
+fn log_tail(id: &str, n: usize) -> String {
+    std::fs::read(run_log_path(id))
+        .map(|b| crate::tail_lines(&b, n))
+        .unwrap_or_default()
+}
+
 // ============================================================
 //  المسارات — البديل الآمن عن Z:
 // ============================================================
@@ -362,13 +387,14 @@ pub async fn game_launch(
     })?;
 
     // نبني الأمر — بلا shell إطلاقاً (args مباشرة، ما فيه حقن)
+    let (out, err) = stdio_to_log(&meta.id);
     let mut cmd = tokio::process::Command::new(&wine);
     cmd.env("WINEPREFIX", bottle::bottle_dir(&meta.bottle))
         .arg(&dos_exe)
         .current_dir(&cwd)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(out)
+        .stderr(err);
     for a in meta.args.split_whitespace() {
         cmd.arg(a);
     }
@@ -404,10 +430,7 @@ pub async fn game_launch(
         let res = child.wait_with_output().await;
         let played = crate::now_ms().saturating_sub(started);
         let code = res.as_ref().ok().and_then(|o| o.status.code());
-        let stderr_tail = res
-            .as_ref()
-            .map(|o| crate::tail_lines(&o.stderr, 3))
-            .unwrap_or_default();
+        let stderr_tail = log_tail(&id2, 3);
 
         // نجمع وقت اللعب + ننظف حالة الشغل
         let (stop_requested, snapshot) = match app2.try_state::<GamesState>() {

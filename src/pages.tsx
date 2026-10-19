@@ -133,12 +133,14 @@ export const HomePage = memo(function HomePage({
   scanning,
   onScan,
   dl,
+  games,
 }: {
   go: (p: Page) => void;
   sys: SystemInfo | null;
   scanning: boolean;
   onScan: () => void;
   dl: Downloads;
+  games: Games;
 }) {
   const { t } = useI18n();
   const engineDl = dl.items[ENGINE_ID];
@@ -216,8 +218,10 @@ export const HomePage = memo(function HomePage({
         </Card>
 
         <Card title={t("yourLibrary")} icon={<Icon.Gamepad size={16} />}>
-          <div className="stat-figure">0</div>
-          <p className="muted small">{t("noGames")}</p>
+          <div className="stat-figure">{games.items.length}</div>
+          <p className="muted small">
+            {games.items.length > 0 ? t("libraryGamesIn") : t("noGames")}
+          </p>
           <Button variant="plain" onClick={() => go("library")}>
             {t("openLibrary")}
           </Button>
