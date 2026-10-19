@@ -16,7 +16,7 @@ const ar = {
   appTitle: "جسر — ألعاب ويندوز على الماك",
   appName: "جسر",
   tagline: "ألعاب ويندوز على الماك",
-  preview: "نسخة تجريبية 0.1.0",
+  preview: "نسخة تجريبية",
   openSource: "مشروع مفتوح المصدر",
 
   // التنقّل
@@ -275,7 +275,7 @@ const en: Record<TKey, string> = {
   appTitle: "Jisr — Windows games on Mac",
   appName: "Jisr",
   tagline: "Windows games on Mac",
-  preview: "Preview 0.1.0",
+  preview: "Preview",
   openSource: "Open source project",
 
   navHome: "Home",
