@@ -4,6 +4,7 @@
 //  كل صفحة memo ⇒ لا تُعاد رسمها إلا لما تخصها يتغيّر فقط
 // ============================================================
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { useI18n, type TKey } from "./i18n";
 import { useTheme } from "./useTheme";
 import {
@@ -41,6 +42,7 @@ import {
   type Downloads,
 } from "./useDownloads";
 import type { Bottles } from "./useBottles";
+import type { Updates } from "./useUpdates";
 import { fmtPlayed, type Games } from "./useGames";
 import { STEAM_SETUP_ID, type Steam } from "./useSteam";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -874,9 +876,11 @@ const BottleCard = memo(function BottleCard({
 export const SettingsPage = memo(function SettingsPage({
   sys,
   dl,
+  updates,
 }: {
   sys: SystemInfo | null;
   dl: Downloads;
+  updates: Updates;
 }) {
   const { t, choice: langChoice, setChoice: setLangChoice } = useI18n();
   const { theme, setTheme } = useTheme();
@@ -892,9 +896,18 @@ export const SettingsPage = memo(function SettingsPage({
     setGraphicsMode(mode).catch(() => {});
   }, []);
 
+  // app version shown in the updates card
+  const [appVer, setAppVer] = useState<string | null>(null);
+  useEffect(() => {
+    getVersion()
+      .then(setAppVer)
+      .catch(() => {});
+  }, []);
+
   const engineDl = dl.items[ENGINE_ID];
   const engineBtn = engineButtonState(engineDl, !!sys?.engine_installed);
 
+  
   return (
     <div className="stack narrow">
       {/* المظهر */}
@@ -981,11 +994,56 @@ export const SettingsPage = memo(function SettingsPage({
         </Row>
       </Card>
 
+      {/* التحديثات */}
+      <Card title={t("updateSection")} icon={<Icon.Download size={16} />}>
+        <Row
+          label={t("updateLabel")}
+          hint={
+            (appVer ? `v${appVer} · ` : "") +
+            (updates.status === "available"
+              ? t("updateAvailable").replace("{v}", updates.version ?? "")
+              : updates.status === "ready"
+                ? t("updateInstalled")
+                : updates.status === "upToDate"
+                  ? t("updateUpToDate")
+                  : updates.status === "error"
+                    ? t("updateFailed")
+                    : t("updateAuto"))
+          }
+        >
+          {updates.status === "available" ? (
+            <Button variant="tinted" onClick={() => updates.install()}>
+              {t("updateInstall")}
+            </Button>
+          ) : updates.status === "downloading" ? (
+            <span className="value muted">
+              {updates.progress != null
+                ? `${updates.progress}%`
+                : t("updateDownloading")}
+            </span>
+          ) : updates.status === "ready" ? (
+            <Button variant="tinted" onClick={() => updates.restart()}>
+              {t("updateRestart")}
+            </Button>
+          ) : (
+            <Button
+              variant="plain"
+              disabled={updates.status === "checking"}
+              onClick={() => updates.check()}
+            >
+              {updates.status === "checking" ? t("updateChecking") : t("updateCheck")}
+            </Button>
+          )}
+        </Row>
+        {updates.error && (
+          <p className="muted small">{updates.error}</p>
+        )}
+      </Card>
+
       <p className="muted small">{t("autoSaveNote")}</p>
     </div>
   );
 });
-
 // ============================================================
 //  السجل المباشر
 // ============================================================

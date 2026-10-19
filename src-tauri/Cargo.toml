@@ -1,5 +1,8 @@
 [package]
 name = "jisr"
+# ملاحظة: النسخة هنا ثابتة (0.1.0) عمداً — لأن تغيّرها يغيّر Cargo.lock
+# فيُبطل cache البناء في CI (بناء بارد ~8 دقائق بدل 2).
+# النسخة الحقيقية اللي يشوفها المستخدم وتحديث التلقائي: tauri.conf.json
 version = "0.1.0"
 description = "Jisr — run Windows games on Apple Silicon Macs (Wine + Rosetta 2)"
 authors = ["WhoisMelv"]
@@ -23,6 +26,8 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"   # نافذة اختيار ملف اللعبة (.exe) — بأسلوب النظام الأصلي
 tauri-plugin-single-instance = "2" # نمنع فتح نسختين تتخانق على نفس القارورة/ستيم
+tauri-plugin-updater = "2"  # تحديث تلقائي موقّع (minisign) — ما يحتاج حساب آبل
+tauri-plugin-process = "2" # إعادة تشغيل التطبيق بعد التحديث
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # وقت محلي مقروء في السجل التشخيصي (بدون أي اعتماد على نظام التشغيل)

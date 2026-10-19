@@ -111,7 +111,7 @@ static CEF_SHIM: &[u8] = include_bytes!("../assets/steamwebhelper.exe");
 const CEF_SHIM_MARKER: &[u8] = b"JISR_CEF_SHIM_V1";
 
 /// هل الملف الحالي هو غلاف Jisr؟ (البصمة داخل أول ميغابايت)
-fn is_cef_shim(path: &Path) -> bool {
+pub(crate) fn is_cef_shim(path: &Path) -> bool {
     use std::io::Read;
     let Ok(mut f) = std::fs::File::open(path) else {
         return false;
@@ -235,7 +235,7 @@ fn ensure_shim_in(dir: &Path, backup_dir: &Path) -> Option<bool> {
 
 /// نضمن أن ستيم يستخدم غلافنا مع الأصل المحفوظ بجانبه (قبل كل تشغيل —
 /// تحديث ستيم ممكن يرجّع الأصل).
-fn ensure_cef_shim(steam_dir: &Path, backup_dir: &Path) -> Option<bool> {
+pub(crate) fn ensure_cef_shim(steam_dir: &Path, backup_dir: &Path) -> Option<bool> {
     let dirs = cef_dirs(steam_dir);
     if dirs.is_empty() {
         return None;
@@ -411,7 +411,7 @@ fn parse_steam_args(line: &str) -> Vec<String> {
 }
 
 /// وسائط ستيم الإضافية (اختيارية) — تُقرأ من `~/Library/Application Support/Jisr/cef-flags.txt`
-fn steam_args_override() -> Vec<String> {
+pub(crate) fn steam_args_override() -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(crate::data_dir().join("cef-flags.txt")) else {
         return Vec::new();
     };
@@ -426,7 +426,7 @@ fn steam_args_override() -> Vec<String> {
 
 /// ملف اختياري لتجربة فلاقين CEF بدون بناء جديد:
 /// `~/Library/Application Support/Jisr/cef-flags.txt` (أول سطر، بحدود آمنة)
-fn cef_flags_override() -> Option<String> {
+pub(crate) fn cef_flags_override() -> Option<String> {
     let text = std::fs::read_to_string(crate::data_dir().join("cef-flags.txt")).ok()?;
     let line = text.lines().next()?.trim().to_string();
     if line.is_empty() || line.len() > 512 {

@@ -5,7 +5,7 @@
 // ============================================================
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
@@ -18,6 +18,136 @@ mod game;
 mod graphics;
 mod steam;
 mod steam_library;
+
+#[cfg(test)]
+mod sim_env;
+
+/// ============================================================
+///  فحص ذاتي (وضع التطوير فقط — ما يشتغل في نسخة المستخدم)
+///  يشغّل كل أمر مهم ويسجّل النتيجة سطراً بسطر في السجل الدائم،
+///  عشان نعرف فوراً إن فيه أمر مكسور بدل ما نكتشفه وقت تجربة الماك.
+/// ============================================================
+#[cfg(debug_assertions)]
+mod selftest {
+    use super::*;
+
+    fn ok(scope: &str, name: &str, detail: impl AsRef<str>) {
+        debuglog::raw("info", scope, &format!("PASS {name} — {}", detail.as_ref()));
+    }
+
+    fn bad(scope: &str, name: &str, err: impl AsRef<str>) {
+        debuglog::raw("error", scope, &format!("FAIL {name} — {}", err.as_ref()));
+    }
+
+    /// يشغّل الفحص كله — يُستدعى من setup()
+    pub fn run(app: &AppHandle) {
+        debuglog::raw("info", "selftest", "=== فحص ذاتي (وضع التطوير) ===");
+
+        // 1) معلومات النظام
+        let info = system_info(app.clone());
+        ok(
+            "selftest",
+            "system_info",
+            format!(
+                "os={} arch={} engine={}",
+                info.os_name, info.arch, info.engine_installed
+            ),
+        );
+
+        // 2) سجل الأحداث + استرجاعها
+        let before = get_logs(app.clone()).len();
+        log(app, "info", log_keys::STARTUP, json!({ "selftest": true }));
+        let after = get_logs(app.clone()).len();
+        if after > before {
+            ok(
+                "selftest",
+                "log_roundtrip",
+                format!("{before} → {after} سطر"),
+            );
+        } else {
+            bad("selftest", "log_roundtrip", "السجل ما زاد");
+        }
+
+        // 3) حراسة المدخلات (لازم تُقصّ الطويل وتُرفض المستويات الغريبة)
+        let long_key = "k".repeat(5_000);
+        log_line(
+            app.clone(),
+            "info".into(),
+            long_key,
+            Some(json!({ "x": 1 })),
+        );
+        let huge = "m".repeat(9_000);
+        debug_log("info".into(), huge);
+        ok("selftest", "input_clamps", "طويل مفتاح/رسالة تم قصّها");
+
+        // 4) الكتابة الخام + مسار السجل
+        debuglog::raw("debug", "selftest", "سطر خام تجريبي");
+        match debug_log_path() {
+            Some(p) => ok("selftest", "debug_log_path", p),
+            None => bad("selftest", "debug_log_path", "ما لقينا مسار السجل"),
+        }
+
+        // 5) كتالوج التنزيلات (تحقق من البصمات)
+        let cat = download::download_catalog();
+        ok(
+            "selftest",
+            "download_catalog",
+            format!(
+                "{} أصل — أولها {}",
+                cat.len(),
+                cat.first().map(|a| a.id).unwrap_or("-")
+            ),
+        );
+
+        // 6) حالة الرسومات + ستيم
+        ok("selftest", "graphics_mode", graphics::graphics_mode());
+        ok(
+            "selftest",
+            "steam_exe",
+            match steam::steam_exe() {
+                Some((p, _)) => p.display().to_string(),
+                None => "غير مثبّت (متوقع على ويندوز)".to_string(),
+            },
+        );
+
+        // 7) مكتبة ستيم (فارغة على ويندوز)
+        match tauri::async_runtime::block_on(steam_library::steam_games_list()) {
+            Ok(list) => ok(
+                "selftest",
+                "steam_games_list",
+                format!("{} لعبة", list.len()),
+            ),
+            Err(e) => bad("selftest", "steam_games_list", e),
+        }
+
+        // 8) التقرير الكامل — أهم واحد: لازم ينتج نص فيه كل الأقسام
+        match tauri::async_runtime::block_on(export_debug_report(app.clone())) {
+            Ok(report) => {
+                let sections: Vec<&str> = report
+                    .lines()
+                    .filter(|l| l.starts_with("=========="))
+                    .take(12)
+                    .collect();
+                ok(
+                    "selftest",
+                    "export_debug_report",
+                    format!(
+                        "{} حرف · {} سطر · {} قسم",
+                        report.len(),
+                        report.lines().count(),
+                        sections.len()
+                    ),
+                );
+                for s in sections {
+                    debuglog::raw("info", "selftest", &format!("  {s}"));
+                }
+            }
+            Err(e) => bad("selftest", "export_debug_report", e),
+        }
+
+        debuglog::raw("info", "selftest", "=== انتهى الفحص الذاتي ===");
+    }
+}
 
 // ---------- الأنواع اللي تروح للواجهة ----------
 #[derive(Serialize, Clone, Default)]
@@ -182,8 +312,56 @@ fn run_env(cmd: &str, args: &[&str], envs: &[(&str, &str)]) -> Option<String> {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
+/// تجاوز مجلد البيانات — للاختبارات ومحاكاة بيئة macOS كاملة
+static DATA_DIR_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
+    std::sync::OnceLock::new();
+
+/// يثبّت مجلد بيانات بديل (يُرجَع None لإلغاء التجاوز) — للاختبارات فقط
+#[cfg(test)]
+pub(crate) fn set_data_dir_override(path: Option<PathBuf>) {
+    let slot = DATA_DIR_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(mut g) = slot.lock() {
+        *g = path;
+    }
+}
+
+/// نسخة التطبيق الحقيقية (من tauri.conf.json) — هي اللي يعرضها المستخدم
+/// وبها يقارن التحديث التلقائي نسخته. نقرأها وقت الترجمة (مرة وحدة).
+pub(crate) fn app_version() -> &'static str {
+    static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    V.get_or_init(|| {
+        serde_json::from_str::<Value>(include_str!("../tauri.conf.json"))
+            .ok()
+            .and_then(|v| {
+                v.get("version")
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+    })
+    .as_str()
+}
+
 /// مجلد بيانات جسر
+///
+/// ثلاث طرق لتحديده (بالأولوية):
+///  1. تجاوز برمجي (للاختبارات ومحاكاة بيئة macOS).
+///  2. متغير البيئة `JISR_DATA_DIR` (تشغيل معزول/ساند박س).
+///  3. المسار الطبيعي: ~/Library/Application Support/Jisr على الماك.
 pub(crate) fn data_dir() -> PathBuf {
+    if let Some(slot) = DATA_DIR_OVERRIDE.get() {
+        if let Ok(g) = slot.lock() {
+            if let Some(p) = g.as_ref() {
+                return p.clone();
+            }
+        }
+    }
+    if let Ok(custom) = std::env::var("JISR_DATA_DIR") {
+        let custom = custom.trim();
+        if !custom.is_empty() {
+            return PathBuf::from(custom);
+        }
+    }
     if cfg!(target_os = "macos") {
         PathBuf::from(std::env::var("HOME").unwrap_or_default())
             .join("Library")
@@ -267,6 +445,32 @@ fn detect_graphics_layer(engine_path: &std::path::Path) -> Option<String> {
 // ============================================================
 //  فحص الجهاز
 // ============================================================
+/// فحص الماك — بمدخلات محقونة (شغّال أوامر + نتيجة فحص Rosetta + كروت الشاشة)
+/// ليش؟ لأن مسار الماك **ما يشتغل أبداً** على جهاز التطوير (ويندوز) —
+/// فبدون الحقن ما ينختبر أبداً. كذا نقدر نتحقق من قراءات الماك كلها.
+fn detect_macos_with(
+    run: &dyn Fn(&str, &[&str]) -> Option<String>,
+    gpus: Vec<GpuInfo>,
+    rosetta_present: bool,
+    arch: &str,
+) -> SystemInfo {
+    let mut info = SystemInfo {
+        arch: arch.to_string(),
+        ..Default::default()
+    };
+    info.os_name = "macOS".into();
+    info.os_version = run("sw_vers", &["-productVersion"]).unwrap_or_default();
+    info.is_apple_silicon = info.arch == "aarch64";
+    info.chip = run("sysctl", &["-n", "machdep.cpu.brand_string"]).unwrap_or_default();
+    info.cpu_cores = run("sysctl", &["-n", "hw.ncpu"]).and_then(|s| s.parse().ok());
+    info.memory_mb = run("sysctl", &["-n", "hw.memsize"])
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|b| b / 1024 / 1024);
+    info.gpus = gpus;
+    info.rosetta_installed = arch == "aarch64" && rosetta_present;
+    info
+}
+
 fn detect_system() -> SystemInfo {
     let mut info = SystemInfo {
         arch: std::env::consts::ARCH.to_string(),
@@ -274,17 +478,12 @@ fn detect_system() -> SystemInfo {
     };
 
     if cfg!(target_os = "macos") {
-        info.os_name = "macOS".into();
-        info.os_version = run_cmd("sw_vers", &["-productVersion"]).unwrap_or_default();
-        info.is_apple_silicon = info.arch == "aarch64";
-        info.chip = run_cmd("sysctl", &["-n", "machdep.cpu.brand_string"]).unwrap_or_default();
-        info.cpu_cores = run_cmd("sysctl", &["-n", "hw.ncpu"]).and_then(|s| s.parse().ok());
-        info.memory_mb = run_cmd("sysctl", &["-n", "hw.memsize"])
-            .and_then(|s| s.parse::<u64>().ok())
-            .map(|b| b / 1024 / 1024);
-        info.gpus = macos_gpus();
-        info.rosetta_installed = cfg!(target_arch = "aarch64")
-            && std::path::Path::new("/Library/Apple/usr/libexec/oah").exists();
+        info = detect_macos_with(
+            &|cmd, args| run_cmd(cmd, args),
+            macos_gpus(),
+            std::path::Path::new("/Library/Apple/usr/libexec/oah").exists(),
+            &info.arch.clone(),
+        );
     } else {
         windows_info(&mut info);
         if info.os_name.is_empty() {
@@ -507,6 +706,12 @@ fn push_section(out: &mut String, title: &str, body: &str) {
 /// المستخدم ينسخه ويرسله — ما يحتاج يفتح مجلدات ولا يبحث عن ملفات.
 fn build_report(app: &AppHandle) -> String {
     let info = system_info(app.clone());
+    let steam_dir = steam::steam_exe().and_then(|(p, _)| p.parent().map(|d| d.to_path_buf()));
+    build_report_from(&info, steam_dir.as_deref())
+}
+
+/// نفس التقرير، لكن بمُدخلات صريحة — نقدر نختبره على بيئة macOS محاكاة
+fn build_report_from(info: &SystemInfo, steam_dir: Option<&Path>) -> String {
     let mut out = String::with_capacity(256 * 1024);
     out.push_str("============================================================\n");
     out.push_str("Jisr — full debug report\n");
@@ -515,7 +720,7 @@ fn build_report(app: &AppHandle) -> String {
         "generated: {}\n",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z")
     ));
-    out.push_str(&format!("version: {}\n", env!("CARGO_PKG_VERSION")));
+    out.push_str(&format!("version: {}\n", app_version()));
     out.push_str(&format!("os: {} {}\n", info.os_name, info.os_version));
     out.push_str(&format!(
         "arch: {} | apple_silicon: {}\n",
@@ -566,11 +771,8 @@ fn build_report(app: &AppHandle) -> String {
     // حكم سريع: هل وصل فلاقين غلاف CEF إلى ستيم فعلاً؟
     // (webhelper.txt = سطر الأمر الحقيقي اللي شغّل به ستيم الـwebhelper)
     let mut webhelper_tail = String::new();
-    if let Some((mac_exe, _)) = steam::steam_exe() {
-        if let Some(dir) = mac_exe.parent() {
-            webhelper_tail =
-                debuglog::tail_file(&dir.join("logs").join("webhelper.txt"), 400, 60_000);
-        }
+    if let Some(dir) = steam_dir {
+        webhelper_tail = debuglog::tail_file(&dir.join("logs").join("webhelper.txt"), 400, 60_000);
     }
     if webhelper_tail.trim().is_empty() {
         out.push_str(
@@ -632,31 +834,29 @@ fn build_report(app: &AppHandle) -> String {
     // سجلات ستيم الرسمية — أهم источ لفهم واجهة ستيم:
     // webhelper.txt (الفلاقين الفعلية) · bootstrap_log.txt (تحقق الملفات)
     // cef_log.txt (أخطاء CEF) · وكل *.txt آخر في مجلد logs
-    if let Some((mac_exe, _)) = steam::steam_exe() {
-        if let Some(steam_dir) = mac_exe.parent() {
-            let logs_dir = steam_dir.join("logs");
-            let mut files: Vec<PathBuf> = std::fs::read_dir(&logs_dir)
-                .map(|rd| {
-                    rd.flatten()
-                        .map(|e| e.path())
-                        .filter(|p| {
-                            p.is_file() && p.extension().and_then(|x| x.to_str()) == Some("txt")
-                        })
-                        .collect()
-                })
+    if let Some(steam_dir) = steam_dir {
+        let logs_dir = steam_dir.join("logs");
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&logs_dir)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.is_file() && p.extension().and_then(|x| x.to_str()) == Some("txt")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        for p in files.into_iter().take(6) {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            files.sort();
-            for p in files.into_iter().take(6) {
-                let name = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                push_section(
-                    &mut out,
-                    &format!("Steam/logs/{name} (last lines)"),
-                    &debuglog::tail_file(&p, 250, 80_000),
-                );
-            }
+            push_section(
+                &mut out,
+                &format!("Steam/logs/{name} (last lines)"),
+                &debuglog::tail_file(&p, 250, 80_000),
+            );
         }
     }
 
@@ -744,6 +944,9 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // تحديث تلقائي موقّع (minisign) — المفتاح العمومي داخل tauri.conf.json
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(LogState::default())
         .manage(download::DownloadsState::default())
         .manage(bottle::BottlesState::default())
@@ -793,7 +996,7 @@ pub fn run() {
                 "startup",
                 &format!(
                     "Jisr v{} | os={} | arch={} | data={}",
-                    env!("CARGO_PKG_VERSION"),
+                    app_version(),
                     os_version,
                     std::env::consts::ARCH,
                     data_dir().display()
@@ -855,6 +1058,11 @@ pub fn run() {
             if bottle::wine_bin().is_some() {
                 download::ensure_graphics_layer(app.handle());
             }
+
+            // فحص ذاتي — وضع التطوير فقط (ما يشتغل في نسخة المستخدم)
+            #[cfg(debug_assertions)]
+            selftest::run(app.handle());
+
             Ok(())
         })
         .run(tauri::generate_context!())

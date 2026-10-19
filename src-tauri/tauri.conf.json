@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "jisr",
-  "version": "0.1.0",
+  "version": "0.1.13",
   "identifier": "com.jisr.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "macOS": {
       "minimumSystemVersion": "11.0",
       "signingIdentity": "-"
@@ -40,5 +41,17 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDBFQUY0RTAyMDJGNDkxNTkKUldSWmtmUUNBazZ2RG50U3J0NkxZV2xLTVVCSnF1YmZtUXNpNk1jTkpiNDhSY2pOalNyZW5IY3cK",
+      "endpoints": [
+        "https://github.com/Whoismelv/Jisr/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

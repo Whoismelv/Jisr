@@ -21,6 +21,7 @@ import {
 import { useBottles } from "./useBottles";
 import { useGames } from "./useGames";
 import { useSteam } from "./useSteam";
+import { useUpdates } from "./useUpdates";
 import { debugLog, exportDebugReport } from "./api";
 import { Button, SPRINGS, type IconComp } from "./ui";
 import {
@@ -76,6 +77,18 @@ export default function App() {
 
   const games = useGames(notify); // مكتبة الألعاب (تحتاج الإشعار — بعد تعريفه)
   const steam = useSteam(notify); // ستيم (المثبّت الرسمي + التشغيل)
+  const updates = useUpdates(); // تحديث تلقائي موقّع (يفحص بعد الإقلاع)
+
+  // إشعار واحد عند تغيّر حالة التحديث (ما نزعج المستخدم للفحص التلقائي)
+  const lastUpdateStatus = useRef<string | null>(null);
+  useEffect(() => {
+    const st = updates.status;
+    if (st === lastUpdateStatus.current) return;
+    lastUpdateStatus.current = st;
+    if (st === "available")
+      notify(t("updateAvailable").replace("{v}", updates.version ?? ""));
+    else if (st === "ready") notify(t("updateInstalled"));
+  }, [updates.status, updates.version, notify, t]);
 
   // نافذة الماك: فئة على <html> تضبط أضواء النافذة فوق المحتوى
   const [isMac] = useState(() => /Mac|iPhone|iPad/.test(navigator.userAgent));
@@ -376,7 +389,9 @@ export default function App() {
                   />
                 )}
                 {page === "bottles" && <BottlesPage bottles={bottles} sys={sys} />}
-                {page === "settings" && <SettingsPage sys={sys} dl={dl} />}
+                {page === "settings" && (
+                  <SettingsPage sys={sys} dl={dl} updates={updates} />
+                )}
                 {page === "logs" && (
                   <LogsPage logs={logs} onClear={onClear} notify={notify} />
                 )}

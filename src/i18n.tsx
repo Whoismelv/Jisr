@@ -149,6 +149,20 @@ const ar = {
   logCopied: "نسخنا التقرير كامل — أرسله للمطوّر",
   logCopyFailed: "تعذّر النسخ — جرّب مرة ثانية",
 
+  // التحديثات
+  updateSection: "التحديثات",
+  updateLabel: "نسخة جسر",
+  updateAuto: "نتحقّق تلقائياً بعد الفتح",
+  updateCheck: "تحقّق من التحديثات",
+  updateChecking: "جارٍ التحقق…",
+  updateAvailable: "نسخة جديدة متاحة: {v}",
+  updateInstall: "ثبّتها الآن",
+  updateDownloading: "جارٍ التنزيل…",
+  updateInstalled: "تم التثبيت — أعد التشغيل لتطبيقها",
+  updateRestart: "أعد التشغيل الآن",
+  updateUpToDate: "نسخة جسر محدّثة — ما فيه جديد",
+  updateFailed: "تعذّر التحديث — بنحاول لاحقاً",
+
   // التنزيل
   dlPreparing: "جاري التحضير…",
   dlVerifying: "نتحقق من سلامة الملف (بصمة SHA-256)…",
@@ -382,6 +396,20 @@ const en: Record<TKey, string> = {
   revealLog: "Show in Finder",
   logCopied: "Full report copied — send it to the developer",
   logCopyFailed: "Copy failed — try again",
+
+  // Updates
+  updateSection: "Updates",
+  updateLabel: "Jisr version",
+  updateAuto: "We check automatically after launch",
+  updateCheck: "Check for updates",
+  updateChecking: "Checking…",
+  updateAvailable: "New version available: {v}",
+  updateInstall: "Install now",
+  updateDownloading: "Downloading…",
+  updateInstalled: "Installed — restart to apply it",
+  updateRestart: "Restart now",
+  updateUpToDate: "Jisr is up to date",
+  updateFailed: "Update failed — we'll retry later",
 
   // Downloads
   dlPreparing: "Preparing…",

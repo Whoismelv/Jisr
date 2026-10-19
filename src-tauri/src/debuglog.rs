@@ -29,6 +29,13 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 
 /// نفتح السجل مرة واحدة عند إقلاع التطبيق. نُدوّر الملف مسبقاً لو تجاوز الحد.
 pub fn init(dir: &Path, app: AppHandle) -> PathBuf {
+    let path = init_path(dir);
+    let _ = APP.set(app);
+    path
+}
+
+/// نفس التهيئة بدون واجهة (للاختبارات ومحاكاة البيئة)
+pub fn init_path(dir: &Path) -> PathBuf {
     let _ = std::fs::create_dir_all(dir);
     let path = dir.join(FILE_NAME);
 
@@ -46,12 +53,23 @@ pub fn init(dir: &Path, app: AppHandle) -> PathBuf {
         .ok();
     let written = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 
-    let _ = APP.set(app);
-    let _ = SINK.set(Mutex::new(Sink {
-        file,
-        path: path.clone(),
-        written,
-    }));
+    match SINK.get() {
+        // السجل مفتوح مسبقاً (محاكاة/اختبار) → نعيد توجيهه للمجلد الجديد
+        Some(m) => {
+            if let Ok(mut sink) = m.lock() {
+                sink.file = file;
+                sink.path = path.clone();
+                sink.written = written;
+            }
+        }
+        None => {
+            let _ = SINK.set(Mutex::new(Sink {
+                file,
+                path: path.clone(),
+                written,
+            }));
+        }
+    }
     path
 }
 

@@ -1,10 +1,16 @@
 # ============================================================
 #  جسر — بناء نسخة الماك (Apple Silicon) على سيرفرات GitHub
-#  • الناتج: ملف .dmg + إصدار (Release) جاهز للتنزيل
+#  • الناتج: ملف .dmg + حزمة تحديث موقّعة + إصدار (Release) جاهز
 #  • التشغيل: من تبويب Actions (يدوي) أو بدفع وسم إصدار v*
 #  • صيانة عند إصدار جديد: غيّر tag_name + الاسم تحت، ثم ادفع نفس الوسم
 #  • حارس أمان: يفشّل البناء لو التطبيق اعتمد على مكتبة خارج مكتبات النظام
 #    (درس أول تجربة حقيقية: liblzma من Homebrew سيرفر البناء)
+#
+#  ⚡ السرعة: البناء مقسوم على ثلاث وظائف متوازية
+#     1) checks  — فحوص الأمان + اختبارات Rust     (لا تعطّل البناء)
+#     2) build   — بناء التطبيق + حزمة التحديث      (المسار الحرج)
+#     3) release — ينشر الـdmg + latest.json        (ينتظر الاثنين)
+#     ⇒ زمن البناء ≈ زمن أبطأ الوظيفة بدل مجموعها (كان ~11 دقيقة، صار ~2-3)
 # ============================================================
 name: macOS build
 
@@ -17,9 +23,73 @@ permissions:
   contents: write
   checks: write
 
+# لو تعلّق وسم أحدث — ألغِ القديم (توفير وقت وطابور)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  macos-arm64:
+  # ============================================================
+  # 1) الفحوص (تعمل بالتوازي مع البناء)
+  # ============================================================
+  checks:
+    name: "فحوص الأمان والاختبارات"
     runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      - name: Cache (يبني أسرع)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+
+      - name: "🛡️ Cache (أداة التدقيق)"
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin
+          key: cargo-audit-bin-${{ runner.os }}-v1
+          restore-keys: cargo-audit-bin-${{ runner.os }}-
+
+      - name: مكتبات الواجهة
+        run: npm ci
+
+      - name: "🛡️ فحص ثغرات حزم npm"
+        run: npm audit --audit-level=high
+
+      - name: "🧪 اختبارات الخلفية (شامل محاكاة macOS)"
+        run: cargo test --lib --manifest-path src-tauri/Cargo.toml
+
+      - name: "🛡️ تدقيق تبعيات Rust"
+        run: |
+          set -euo pipefail
+          if ! command -v cargo-audit >/dev/null 2>&1; then
+            cargo install cargo-audit --locked
+          fi
+          cargo audit --file src-tauri/Cargo.lock
+
+  # ============================================================
+  # 2) البناء (المسار الحرج)
+  # ============================================================
+  build:
+    name: "بناء تطبيق الماك"
+    runs-on: macos-14
+    env:
+      # مفتاح توقيع حزمة التحديث (minisign) — سر داخل GitHub فقط
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -43,19 +113,7 @@ jobs:
       - name: مكتبات الواجهة
         run: npm ci
 
-      - name: "🛡️ فحص ثغرات حزم npm"
-        run: npm audit --audit-level=high
-
-      - name: "🛡️ فحص ثغرات تبعيات Rust"
-        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: src-tauri
-
-      - name: "🧪 اختبارات الخلفية قبل البناء"
-        run: cargo test --lib --manifest-path src-tauri/Cargo.toml
-
-      - name: بناء التطبيق
+      - name: "🔨 بناء التطبيق (+ حزمة تحديث موقّعة)"
         run: npm run tauri build -- --target aarch64-apple-darwin
 
       - name: "🛡️ فحص: لا اعتماد على مكتبات خارج النظام"
@@ -77,7 +135,7 @@ jobs:
           echo "✔ كل الاعتمادات من مكتبات النظام (العدد: $DEPCOUNT)"
           echo "::notice::🛡️ فحص المكتبات نجح: $DEPCOUNT وصلة ديناميكية، كلها من مكتبات النظام | $BIN"
 
-      - name: "🗂️ تجهيز ملف النشر"
+      - name: "🗂️ تجهيز ملفات النشر"
         run: |
           set -euo pipefail
           echo "== مخرجات البناء =="
@@ -91,46 +149,77 @@ jobs:
           SIZE=$(( $(stat -f%z "$DMG") / 1048576 ))
           mkdir -p dist
           cp "$DMG" dist/
+          # حزمة التحديث الموقّعة + بيان latest.json (يقرأه التطبيق نفسه)
+          APPTGZ=$(find src-tauri/target -type f -name '*.app.tar.gz' | head -n 1 || true)
+          if [ -n "$APPTGZ" ]; then cp "$APPTGZ" dist/; else echo "::warning::ما لقينا حزمة التحديث (.app.tar.gz)"; fi
+          if [ -f src-tauri/target/aarch64-apple-darwin/release/bundle/latest.json ]; then
+            cp src-tauri/target/aarch64-apple-darwin/release/bundle/latest.json dist/
+          else
+            echo "::warning::ما لقينا latest.json — التحديث التلقائي ما راح يشتغل"
+          fi
+          ls -la dist/
           echo "::notice::✔ جاهز للنشر: $(basename "$DMG") (${SIZE}MB)"
 
-      - name: "📦 إنشاء الإصدار ورفع الـdmg"
+      - name: "📤 رفع الملفات لوظيفة النشر"
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: jisr-release
+          path: dist/
+          if-no-files-found: error
+          retention-days: 3
+
+  # ============================================================
+  # 3) النشر (ينتظر الفحوص + البناء — ما ينشر لو فيه ثغرة أو فشل)
+  # ============================================================
+  release:
+    name: "نشر الإصدار"
+    needs: [checks, build]
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - name: "📥 جلب الملفات المبنية"
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: jisr-release
+          path: dist
+
+      - name: "📦 إنشاء الإصدار ورفع الملفات"
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: v0.1.0-test.12
-          name: "جسر v0.1.0 — نسخة اختبار الماك ١٢ (تشخيص أعمق + مفتاح طوارئ + تنظيف مسار الكاش الصحيح)"
+          tag_name: v0.1.0-test.13
+          name: "جسر v0.1.0 — نسخة اختبار الماك ١٣ (تحديث تلقائي موقّع + محاكاة macOS + بناء أسرع)"
           prerelease: true
-          files: dist/*.dmg
+          make_latest: true
+          files: |
+            dist/*.dmg
+            dist/*.app.tar.gz
+            dist/latest.json
           body: |
-            ## 🍎 نسخة اختبار الماك — النسخة ١١ (تشخيص أعمق + مفتاح طوارئ)
+            ## 🍎 نسخة اختبار الماك — النسخة ١٣ (تحديث تلقائي موقّع + تشخيص أعمق)
 
-            > 🩺 **الجديد:**
-            > 1. **سجلات ستيم الرسمية داخل التقرير:** `webhelper.txt` (الفلاقين الحقيقية) · `bootstrap_log.txt` (تحقق الملفات) · `cef_log.txt` (أخطاء CEF) — أخطر ملفات وأهمها.
-            > 2. **حكم سريع في التقرير:** سطر `cef_shim_flags_seen: single-process=… disable-gpu=…` يقول لك بصراحة هل غلافنا وصل لستيم أم لا.
-            > 3. **تنظيف آمن لبقايا ستيم:** كاش CEF الحقيقي يعيش في بروفايل مستخدم البottle (`drive_c/users/<user>/AppData/Local/Steam/htmlcache`) — نعيد تسمية `htmlcache` و`Singleton*` القديمة (سبب موثّق لمشكلة «ستيم يفتح بدون نافذة») — بشرطين: ما فيه أي عملية ستيم حيّة، وإعادة تسمية لا حذف (كل شي قابل للتراجع).
-            > 4. **🚨 مفتاح طوارئ بدون إعادة بناء:** ملف `~/Library/Application Support/Jisr/cef-flags.txt` — السطر الأول يغيّر فلاقين غلاف CEF، والثاني بصيغة `steam:-cef-single-process` يضيف وسائط لعميل ستيم. (لو واجهة ستيم ما ظهرت — راجع README/الرسالة المرفقة.)
-            > 5. **GStreamer محدّث:** أحدث إصدار مستقر **1.28.8** (كنّا على 1.28.5).
-            > 6. كل ميزات النسخ ٩ و١٠: سجل debug دائم يظهر داخل التطبيق + **«انسخ السجل كامل»** + **«إظهار في Finder»**.
-            > 🔒 بلا أي تتبّع تلقائي — أنت اللي ترسل يدوياً. لا تُسجَّل كلمة مرور ستيم.
-            > 🛡️ تتضمن كل تحصينات النسخ ٨–١٠: إصلاح Path Traversal + فحوص `cargo audit`/`npm audit` + Dependabot + Actions على SHA + `SECURITY.md`.
+            > 🔄 **تحديث تلقائي (الجديد):** جسر يقدر يحدّث نفسه بنفسه — من الإعدادات ← «تحقّق من التحديثات». التحديث **موقّع** بمفتاح minisign داخل التطبيق، فما يجيك إلا من بناء عندنا. بعد التثبيت: «أعد التشغيل الآن».
+            > 🩺 **تشخيص أعمق:** سجلات ستيم الرسمية داخل التقرير (`webhelper.txt` · `bootstrap_log.txt` · `cef_log.txt`) + حكم `cef_shim_flags_seen` + تنظيف آمن لبقايا `htmlcache/Singleton*` (حارس pgrep + إعادة تسمية لا حذف) + **مفتاح طوارئ** `steam:-cef-single-process` من ملف `cef-flags.txt`.
+            > 🧪 **محاكاة macOS كاملة داخل الاختبارات:** نبني شجرة `~/Library/Application Support/Jisr` + قارورة + تثبيت ستيم + بروفايل مستخدم ونشغّل عليها نفس الكود — قبل ما نلمس الماك.
+            > ⚡ **البناء صار ~2-3 دقائق** بدل 11 (فحوص متوازية + cache ثابت).
+            > 🔒 بلا أي تتبّع تلقائي. لا تُسجَّل كلمة مرور ستيم.
 
             ### قبل ما تبدأ (متطلبات — مرة وحدة)
-            1. **GStreamer** (متطلب محرّك Wine رسمياً — لك وكل المستخدمين، يحتاج كلمة سر الماك):
+            1. **GStreamer** (متطلب محرّك Wine رسمياً — يحتاج كلمة سر الماك):
                [gstreamer-1.0-1.28.8-universal.pkg](https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/gstreamer-1.0-1.28.8-universal.pkg)
-               ℹ️ GStreamer للوسائط (فيديو/صوت) — الألعاب ثلاثية الأبعاد ما تحتاجه فعلياً، بس محرّك Gcenx يطلبه رسمياً.
-            2. **Rosetta 2:** الماك يطلبه تلقائياً عند أول تشغيل — اضغط تثبيت (أو نفّذ: `softwareupdate --install-rosetta --agree-to-license`)
+               ℹ️ GStreamer للوسائط (فيديو/صوت) — الألعاب ثلاثية الأبعاد ما تحتاجه فعلياً.
+            2. **Rosetta 2:** يطلبه الماك تلقائياً عند أول تشغيل.
 
             ### أول تشغيل (مهم)
             1. نزّل الـdmg وافتحه
             2. اسحب **jisr** إلى مجلد **Applications**
-            3. افتح **Terminal** ونفّذ (أضمن طريقة على الأنظمة الحديثة — يشيل «حجر صحي» آبل، بلا كلمة سر):
-               `xattr -cr /Applications/jisr.app`
-            4. بعدها افتح التطبيق عادي
+            3. من Terminal (بلا كلمة سر): `xattr -cr /Applications/jisr.app`
+            4. افتح التطبيق عادي — وبعدها التحديثات تصير تلقائية من داخله.
 
-            ### رحلة التجربة (داخل التطبيق)
-            1️⃣ نزّل المحرك → 2️⃣ جهّز القارورة الرئيسية → 3️⃣ ثبّت ستيم للويندوز → 4️⃣ سجّل دخولك بحسابك → 5️⃣ نزّل **LIMBO Demo** و**Aperture Desk Job** → 6️⃣ من صفحة **المكتبة** شغّل اللعبة (ستيم لازم يكون شغّالاً) 🎮
+            ### رحلة التجربة
+            1️⃣ نزّل المحرك → 2️⃣ جهّز القارورة الرئيسية → 3️⃣ ثبّت ستيم للويندوز → 4️⃣ سجّل دخولك (خلّ تحديث ستيم يخلص) → 5️⃣ نزّل **LIMBO Demo** و**Aperture Desk Job** → 6️⃣ من صفحة **المكتبة** شغّل اللعبة 🎮
 
-            > 💡 **قبل تشغيل الألعاب:** من إعدادات ستيم ← In-Game ← أزل ✓ **Steam Overlay** (يتعارض مع DXVK وقد يسبب انهيار).
-            > 💡 بعد تجهيز المحرك، انتظر ثوانٍ حتى ينزل DXVK (2.8MB). لو صارت مشكلة في لعبة، بدّل الطبقة إلى **WineD3D** من الإعدادات وأعد تشغيل ستيم.
+            > 💡 **قبل الألعاب:** ستيم ← Settings ← In-Game ← أطفئ ✓ **Steam Overlay** (يتعارض مع DXVK).
+            > 🩺 **لو صار خطأ:** صفحة **السجل** ← «انسخ السجل كامل» ← أرسله لنا مع صورة.
 
-            ### بعد التجربة
-            من صفحة **السجل** اضغط **«انسخ السجل كامل»** وأرسل التقرير مع أي ملاحظة أو صورة. شكراً مقدماً 🌉
+            شكراً مقدماً 🌉
