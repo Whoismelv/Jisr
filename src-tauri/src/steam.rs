@@ -291,12 +291,41 @@ fn steam_processes_running() -> bool {
         .unwrap_or(true)
 }
 
+/// إعادة تسمية بقايا كاش/أقفال داخل مجلد واحد (بدون حذف)
+fn rename_stale_items(base: &Path, stamp: u64, renamed: &mut Vec<String>) {
+    // ذاكرة CEF (htmlcache) — نبنيها من الصفر لو كانت عالقة
+    let cache = base.join("htmlcache");
+    if cache.is_dir() {
+        let bak = base.join(format!("htmlcache.jisr-bak-{stamp}"));
+        if std::fs::rename(&cache, &bak).is_ok() {
+            renamed.push(cache.display().to_string());
+        }
+    }
+
+    // أقفال Chromium (Singleton*) — ملفات قديمة ما عادت لازمة
+    if let Ok(rd) = std::fs::read_dir(base) {
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.starts_with("Singleton") {
+                continue;
+            }
+            let path = entry.path();
+            let bak = path.with_file_name(format!("{name}.jisr-bak-{stamp}"));
+            if std::fs::rename(&path, &bak).is_ok() {
+                renamed.push(path.display().to_string());
+            }
+        }
+    }
+}
+
 /// تنظيف بقايا الكاش والأقفال القديمة — سبب معروف موثّق لمشكلة
 /// «ستيم يفتح بدون نافذة» (htmlcache/Singleton* عالقة من جلسة سابقة).
 /// قواعد الأمان:
 ///  1. ما نلمس شي إذا فيه أي عملية ستيم حيّة (pgrep).
 ///  2. نعيد **التسمية** بدل الحذف — كل شي قابل للتراجع (`.jisr-bak-<وقت>`).
-///  3. داخل مجلد ستيم داخل قارورة المستخدم فقط — ما نخرج منه أبداً.
+///  3. داخل مجلد ستيم وبروفايل مستخدم البottle فقط — ما نخرج منه أبداً.
+/// ملاحظة: كاش CEF الحقيقي يعيش في بروفايل مستخدم ويندوز داخل البottle:
+/// `drive_c/users/<user>/AppData/Local/Steam/htmlcache` (وليس داخل مجلد ستيم).
 pub(crate) fn cleanup_stale_steam_state(steam_dir: &Path) {
     if steam_processes_running() {
         crate::debuglog::raw(
@@ -310,27 +339,22 @@ pub(crate) fn cleanup_stale_steam_state(steam_dir: &Path) {
     let stamp = crate::now_ms();
     let mut renamed: Vec<String> = Vec::new();
 
-    for base in [steam_dir.to_path_buf(), steam_dir.join("config")] {
-        // ذاكرة CEF (htmlcache) — نبنيها من الصفر لو كانت عالقة
-        let cache = base.join("htmlcache");
-        if cache.is_dir() {
-            let bak = base.join(format!("htmlcache.jisr-bak-{stamp}"));
-            if std::fs::rename(&cache, &bak).is_ok() {
-                renamed.push(cache.display().to_string());
-            }
-        }
+    // داخل مجلد ستيم (احتمال ثانوي — بعض الإصدارات تضع الكاش هنا)
+    rename_stale_items(steam_dir, stamp, &mut renamed);
+    rename_stale_items(&steam_dir.join("config"), stamp, &mut renamed);
 
-        // أقفال Chromium (Singleton*) — ملفات قديمة ما عادت لازمة
-        if let Ok(rd) = std::fs::read_dir(&base) {
+    // بروفايل مستخدم البottle — المسار الحقيقي لكاش CEF وأقفال Singleton
+    if let Some(drive_c) = steam_dir.parent().and_then(|p| p.parent()) {
+        let users = drive_c.join("users");
+        if let Ok(rd) = std::fs::read_dir(&users) {
             for entry in rd.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !name.starts_with("Singleton") {
+                let user_dir = entry.path();
+                if !user_dir.is_dir() {
                     continue;
                 }
-                let path = entry.path();
-                let bak = path.with_file_name(format!("{name}.jisr-bak-{stamp}"));
-                if std::fs::rename(&path, &bak).is_ok() {
-                    renamed.push(path.display().to_string());
+                let local = user_dir.join("AppData").join("Local").join("Steam");
+                if local.is_dir() {
+                    rename_stale_items(&local, stamp, &mut renamed);
                 }
             }
         }
@@ -997,22 +1021,33 @@ mod tests {
     #[test]
     fn cleanup_renames_stale_cache_instead_of_deleting() {
         let root = temp_root("cleanup");
-        let steam = root.join("Steam");
+        // بروفايل مستخدم البottle: drive_c/users/<user>/AppData/Local/Steam
+        let drive_c = root.join("drive_c");
+        let steam = drive_c.join("Program Files (x86)").join("Steam");
+        let user_local = drive_c
+            .join("users")
+            .join("tester")
+            .join("AppData")
+            .join("Local")
+            .join("Steam");
+        fs::create_dir_all(user_local.join("htmlcache")).unwrap();
         fs::create_dir_all(steam.join("config").join("htmlcache")).unwrap();
         fs::write(steam.join("SingletonLock"), b"x").unwrap();
-        fs::write(steam.join("config").join("SingletonCookie"), b"y").unwrap();
+        fs::write(user_local.join("SingletonCookie"), b"y").unwrap();
         // ملف ما له علاقة — لازم ما ينمس
         fs::write(steam.join("config").join("config.vdf"), b"z").unwrap();
 
         cleanup_stale_steam_state(&steam);
 
         // الأصول ما عادت موجودة (أُعيدت تسميتها) وما حذفنا شي
+        assert!(!user_local.join("htmlcache").exists());
         assert!(!steam.join("config").join("htmlcache").exists());
         assert!(!steam.join("SingletonLock").exists());
+        assert!(!user_local.join("SingletonCookie").exists());
         assert!(steam.join("config").join("config.vdf").exists());
 
         // النسخ الاحتياطية موجودة (قابلة للتراجع)
-        let backups: Vec<PathBuf> = fs::read_dir(&steam.join("config"))
+        let backups: Vec<PathBuf> = fs::read_dir(&user_local)
             .unwrap()
             .flatten()
             .map(|e| e.path())
