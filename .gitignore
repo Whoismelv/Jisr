@@ -13,6 +13,9 @@ dist-ssr
 *.local
 tools/steamwebhelper-shim/target
 
+# graphify knowledge-graph outputs (local dev tool)
+graphify-out/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
