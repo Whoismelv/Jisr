@@ -1,0 +1,68 @@
+# ============================================================
+#  جسر — بناء نسخة الماك (Apple Silicon) على سيرفرات GitHub
+#  • الناتج: ملف .dmg + إصدار (Release) جاهز للتنزيل
+#  • التشغيل: من تبويب Actions (يدوي) أو بدفع وسم إصدار v*
+# ============================================================
+name: macOS build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache (يبني أسرع)
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: مكتبات الواجهة
+        run: npm ci
+
+      - name: بناء التطبيق + إنشاء الإصدار
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target aarch64-apple-darwin
+          tagName: v0.1.0-test.1
+          releaseName: "جسر v0.1.0 — نسخة اختبار الماك (Apple Silicon)"
+          prerelease: true
+          releaseBody: |
+            ## 🍎 أول نسخة اختبار على الماك
+
+            **ما هو؟** «جسر» — تطبيق يخليك تشغّل ألعاب ويندوز (ستيم) على ماك آبل سيليكون، بضغطات معدودة وبلا Terminal.
+
+            ### التنزيل
+            نزّل ملف **`.dmg`** من قسم Assets تحت 👇
+
+            ### أول تشغيل (مهم)
+            1. نزّل الـdmg وافتحه
+            2. اسحب **jisr** إلى مجلد **Applications**
+            3. **كليك يمين على أيقونة التطبيق ← فتح** (أول مرة فقط — النسخة غير موقّعة بشهادة آبل المدفوعة)
+               - بديل: افتح Terminal ونفّذ: `xattr -dr com.apple.quarantine /Applications/jisr.app`
+
+            ### رحلة التجربة (داخل التطبيق)
+            1️⃣ نزّل المحرك → 2️⃣ جهّز القارورة الرئيسية → 3️⃣ ثبّت ستيم للويندوز → 4️⃣ سجّل دخولك بحسابك → 5️⃣ نزّل **LIMBO Demo** والعب 🎮
+
+            ### بعد التجربة
+            من صفحة **السجل** اضغط **«انسخ التقرير»** وأرسله — مع أي ملاحظة أو صورة. شكراً مقدماً 🌉
