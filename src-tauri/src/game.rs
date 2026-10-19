@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::{bottle, data_dir, log, log_keys};
+use crate::{bottle, data_dir, graphics, log, log_keys};
 
 /// تغيّرت قائمة الألعاب (أضفنا/حذفنا/بدأت/انتهت)
 const EVENT: &str = "jisr-games";
@@ -158,22 +158,16 @@ fn log_tail(id: &str, n: usize) -> String {
 // ============================================================
 
 /// هل الملف داخل قارورة؟ يرجع مسار ويندوز C:\... مباشرة (بلا أي ربط إضافي)
-fn path_in_bottle(exe: &Path) -> Option<String> {
+/// نفحص **قارورة اللعبة نفسها فقط** — ملف في قارورة ثانية ما ينفع لمساره C:
+fn path_in_bottle(exe: &Path, bottle_id: &str) -> Option<String> {
     let exe_c = std::fs::canonicalize(exe).ok()?;
-    let rd = std::fs::read_dir(bottle::bottles_dir()).ok()?;
-    for e in rd.flatten() {
-        let Ok(dc) = std::fs::canonicalize(e.path().join("drive_c")) else {
-            continue;
-        };
-        if let Ok(rel) = exe_c.strip_prefix(&dc) {
-            let parts: Vec<String> = rel
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().to_string())
-                .collect();
-            return Some(format!("C:\\{}", parts.join("\\")));
-        }
-    }
-    None
+    let dc = std::fs::canonicalize(bottle::bottle_dir(bottle_id).join("drive_c")).ok()?;
+    let rel = exe_c.strip_prefix(&dc).ok()?;
+    let parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect();
+    Some(format!("C:\\{}", parts.join("\\")))
 }
 
 /// يضمن «قرصاً مخصصاً» لمجلد اللعبة فقط داخل القارورة (لا وصول لبقية الماك)
@@ -200,7 +194,10 @@ fn ensure_game_drive(bottle_id: &str, game_dir: &Path) -> Result<String, String>
             let b = name.as_bytes();
             if b.len() == 2 && b[1] == b':' && b[0].is_ascii_lowercase() {
                 used.push(b[0]);
-                if std::fs::canonicalize(e.path()).map(|t| t == want).unwrap_or(false) {
+                if std::fs::canonicalize(e.path())
+                    .map(|t| t == want)
+                    .unwrap_or(false)
+                {
                     return Ok(name);
                 }
             }
@@ -231,7 +228,7 @@ fn game_dos_paths(meta: &GameMeta) -> Result<(String, PathBuf), String> {
         return Err("ملف اللعبة مو موجود — يمكن اننقل أو انحذف".into());
     }
     // داخل قارورة؟ → C: مباشرة (بلا ربط)
-    if let Some(win) = path_in_bottle(&exe) {
+    if let Some(win) = path_in_bottle(&exe, &meta.bottle) {
         return Ok((win, dir));
     }
     // برا القارورة → قرص مخصص لمجلد اللعبة فقط
@@ -256,7 +253,10 @@ pub async fn games_list(state: State<'_, GamesState>) -> Result<Vec<Game>, Strin
         .map(|r| r.keys().cloned().collect())
         .unwrap_or_default();
     let list = state.list.lock().map(|l| l.clone()).unwrap_or_default();
-    Ok(list.iter().map(|m| to_game(m, running.contains(&m.id))).collect())
+    Ok(list
+        .iter()
+        .map(|m| to_game(m, running.contains(&m.id)))
+        .collect())
 }
 
 /// إضافة لعبة من ملف .exe (المسار يجي من نافذة الاختيار الأصلية)
@@ -313,7 +313,12 @@ pub async fn game_add(
     };
     save_games(&snapshot)?;
 
-    log(&app, "info", log_keys::GAME_ADDED, json!({ "name": meta.name }));
+    log(
+        &app,
+        "info",
+        log_keys::GAME_ADDED,
+        json!({ "name": meta.name }),
+    );
     let _ = app.emit(EVENT, ());
     Ok(to_game(&meta, false))
 }
@@ -344,7 +349,12 @@ pub async fn game_remove(
     };
     save_games(&snapshot)?;
 
-    log(&app, "warn", log_keys::GAME_REMOVED, json!({ "name": name }));
+    log(
+        &app,
+        "warn",
+        log_keys::GAME_REMOVED,
+        json!({ "name": name }),
+    );
     let _ = app.emit(EVENT, ());
     Ok(())
 }
@@ -371,11 +381,21 @@ pub async fn game_launch(
         }
     }
 
+    // دفاعياً: معرّف القارورة يُستخدم في مسار على القرص — نرفض أي حرف غريب
+    if !meta
+        .bottle
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    {
+        return Err("معرّف القارورة غير صالح".into());
+    }
+
     if !bottle::bottle_ready(&meta.bottle) {
         return Err("جهّز القارورة الرئيسية أول — من صفحة القوارير".into());
     }
 
-    let wine = bottle::wine_bin().ok_or_else(|| "ما لقينا محرك Wine — ثبّت المحرك أول".to_string())?;
+    let wine =
+        bottle::wine_bin().ok_or_else(|| "ما لقينا محرك Wine — ثبّت المحرك أول".to_string())?;
     let (dos_exe, cwd) = game_dos_paths(&meta).map_err(|e| {
         log(
             &app,
@@ -387,10 +407,15 @@ pub async fn game_launch(
     })?;
 
     // نبني الأمر — بلا shell إطلاقاً (args مباشرة، ما فيه حقن)
+    let prefix = bottle::bottle_dir(&meta.bottle);
+    bottle::sync_ca_bundle(&prefix);
     let (out, err) = stdio_to_log(&meta.id);
     let mut cmd = tokio::process::Command::new(&wine);
-    cmd.env("WINEPREFIX", bottle::bottle_dir(&meta.bottle))
-        .arg(&dos_exe)
+    cmd.env("WINEPREFIX", &prefix);
+    bottle::apply_wine_env(&mut cmd, false);
+    // DXVK (إن كان مفعّلاً): DirectX 10/11 → Vulkan → Metal بدل WineD3D
+    graphics::apply_env(&mut cmd, false);
+    cmd.arg(&dos_exe)
         .current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(out)
@@ -419,7 +444,12 @@ pub async fn game_launch(
             },
         );
     }
-    log(&app, "info", log_keys::GAME_LAUNCHING, json!({ "name": meta.name }));
+    log(
+        &app,
+        "info",
+        log_keys::GAME_LAUNCHING,
+        json!({ "name": meta.name }),
+    );
     let _ = app.emit(EVENT, ());
 
     // المراقب: ننتظر نهاية اللعبة → نجمع وقت اللعب + نبلّغ الواجهة

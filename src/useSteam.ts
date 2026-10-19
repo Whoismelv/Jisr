@@ -47,9 +47,14 @@ export function useSteam(notify: (m: string) => void): Steam {
   useEffect(() => {
     refresh();
     const unSteam = listen("jisr-steam", () => refresh());
-    // تنزيل مثبّت ستيم (بدأ/تحقق/خلص/فشل) → نحدّث الحالة
-    const unDl = listen<{ id: string }>("jisr-download", (e) => {
-      if (e.payload.id === STEAM_SETUP_ID) refresh();
+    // تنزيل مثبّت ستيم (خلص/فشل/انلغى فقط — لا مع كل نبضة تقدّم)
+    const unDl = listen<{ id: string; phase?: string }>("jisr-download", (e) => {
+      if (
+        e.payload.id === STEAM_SETUP_ID &&
+        ["done", "error", "cancelled"].includes(e.payload.phase ?? "")
+      ) {
+        refresh();
+      }
     });
     // تجهزت القارورة الرئيسية للتو؟ → نعيد الفحص (بعده يشتغل التحقق التلقائي)
     const unBottles = listen("jisr-bottles", () => refresh());

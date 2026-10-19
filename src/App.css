@@ -889,7 +889,44 @@ html.is-macos[dir="rtl"] .toolbar {
 .filter-row {
   display: flex;
   justify-content: flex-start;
-}.empty {
+}
+
+/* ---------- مكتبة ستيم ---------- */
+.steam-games {
+  display: flex;
+  flex-direction: column;
+  margin-top: 2px;
+}
+
+.steam-game {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--card-border);
+}
+
+.steam-game:first-child {
+  border-top: 0;
+}
+
+.steam-game-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.steam-game-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
   display: flex;
   flex-direction: column;
   align-items: center;

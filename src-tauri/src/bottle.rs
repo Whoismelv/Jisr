@@ -7,11 +7,11 @@
 // ============================================================
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{data_dir, download, engine, log, log_keys};
@@ -60,8 +60,16 @@ pub struct Bottle {
 }
 
 /// قوارير شغّال تجهيزها الآن (في الذاكرة فقط — للحالات العالقة بعد إغلاق التطبيق)
+/// • ذاكرة أحجام مؤقتة: حساب حجم القارورة يمشي على كل ملفاتها (ستيم = آلاف
+///   الملفات)، فما نكرره مع كل تحديث واجهة — نعيد الحساب بعد دقيقة على الأكثر.
 #[derive(Default)]
-pub struct BottlesState(pub Mutex<HashSet<String>>);
+pub struct BottlesState(
+    pub Mutex<HashSet<String>>,
+    pub Mutex<HashMap<String, (u64, Instant)>>,
+);
+
+/// عمر ذاكرة الحجم — يوازن بين دقة العرض وسرعة الواجهة
+const SIZE_CACHE_TTL: Duration = Duration::from_secs(60);
 
 // ============================================================
 //  المسارات والملفات
@@ -136,8 +144,57 @@ fn remove_z_drive(prefix: &Path) {
 
 /// ملف تشغيل Wine من أول محرك بنوع engine في الكتالوج
 pub(crate) fn wine_bin() -> Option<PathBuf> {
-    let id = download::catalog().into_iter().find(|a| a.kind == "engine")?.id;
+    let id = download::catalog()
+        .into_iter()
+        .find(|a| a.kind == "engine")?
+        .id;
     engine::wine_bin(id)
+}
+
+/// متغيّرات Wine الموحّدة لكل تشغيل:
+/// • `winemenubuilder.exe=d` يمنع Wine من إنشاء اختصارات .app خارج القارورة
+///   (وعد «كل شيء داخل القارورة» + ما نلوّث ~/Applications)
+/// • `steamservice=d` يمنع أخطاء خدمة ستيم داخل Wine (لعميل ستيم فقط)
+/// • `WINEMSYNC=1` يفعّل msync (مزامنة Mach) إن كانت مبنية في المحرك —
+///   أكبر مكسب أداء مجاني على Apple Silicon لدى Whisky/CrossOver
+/// • ستيم فقط: لغة UTF-8 إنجليزية (CEF ينهار مع بعض اللغات) + تعطيل sandbox
+pub(crate) fn apply_wine_env(cmd: &mut tokio::process::Command, steam: bool) {
+    let overrides = if steam {
+        "winemenubuilder.exe=d;steamservice=d"
+    } else {
+        "winemenubuilder.exe=d"
+    };
+    cmd.env("WINEDLLOVERRIDES", overrides).env("WINEMSYNC", "1");
+    if steam {
+        cmd.env("LC_ALL", "en_US.UTF-8")
+            .env("LANG", "en_US.UTF-8")
+            .env("STEAM_DISABLE_CEF_SANDBOX", "1");
+    }
+}
+
+/// ننسخ جذر الشهادات الرسمي من macOS إلى القارورة (تحسين TLS في Wine/CEF).
+/// غير حرج: أي فشل يُتجاهل بهدوء، وما نعيد النسخ لو الحجم مطابق.
+pub(crate) fn sync_ca_bundle(prefix: &Path) {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let src = Path::new("/etc/ssl/cert.pem");
+    let dst = prefix.join("drive_c").join("windows").join("cacert.pem");
+    let Ok(src_md) = std::fs::metadata(src) else {
+        return;
+    };
+    if !src_md.is_file() {
+        return;
+    }
+    if let Ok(dst_md) = std::fs::metadata(&dst)
+        && dst_md.len() == src_md.len()
+    {
+        return;
+    }
+    if let Some(parent) = dst.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::copy(src, &dst);
 }
 
 /// نبلّغ الواجهة إن القوارير تغيّرت (بدون حمولة — الواجهة تعيد القراءة)
@@ -150,8 +207,12 @@ fn emit(app: &AppHandle) {
 // ============================================================
 
 /// كل القوارير — نصلّح أثناء المرور أي حالة عالقة (انغلاق وسط التجهيز...)
-fn scan_bottles(running: &HashSet<String>) -> Vec<Bottle> {
+fn scan_bottles(
+    running: &HashSet<String>,
+    sizes: &mut HashMap<String, (u64, Instant)>,
+) -> Vec<Bottle> {
     let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     let Ok(rd) = std::fs::read_dir(bottles_dir()) else {
         return out;
     };
@@ -161,6 +222,7 @@ fn scan_bottles(running: &HashSet<String>) -> Vec<Bottle> {
             continue;
         }
         let id = e.file_name().to_string_lossy().to_string();
+        seen.insert(id.clone());
         let dir = bottle_dir(&id);
 
         let mut meta = read_meta(&id).unwrap_or_else(|| BottleMeta {
@@ -170,7 +232,11 @@ fn scan_bottles(running: &HashSet<String>) -> Vec<Bottle> {
             } else {
                 id.clone()
             },
-            kind: if id == MAIN_ID { "main".into() } else { "private".into() },
+            kind: if id == MAIN_ID {
+                "main".into()
+            } else {
+                "private".into()
+            },
             error: Some("ملف التعريف مفقود — أعد التجهيز".into()),
             ..BottleMeta::default()
         });
@@ -193,6 +259,15 @@ fn scan_bottles(running: &HashSet<String>) -> Vec<Bottle> {
             }
         }
 
+        let size_bytes = match sizes.get(&id) {
+            Some((bytes, at)) if at.elapsed() < SIZE_CACHE_TTL => *bytes,
+            _ => {
+                let bytes = dir_size(&dir);
+                sizes.insert(id.clone(), (bytes, Instant::now()));
+                bytes
+            }
+        };
+
         out.push(Bottle {
             id,
             name: meta.name.clone(),
@@ -200,13 +275,16 @@ fn scan_bottles(running: &HashSet<String>) -> Vec<Bottle> {
             state: meta.state.clone(),
             error: meta.error.clone(),
             path: dir.display().to_string(),
-            size_bytes: dir_size(&dir),
+            size_bytes,
             created_ms: meta.created_ms,
         });
     }
 
+    // نطرد من الذاكرة أحجام القوارير اللي انحذفت
+    sizes.retain(|k, _| seen.contains(k));
+
     // الرئيسية أولاً ثم الأقدم فالأحدث
-    out.sort_by(|a, b| (a.kind != "main", a.created_ms).cmp(&(b.kind != "main", b.created_ms)));
+    out.sort_by_key(|a| (a.kind != "main", a.created_ms));
     out
 }
 
@@ -231,7 +309,12 @@ async fn begin_provision(
         meta.state = "ready".into();
         meta.error = None;
         write_meta(&meta).map_err(|e| format!("تعذّر حفظ حالة القارورة: {e}"))?;
-        log(app, "info", log_keys::BOTTLE_READY, json!({ "kind": meta.kind }));
+        log(
+            app,
+            "info",
+            log_keys::BOTTLE_READY,
+            json!({ "kind": meta.kind }),
+        );
         emit(app);
         return Ok(());
     }
@@ -239,7 +322,12 @@ async fn begin_provision(
     meta.state = "creating".into();
     meta.error = None;
     write_meta(&meta).map_err(|e| format!("تعذّر حفظ حالة القارورة: {e}"))?;
-    log(app, "info", log_keys::BOTTLE_STARTED, json!({ "kind": meta.kind }));
+    log(
+        app,
+        "info",
+        log_keys::BOTTLE_STARTED,
+        json!({ "kind": meta.kind }),
+    );
     emit(app);
 
     if let Ok(mut s) = st.0.lock() {
@@ -265,13 +353,23 @@ async fn begin_provision(
                 m.state = "ready".into();
                 m.error = None;
                 let _ = write_meta(&m);
-                log(&app2, "info", log_keys::BOTTLE_READY, json!({ "kind": kind2 }));
+                log(
+                    &app2,
+                    "info",
+                    log_keys::BOTTLE_READY,
+                    json!({ "kind": kind2 }),
+                );
             }
             Err(msg) => {
                 m.state = "error".into();
                 m.error = Some(msg.clone());
                 let _ = write_meta(&m);
-                log(&app2, "error", log_keys::BOTTLE_FAILED, json!({ "kind": kind2, "error": msg }));
+                log(
+                    &app2,
+                    "error",
+                    log_keys::BOTTLE_FAILED,
+                    json!({ "kind": kind2, "error": msg }),
+                );
             }
         }
         emit(&app2);
@@ -286,15 +384,17 @@ async fn run_wineboot(id: &str) -> Result<(), String> {
     let prefix = bottle_dir(id);
 
     let mut cmd = tokio::process::Command::new(&wine);
-    cmd.env("WINEPREFIX", &prefix)
-        .arg("wineboot")
+    cmd.env("WINEPREFIX", &prefix);
+    apply_wine_env(&mut cmd, false);
+    cmd.arg("wineboot")
         .arg("-u")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    let out = match tokio::time::timeout(Duration::from_secs(BOOT_TIMEOUT_SECS), cmd.output()).await {
+    let out = match tokio::time::timeout(Duration::from_secs(BOOT_TIMEOUT_SECS), cmd.output()).await
+    {
         Err(_) => return Err("التجهيز أخذ وقتاً طويلاً — أعد المحاولة".into()),
         Ok(Err(e)) => {
             let mut msg = format!("تعذّر تشغيل Wine: {e}");
@@ -316,7 +416,11 @@ async fn run_wineboot(id: &str) -> Result<(), String> {
             .map(|s| s.trim().to_string())
             .collect();
         tail.reverse();
-        let detail = if tail.is_empty() { "بلا تفاصيل".to_string() } else { tail.join(" | ") };
+        let detail = if tail.is_empty() {
+            "بلا تفاصيل".to_string()
+        } else {
+            tail.join(" | ")
+        };
         return Err(format!(
             "فشل تجهيز ويندوز (رمز {}): {}",
             out.status.code().unwrap_or(-1),
@@ -326,6 +430,8 @@ async fn run_wineboot(id: &str) -> Result<(), String> {
 
     // قاعدة أمنية: Z: تعطي وصولاً لكل ملفات الماك — تُزال دائماً
     remove_z_drive(&prefix);
+    // شهادات النظام الرسمية → جلسات TLS داخل القارورة (تحسين غير حرج)
+    sync_ca_bundle(&prefix);
     Ok(())
 }
 
@@ -337,9 +443,17 @@ async fn run_wineboot(id: &str) -> Result<(), String> {
 #[tauri::command]
 pub async fn bottles_list(state: State<'_, BottlesState>) -> Result<Vec<Bottle>, String> {
     let running: HashSet<String> = state.0.lock().map(|s| s.clone()).unwrap_or_default();
-    let list = tauri::async_runtime::spawn_blocking(move || scan_bottles(&running))
-        .await
-        .unwrap_or_default();
+    let cache = state.1.lock().map(|c| c.clone()).unwrap_or_default();
+    let (list, new_cache) = tauri::async_runtime::spawn_blocking(move || {
+        let mut cache = cache;
+        let list = scan_bottles(&running, &mut cache);
+        (list, cache)
+    })
+    .await
+    .unwrap_or_default();
+    if let Ok(mut c) = state.1.lock() {
+        *c = new_cache;
+    }
     Ok(list)
 }
 
@@ -406,8 +520,16 @@ pub async fn bottle_retry(
 
     let meta = read_meta(&id).unwrap_or_else(|| BottleMeta {
         id: id.clone(),
-        name: if id == MAIN_ID { "القارورة الرئيسية".into() } else { id.clone() },
-        kind: if id == MAIN_ID { "main".into() } else { "private".into() },
+        name: if id == MAIN_ID {
+            "القارورة الرئيسية".into()
+        } else {
+            id.clone()
+        },
+        kind: if id == MAIN_ID {
+            "main".into()
+        } else {
+            "private".into()
+        },
         ..BottleMeta::default()
     });
 
@@ -435,11 +557,23 @@ pub async fn bottle_delete(
     }
 
     // اسم القارورة مو نص مخزّن — نوعها يكفي والواجهة تترجمها حسب اللغة
-    let kind = read_meta(&id)
-        .map(|m| m.kind)
-        .unwrap_or_else(|| if id == MAIN_ID { "main".into() } else { "private".into() });
+    let kind = read_meta(&id).map(|m| m.kind).unwrap_or_else(|| {
+        if id == MAIN_ID {
+            "main".into()
+        } else {
+            "private".into()
+        }
+    });
     std::fs::remove_dir_all(&dir).map_err(|e| format!("تعذّر حذف القارورة: {e}"))?;
-    log(&app, "warn", log_keys::BOTTLE_DELETED, json!({ "kind": kind }));
+    if let Ok(mut c) = state.1.lock() {
+        c.remove(&id);
+    }
+    log(
+        &app,
+        "warn",
+        log_keys::BOTTLE_DELETED,
+        json!({ "kind": kind }),
+    );
     emit(&app);
     Ok(())
 }

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::AsyncWriteExt;
 
-use crate::{engine, engines_dir, log, log_keys};
+use crate::{engine, engines_dir, graphics, log, log_keys};
 
 /// النطاقات المسموحة — بنية GitHub الرسمية + سيرفر ستيم الرسمي (Valve).
 /// تُفحص عند بدء الطلب *وعند كل تحويلة* (redirect) — لا استثناءات.
@@ -80,6 +80,17 @@ pub fn catalog() -> Vec<Asset> {
             sha256: "aa0ea4c82e636ae7bca2076387cb0a5affa26509ad13f119ecd0d62bd7ba6f82",
             size: 190_974_384,
         },
+        // طبقة DXVK-macOS (مفتوحة المصدر) — تسريع DirectX 10/11 داخل Wine.
+        // نسخة «builtin» مقصودة: تُحمَّل عبر WINEDLLPATH_PREPEND بلا لمس القارورة.
+        Asset {
+            id: graphics::ASSET_ID,
+            name: "DXVK",
+            version: "1.10.3",
+            kind: "graphics",
+            url: "https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack-builtin.tar.gz",
+            sha256: "810b1e5caf8ce975b784fae866a130ad23fa0ea233b0e5609cbc4a45f3ef6f00",
+            size: 2_785_833,
+        },
         // مثبّت ستيم الرسمي من Valve.
         // ⚠️ البصمة مربوطة بملف اليوم — Valve يحدّث الملف دورياً؛ لو تغيّر،
         // التنزيل يُرفض بأمان حتى نحدّث البصمة هنا (ننزّل الملف يدوياً ونتحقق).
@@ -109,8 +120,8 @@ pub struct Progress {
     pub received: u64,
     pub total: u64, // 0 = غير معروف
     pub speed_bps: u64,
-    pub files: u64, // عدد الملفات المفكوكة (مرحلة الفك)
-    pub op: String, // download | install — لأي مرحلة ترجع رسالة الخطأ
+    pub files: u64,    // عدد الملفات المفكوكة (مرحلة الفك)
+    pub op: String,    // download | install — لأي مرحلة ترجع رسالة الخطأ
     pub phase: String, // starting|downloading|verifying|extracting|done|error|cancelled
     pub error: Option<String>,
 }
@@ -181,9 +192,15 @@ fn set_running(app: &AppHandle, id: &str, running: bool) {
 /// فشل مؤدّب: يكتب في السجل + ينشر حالة الخطأ + يحرّر الحالة
 /// op: "download" أو "install" — عشان الواجهة تعرض العنوان الصحيح
 fn fail(app: &AppHandle, asset: &Asset, key: &str, op: &str, msg: String) {
+    // DXVK اختياري: فشله لا يوقف الألعاب (ترجع WineD3D) — تحذير لا خطأ
+    let level = if asset.kind == "graphics" {
+        "warn"
+    } else {
+        "error"
+    };
     log(
         app,
-        "error",
+        level,
         key,
         json!({ "name": asset.name, "error": msg.clone() }),
     );
@@ -224,7 +241,11 @@ pub(crate) async fn sha256_file(path: &Path) -> std::io::Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 // ============================================================
@@ -235,13 +256,25 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
 
     let dir = downloads_dir();
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-        fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر إنشاء مجلد التنزيل: {e}"));
+        fail(
+            &app,
+            &asset,
+            log_keys::DOWNLOAD_FAILED,
+            "download",
+            format!("تعذّر إنشاء مجلد التنزيل: {e}"),
+        );
         return;
     }
 
     // اسم الملف من الرابط + فحص أمان (ما فيه مسارات ولا رموز غريبة)
     let Some(file_name) = engine::safe_file_name(asset.url) else {
-        fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", "اسم ملف غير صالح في الرابط".into());
+        fail(
+            &app,
+            &asset,
+            log_keys::DOWNLOAD_FAILED,
+            "download",
+            "اسم ملف غير صالح في الرابط".into(),
+        );
         return;
     };
 
@@ -274,10 +307,17 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
                     log_keys::DOWNLOAD_DONE,
                     json!({ "name": asset.name, "version": asset.version }),
                 );
-                // محرك؟ نكمل سلسلة التركيب تلقائياً
-                if asset.kind == "engine" {
-                    install_engine(&app, &asset, Arc::clone(&cancel)).await;
-                    return;
+                // محرك/رسومات؟ نكمل سلسلة التركيب تلقائياً
+                match asset.kind {
+                    "engine" => {
+                        install_engine(&app, &asset, Arc::clone(&cancel)).await;
+                        return;
+                    }
+                    "graphics" => {
+                        install_graphics(&app, &asset, Arc::clone(&cancel)).await;
+                        return;
+                    }
+                    _ => {}
                 }
                 publish(
                     &app,
@@ -298,7 +338,10 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     }
 
     // عندنا جزء منزّل سابق؟ نكمّل من وين وقفنا
-    let mut existing = tokio::fs::metadata(&part).await.map(|m| m.len()).unwrap_or(0);
+    let mut existing = tokio::fs::metadata(&part)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
 
     // العميل: تتبّع تحويلات GitHub فقط + HTTPS إجباري
     let client = match reqwest::Client::builder()
@@ -318,7 +361,13 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     {
         Ok(c) => c,
         Err(e) => {
-            fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر تجهيز الاتصال: {e}"));
+            fail(
+                &app,
+                &asset,
+                log_keys::DOWNLOAD_FAILED,
+                "download",
+                format!("تعذّر تجهيز الاتصال: {e}"),
+            );
             return;
         }
     };
@@ -331,16 +380,25 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     let mut resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
-            fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر بدء التنزيل: {e}"));
+            fail(
+                &app,
+                &asset,
+                log_keys::DOWNLOAD_FAILED,
+                "download",
+                format!("تعذّر بدء التنزيل: {e}"),
+            );
             return;
         }
     };
 
-    if !resp.status().is_success() && !(resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && existing > 0) {
+    if !resp.status().is_success()
+        && !(resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && existing > 0)
+    {
         fail(
             &app,
             &asset,
-            log_keys::DOWNLOAD_FAILED, "download",
+            log_keys::DOWNLOAD_FAILED,
+            "download",
             format!("السيرفر رد بحالة غير متوقعة: {}", resp.status().as_u16()),
         );
         return;
@@ -354,7 +412,13 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         resp = match again.send().await {
             Ok(r) => r,
             Err(e) => {
-                fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر بدء التنزيل: {e}"));
+                fail(
+                    &app,
+                    &asset,
+                    log_keys::DOWNLOAD_FAILED,
+                    "download",
+                    format!("تعذّر بدء التنزيل: {e}"),
+                );
                 return;
             }
         };
@@ -362,7 +426,8 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
             fail(
                 &app,
                 &asset,
-                log_keys::DOWNLOAD_FAILED, "download",
+                log_keys::DOWNLOAD_FAILED,
+                "download",
                 format!("السيرفر رد بحالة غير متوقعة: {}", resp.status().as_u16()),
             );
             return;
@@ -380,7 +445,13 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     };
 
     if total > MAX_SIZE {
-        fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", "حجم الملف أكبر من الحد المسموح — رفضناه".into());
+        fail(
+            &app,
+            &asset,
+            log_keys::DOWNLOAD_FAILED,
+            "download",
+            "حجم الملف أكبر من الحد المسموح — رفضناه".into(),
+        );
         return;
     }
 
@@ -389,7 +460,13 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         match tokio::fs::OpenOptions::new().append(true).open(&part).await {
             Ok(f) => f,
             Err(e) => {
-                fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر فتح ملف الجزء: {e}"));
+                fail(
+                    &app,
+                    &asset,
+                    log_keys::DOWNLOAD_FAILED,
+                    "download",
+                    format!("تعذّر فتح ملف الجزء: {e}"),
+                );
                 return;
             }
         }
@@ -397,7 +474,13 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         match tokio::fs::File::create(&part).await {
             Ok(f) => f,
             Err(e) => {
-                fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر إنشاء ملف التنزيل: {e}"));
+                fail(
+                    &app,
+                    &asset,
+                    log_keys::DOWNLOAD_FAILED,
+                    "download",
+                    format!("تعذّر إنشاء ملف التنزيل: {e}"),
+                );
                 return;
             }
         }
@@ -524,7 +607,13 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     let hash = match sha256_file(&part).await {
         Ok(h) => h,
         Err(e) => {
-            fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر قراءة الملف للتحقق: {e}"));
+            fail(
+                &app,
+                &asset,
+                log_keys::DOWNLOAD_FAILED,
+                "download",
+                format!("تعذّر قراءة الملف للتحقق: {e}"),
+            );
             return;
         }
     };
@@ -535,7 +624,8 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         fail(
             &app,
             &asset,
-            log_keys::DOWNLOAD_FAILED, "download",
+            log_keys::DOWNLOAD_FAILED,
+            "download",
             "بصمة الملف لا تطابق البصمة الرسمية — حذفناه".into(),
         );
         return;
@@ -543,7 +633,13 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
 
     // البصمة صحيحة 100% → نثبّت الاسم النهائي
     if let Err(e) = tokio::fs::rename(&part, &final_path).await {
-        fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", format!("تعذّر تثبيت الملف النهائي: {e}"));
+        fail(
+            &app,
+            &asset,
+            log_keys::DOWNLOAD_FAILED,
+            "download",
+            format!("تعذّر تثبيت الملف النهائي: {e}"),
+        );
         return;
     }
 
@@ -554,10 +650,17 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         json!({ "name": asset.name, "version": asset.version }),
     );
 
-    // ---------- سلسلة المحرك: نكمل تلقائياً → فك الضغط والتركيب ----------
-    if asset.kind == "engine" {
-        install_engine(&app, &asset, Arc::clone(&cancel)).await;
-        return;
+    // ---------- سلسلة التركيب: نكمل تلقائياً → فك الضغط والتركيب ----------
+    match asset.kind {
+        "engine" => {
+            install_engine(&app, &asset, Arc::clone(&cancel)).await;
+            return;
+        }
+        "graphics" => {
+            install_graphics(&app, &asset, Arc::clone(&cancel)).await;
+            return;
+        }
+        _ => {}
     }
 
     let size = tokio::fs::metadata(&final_path)
@@ -599,25 +702,35 @@ async fn install_engine(app: &AppHandle, asset: &Asset, cancel: Arc<AtomicBool>)
             json!({ "path": engine::install_dir(id).display().to_string() }),
         );
         set_running(app, id, false);
+        ensure_graphics_layer(app);
         return;
     }
 
     // الأرشيف المنزّل الموثّق (تحققنا منه قبل الوصول هنا)
     let Some(archive) = engine::archive_path(asset.url) else {
-        fail(app, asset, log_keys::EXTRACT_FAILED, "install", "اسم ملف غير صالح في الرابط".into());
+        fail(
+            app,
+            asset,
+            log_keys::EXTRACT_FAILED,
+            "install",
+            "اسم ملف غير صالح في الرابط".into(),
+        );
         return;
     };
     if !archive.is_file() {
         fail(
             app,
             asset,
-            log_keys::EXTRACT_FAILED, "install",
+            log_keys::EXTRACT_FAILED,
+            "install",
             "ملف المحرك غير موجود — لازم ننزّله أول".into(),
         );
         return;
     }
 
-    let archive_size = std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(asset.size);
+    let archive_size = std::fs::metadata(&archive)
+        .map(|m| m.len())
+        .unwrap_or(asset.size);
 
     log(
         app,
@@ -665,7 +778,9 @@ async fn install_engine(app: &AppHandle, asset: &Asset, cancel: Arc<AtomicBool>)
 
     let result: Result<engine::Installed, engine::ExtErr> = match joined {
         Ok(r) => r,
-        Err(e) => Err(engine::ExtErr::Failed(format!("خطأ غير متوقع في خيط الفك: {e}"))),
+        Err(e) => Err(engine::ExtErr::Failed(format!(
+            "خطأ غير متوقع في خيط الفك: {e}"
+        ))),
     };
 
     match result {
@@ -705,6 +820,8 @@ async fn install_engine(app: &AppHandle, asset: &Asset, cancel: Arc<AtomicBool>)
                 json!({ "path": done.path }),
             );
             set_running(app, id, false);
+            // طبقة الأداء تلقائياً بعد المحرك (فشلها لا يمنع تشغيل الألعاب)
+            ensure_graphics_layer(app);
         }
         Err(engine::ExtErr::Cancelled) => {
             // إلغاء نظيف: نمحي مجلد الفك — الأرشيف يظل (الفك الثاني بلا تنزيل جديد)
@@ -726,6 +843,127 @@ async fn install_engine(app: &AppHandle, asset: &Asset, cancel: Arc<AtomicBool>)
 }
 
 // ============================================================
+//  تركيب طبقة الرسومات (DXVK): فك آمن → تحقق بنية → نقل ذرّي
+// ============================================================
+async fn install_graphics(app: &AppHandle, asset: &Asset, cancel: Arc<AtomicBool>) {
+    let id = asset.id;
+
+    if graphics::is_installed() {
+        publish(
+            app,
+            Progress {
+                received: asset.size,
+                total: asset.size,
+                ..Progress::p(id, "done")
+            },
+        );
+        set_running(app, id, false);
+        return;
+    }
+
+    let Some(archive) = engine::archive_path(asset.url) else {
+        fail(
+            app,
+            asset,
+            log_keys::GRAPHICS_FAILED,
+            "install",
+            "اسم ملف غير صالح في الرابط".into(),
+        );
+        return;
+    };
+    if !archive.is_file() {
+        fail(
+            app,
+            asset,
+            log_keys::GRAPHICS_FAILED,
+            "install",
+            "ملف DXVK غير موجود — لازم ننزّله أول".into(),
+        );
+        return;
+    }
+
+    let archive_size = std::fs::metadata(&archive)
+        .map(|m| m.len())
+        .unwrap_or(asset.size);
+
+    log(
+        app,
+        "info",
+        log_keys::EXTRACT_STARTED,
+        json!({ "name": asset.name, "version": asset.version }),
+    );
+    publish(
+        app,
+        Progress {
+            total: archive_size,
+            ..Progress::p(id, "extracting")
+        },
+    );
+
+    let app2 = app.clone();
+    let id2 = id.to_string();
+    let archive2 = archive.clone();
+    let cancel2 = Arc::clone(&cancel);
+
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let cb_app = app2.clone();
+        let cb_id = id2.clone();
+        let cb = move |read: u64, total: u64, files: u64| {
+            publish(
+                &cb_app,
+                Progress {
+                    received: read,
+                    total,
+                    files,
+                    ..Progress::p(&cb_id, "extracting")
+                },
+            );
+        };
+        graphics::install(&archive2, &cancel2, &cb)
+    })
+    .await;
+
+    let result = match joined {
+        Ok(r) => r,
+        Err(e) => Err(engine::ExtErr::Failed(format!(
+            "خطأ غير متوقع في خيط فك DXVK: {e}"
+        ))),
+    };
+
+    match result {
+        Ok((files, bytes)) => {
+            let _ = tokio::fs::remove_file(&archive).await;
+            publish(
+                app,
+                Progress {
+                    received: archive_size,
+                    total: archive_size,
+                    files,
+                    ..Progress::p(id, "done")
+                },
+            );
+            log(
+                app,
+                "info",
+                log_keys::GRAPHICS_READY,
+                json!({ "files": files, "size": human_size(bytes) }),
+            );
+            set_running(app, id, false);
+        }
+        Err(engine::ExtErr::Cancelled) => {
+            // إلغاء: نمسح بقايا الفك (الأرشيف يبقى للاستكمال)
+            graphics::cleanup_staging();
+            publish(app, Progress::p(id, "cancelled"));
+            set_running(app, id, false);
+        }
+        Err(engine::ExtErr::Failed(msg)) => {
+            graphics::cleanup_staging();
+            fail(app, asset, log_keys::GRAPHICS_FAILED, "install", msg);
+        }
+    }
+}
+
+// ============================================================
 //  أوامر Tauri
 // ============================================================
 
@@ -735,21 +973,14 @@ pub fn download_catalog() -> Vec<Asset> {
     catalog()
 }
 
-/// ابدأ تنزيل عنصر من الكتالوج (id مثل "wine-11.18")
-#[tauri::command]
-pub async fn download_start(
-    app: AppHandle,
-    state: State<'_, DownloadsState>,
-    id: String,
-) -> Result<(), String> {
-    let asset = find_asset(&id).ok_or_else(|| "معرّف غير معروف".to_string())?;
-
-    // الحارس الأول: الرابط HTTPS ومن نطاق مسموح — قبل أي اتصال
-    if !url_allowed(asset.url) {
-        return Err("رفضنا التنزيل — الرابط خارج النطاقات المسموحة".into());
-    }
-
+/// يبدأ أي تنزيل (من الواجهة أو تلقائياً من سلسلة التجهيز)
+fn begin_download(app: &AppHandle, asset: Asset) -> Result<(), String> {
+    let id = asset.id.to_string();
     let cancel = Arc::new(AtomicBool::new(false));
+
+    let state = app
+        .try_state::<DownloadsState>()
+        .ok_or_else(|| "خطأ داخلي: حالة التنزيل غير جاهزة".to_string())?;
     {
         let mut map = state.0.lock().map_err(|_| "خطأ داخلي".to_string())?;
         if map.get(&id).map(|h| h.running).unwrap_or(false) {
@@ -770,15 +1001,43 @@ pub async fn download_start(
 
     // ننشر حالة البداية فوراً (الواجهة تعرض "جاري التحضير…")
     publish(
-        &app,
+        app,
         Progress {
             total: asset.size,
             ..Progress::p(&id, "starting")
         },
     );
 
-    tauri::async_runtime::spawn(run_download(app, asset, cancel));
+    tauri::async_runtime::spawn(run_download(app.clone(), asset, cancel));
     Ok(())
+}
+
+/// DXVK يُنزَّل تلقائياً بعد تجهيز Wine (2.8MB فقط) — وإلا تبقى الألعاب
+/// على WineD3D الأبطأ. أي فشل هنا غير قاتل: الألعاب تشتغل بالطبقة الافتراضية.
+pub(crate) fn ensure_graphics_layer(app: &AppHandle) {
+    if graphics::is_installed() {
+        return;
+    }
+    let Some(asset) = find_asset(graphics::ASSET_ID) else {
+        return;
+    };
+    if !url_allowed(asset.url) {
+        return;
+    }
+    let _ = begin_download(app, asset);
+}
+
+/// ابدأ تنزيل عنصر من الكتالوج (id مثل "wine-11.18")
+#[tauri::command]
+pub async fn download_start(app: AppHandle, id: String) -> Result<(), String> {
+    let asset = find_asset(&id).ok_or_else(|| "معرّف غير معروف".to_string())?;
+
+    // الحارس الأول: الرابط HTTPS ومن نطاق مسموح — قبل أي اتصال
+    if !url_allowed(asset.url) {
+        return Err("رفضنا التنزيل — الرابط خارج النطاقات المسموحة".into());
+    }
+
+    begin_download(&app, asset)
 }
 
 /// ألغِ تنزيلاً/تركيباً — الجزء المنزّل والأرشيف يُحفظان (نستكمل أي وقت لاحق)

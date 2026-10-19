@@ -9,8 +9,8 @@
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::engines_dir;
@@ -31,6 +31,7 @@ pub struct Installed {
 }
 
 /// خطأ الفك: إما إلغاء المستخدم (وقفة نظيفة) أو فشل حقيقي
+#[derive(Debug)]
 pub enum ExtErr {
     Cancelled,
     Failed(String),
@@ -54,6 +55,8 @@ pub fn staging_dir(id: &str) -> PathBuf {
 pub fn safe_file_name(url: &str) -> Option<String> {
     let name = url.rsplit('/').next()?.to_string();
     let ok = !name.is_empty()
+        && name != "."
+        && name != ".."
         && name.len() < 128
         && name
             .chars()
@@ -240,20 +243,56 @@ fn extract_tar_xz(
     cancel: &AtomicBool,
     progress: &(dyn Fn(u64, u64, u64) + Send + Sync),
 ) -> Result<(u64, u64, u64), ExtErr> {
-    std::fs::create_dir_all(dest)
-        .map_err(|e| ExtErr::Failed(format!("تعذّر إنشاء مجلد الفك: {e}")))?;
-
-    let file = File::open(archive)
-        .map_err(|e| ExtErr::Failed(format!("تعذّر فتح الأرشيف: {e}")))?;
+    let file = File::open(archive).map_err(|e| ExtErr::Failed(format!("تعذّر فتح الأرشيف: {e}")))?;
     let total = file.metadata().map(|m| m.len()).unwrap_or(0);
 
     let counter = Arc::new(AtomicU64::new(0));
-    let reader = BufReader::with_capacity(512 * 1024, CountReader {
-        inner: file,
-        counter: Arc::clone(&counter),
-    });
+    let reader = BufReader::with_capacity(
+        512 * 1024,
+        CountReader {
+            inner: file,
+            counter: Arc::clone(&counter),
+        },
+    );
     let decoder = xz2::read::XzDecoder::new(reader);
-    let mut ar = tar::Archive::new(decoder);
+    extract_tar(decoder, total, counter, dest, cancel, progress)
+}
+
+/// فك أرشيف tar.gz (طبقة DXVK) بنفس حراسات tar.xz تماماً.
+pub(crate) fn extract_tar_gz(
+    archive: &Path,
+    dest: &Path,
+    cancel: &AtomicBool,
+    progress: &(dyn Fn(u64, u64, u64) + Send + Sync),
+) -> Result<(u64, u64, u64), ExtErr> {
+    let file = File::open(archive).map_err(|e| ExtErr::Failed(format!("تعذّر فتح الأرشيف: {e}")))?;
+    let total = file.metadata().map(|m| m.len()).unwrap_or(0);
+
+    let counter = Arc::new(AtomicU64::new(0));
+    let reader = BufReader::with_capacity(
+        512 * 1024,
+        CountReader {
+            inner: file,
+            counter: Arc::clone(&counter),
+        },
+    );
+    let decoder = flate2::read::GzDecoder::new(reader);
+    extract_tar(decoder, total, counter, dest, cancel, progress)
+}
+
+/// جوهر الفك الموحّد: أي قارئ tar (xz أو gz) يمر من هنا — حراسة واحدة للجميع.
+fn extract_tar<R: Read>(
+    reader: R,
+    total: u64,
+    counter: Arc<AtomicU64>,
+    dest: &Path,
+    cancel: &AtomicBool,
+    progress: &(dyn Fn(u64, u64, u64) + Send + Sync),
+) -> Result<(u64, u64, u64), ExtErr> {
+    std::fs::create_dir_all(dest)
+        .map_err(|e| ExtErr::Failed(format!("تعذّر إنشاء مجلد الفك: {e}")))?;
+
+    let mut ar = tar::Archive::new(reader);
 
     let mut files: u64 = 0;
     let mut bytes: u64 = 0;
@@ -269,8 +308,7 @@ fn extract_tar_xz(
             return Err(ExtErr::Cancelled);
         }
 
-        let mut e = entry
-            .map_err(|er| ExtErr::Failed(format!("ملف تالف داخل الأرشيف: {er}")))?;
+        let mut e = entry.map_err(|er| ExtErr::Failed(format!("ملف تالف داخل الأرشيف: {er}")))?;
 
         files += 1;
         if files > MAX_FILES {
@@ -350,4 +388,79 @@ fn extract_tar_xz(
 
     progress(counter.load(Ordering::Relaxed), total, files);
     Ok((files, bytes, skipped))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// نفس مسار فك DXVK: gzip → tar → حراسة المسارات → ملفات صحيحة
+    #[test]
+    fn extracts_tar_gz_with_nested_dirs() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("jisr-gz-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let archive = base.join("layer.tar.gz");
+
+        {
+            let file = File::create(&archive).unwrap();
+            let enc = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+            let mut builder = tar::Builder::new(enc);
+            let data = b"d3d11";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "root/x86_64-windows/d3d11.dll", &data[..])
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+
+        let dest = base.join("out");
+        let cancel = AtomicBool::new(false);
+        let (files, bytes, _) = extract_tar_gz(&archive, &dest, &cancel, &|_, _, _| {}).unwrap();
+        assert_eq!(files, 1);
+        assert_eq!(bytes, 5);
+        assert_eq!(
+            std::fs::read(dest.join("root").join("x86_64-windows").join("d3d11.dll")).unwrap(),
+            b"d3d11"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cancel_stops_extraction() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("jisr-gz-c-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let archive = base.join("layer.tar.gz");
+        {
+            let file = File::create(&archive).unwrap();
+            let enc = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+            let mut builder = tar::Builder::new(enc);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(1);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "root/a.bin", &b"a"[..])
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        let dest = base.join("out");
+        let cancel = AtomicBool::new(true);
+        assert!(matches!(
+            extract_tar_gz(&archive, &dest, &cancel, &|_, _, _| {}),
+            Err(ExtErr::Cancelled)
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

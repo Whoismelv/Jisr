@@ -14,6 +14,7 @@ import { useLogs } from "./useLogs";
 import {
   useDownloads,
   ENGINE_ID,
+  GRAPHICS_ID,
   engineButtonState,
   isActive,
 } from "./useDownloads";
@@ -151,6 +152,15 @@ export default function App() {
     }
     prevEnginePhase.current = phase;
   }, [engineDl?.phase, engineDl?.files, notify, scan, sys?.engine_installed, t]);
+
+  // لما يخلص DXVK: نعيد فحص الجهاز حتى تظهر «طبقة الرسومات: DXVK» فوراً
+  const gfxDl = dl.items[GRAPHICS_ID];
+  const prevGfxPhase = useRef<string | null>(null);
+  useEffect(() => {
+    const phase = gfxDl?.phase ?? null;
+    if (phase === "done" && prevGfxPhase.current !== "done") void scan();
+    prevGfxPhase.current = phase;
+  }, [gfxDl?.phase, scan]);
 
   // ستيم: تحقق تلقائي — القارورة الرئيسية جاهزة وستيم مو مثبّت والمثبّت مو
   // منزّل؟ ننزّله تلقائياً مرة وحدة (وإذا ألغاه أو فشل — الزر اليدوي باقي)
@@ -339,7 +349,13 @@ export default function App() {
                   />
                 )}
                 {page === "library" && (
-                  <LibraryPage games={games} bottles={bottles} steam={steam} dl={dl} />
+                  <LibraryPage
+                    games={games}
+                    bottles={bottles}
+                    steam={steam}
+                    dl={dl}
+                    notify={notify}
+                  />
                 )}
                 {page === "bottles" && <BottlesPage bottles={bottles} sys={sys} />}
                 {page === "settings" && <SettingsPage sys={sys} dl={dl} />}

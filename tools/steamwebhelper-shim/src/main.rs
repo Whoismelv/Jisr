@@ -7,7 +7,9 @@
 //! الحل المعتمد من مجتمع Wine/ماك (Gcenx، notpop، wisnuub، ramiabih…):
 //! نستبدل `steamwebhelper.exe` بغلاف صغير، ونحتفظ بالأصل بجانبه باسم
 //! `steamwebhelper_real.exe`. الغلاف يشغّل الأصل مع نفس الوسائط + فلاقين
-//! يجبران CEF على الرسم داخل نفس العملية عبر ANGLE → Vulkan → MoltenVK → Metal.
+//! افتراضيين للرسم البرمجي داخل عملية واحدة (`--disable-gpu --single-process`).
+//! ولمن يبي مسار GPU: `--in-process-gpu --use-angle=vulkan --ignore-gpu-blocklist`
+//! عبر ملف `cef-flags.txt` (ANGLE → Vulkan → MoltenVK → Metal).
 //!
 //! يمكن تجاوز الفلاقين بدون بناء جديد عبر متغيّر البيئة `JISR_CEF_FLAGS`
 //! (تقرأه الواجهة من ملف اختياري — مفيد للتشخيص الميداني).
@@ -26,7 +28,12 @@ static MARKER: &[u8; 16] = b"JISR_CEF_SHIM_V1";
 const REAL_NAME: &str = "steamwebhelper_real.exe";
 const LOG_NAME: &str = "steamwebhelper_shim.log";
 const LOG_MAX_BYTES: u64 = 256 * 1024;
-const DEFAULT_FLAGS: &str = "--in-process-gpu --use-angle=vulkan --ignore-gpu-blocklist";
+/// الافتراضي: رسم واجهة ستيم على المعالج داخل عملية واحدة.
+/// أكثر الطرق ثباتاً على Apple Silicon (تستخدمها notpop وwisnuub افتراضياً):
+/// تُلغي تسليم الفريمات بين العمليات (سبب الشاشة السوداء) وتُنهي وميض النوافذ.
+/// الوضع المسرّع بالـGPU متاح عبر `cef-flags.txt`:
+/// `--in-process-gpu --use-angle=vulkan --ignore-gpu-blocklist`
+const DEFAULT_FLAGS: &str = "--disable-gpu --single-process";
 
 fn log_line(dir: &Path, line: &str) {
     let path = dir.join(LOG_NAME);
@@ -50,6 +57,17 @@ fn main() {
     };
     let dir: PathBuf = exe.parent().map(Path::to_path_buf).unwrap_or_default();
     let real = dir.join(REAL_NAME);
+
+    // حماية من التكرار اللانهائي: لو صار الملف المحفوظ نفسه غلافاً (تلف نادر)
+    // أو أعد Wine تشغيل الغلاف كطفل، نرفض بدل ما نولّد سلسلة عمليات لا تنتهي.
+    let launched_as_real = exe
+        .file_name()
+        .map(|n| n.eq_ignore_ascii_case(REAL_NAME))
+        .unwrap_or(false);
+    if launched_as_real || env::var_os("JISR_CEF_DEPTH").is_some() {
+        log_line(&dir, "error: shim recursion blocked");
+        std::process::exit(2);
+    }
 
     let args: Vec<String> = env::args().skip(1).collect();
 
@@ -81,6 +99,7 @@ fn main() {
     }
 
     let mut cmd = Command::new(&real);
+    cmd.env("JISR_CEF_DEPTH", "1");
     cmd.args(&args);
     for f in &flags {
         if !args.iter().any(|a| a.eq_ignore_ascii_case(f.as_str())) {

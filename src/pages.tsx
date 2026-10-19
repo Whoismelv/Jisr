@@ -17,7 +17,19 @@ import {
   StatusRow,
 } from "./ui";
 import * as Icon from "./Icons";
-import type { Bottle, DownloadProgress, Game, LogEntry, SystemInfo } from "./api";
+import {
+  getGraphicsMode,
+  setGraphicsMode,
+  steamGameLaunch,
+  steamGamesList,
+  type Bottle,
+  type DownloadProgress,
+  type Game,
+  type GraphicsMode,
+  type LogEntry,
+  type SteamGame,
+  type SystemInfo,
+} from "./api";
 import {
   ENGINE_ID,
   engineButtonState,
@@ -32,21 +44,6 @@ import { STEAM_SETUP_ID, type Steam } from "./useSteam";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 export type Page = "home" | "library" | "bottles" | "settings" | "logs";
-
-/** إعداد محفوظ تلقائياً في localStorage (حفظ فوري — بلا زر حفظ) */
-function usePersisted<T extends string>(key: string, initial: T) {
-  const [value, setValue] = useState<T>(
-    () => (localStorage.getItem(key) as T | null) ?? initial,
-  );
-  const set = useCallback(
-    (v: T) => {
-      setValue(v);
-      localStorage.setItem(key, v);
-    },
-    [key],
-  );
-  return [value, set] as const;
-}
 
 // ============================================================
 //  صندوق التنزيل (يُعرض في الرئيسية والإعدادات)
@@ -306,25 +303,54 @@ export const LibraryPage = memo(function LibraryPage({
   bottles,
   steam,
   dl,
+  notify,
 }: {
   games: Games;
   bottles: Bottles;
   steam: Steam;
   dl: Downloads;
+  notify: (msg: string) => void;
 }) {
   const { t } = useI18n();
   const [filter, setFilter] = useState<"all" | "steam" | "files">("all");
+  const [steamGames, setSteamGames] = useState<SteamGame[]>([]);
+  const [steamLoading, setSteamLoading] = useState(false);
+  const steamInstalled = !!steam.status?.installed;
+  const steamRunning = !!steam.status?.running;
+
+  const loadSteamGames = useCallback(() => {
+    if (!steamInstalled) {
+      setSteamGames([]);
+      return;
+    }
+    setSteamLoading(true);
+    steamGamesList()
+      .then(setSteamGames)
+      .catch(() => setSteamGames([]))
+      .finally(() => setSteamLoading(false));
+  }, [steamInstalled]);
+
+  // نقرأ مكتبة ستيم عند التثبيت، وعند كل عودة للصفحة (Steam قد ينزّل لعبة)
+  useEffect(() => {
+    loadSteamGames();
+  }, [loadSteamGames]);
+
+  const launchSteamGame = useCallback(
+    (g: SteamGame) => {
+      steamGameLaunch(g.appid)
+        .then(() => notify(t("steamGameLaunched", { name: g.name })))
+        .catch((err) => notify(String(err)));
+    },
+    [notify, t],
+  );
 
   const mainReady = bottles.items.some(
     (b) => b.kind === "main" && b.state === "ready",
   );
-  const filtered = games.items.filter((g) =>
-    filter === "all"
-      ? true
-      : filter === "steam"
-        ? g.kind === "steam"
-        : g.kind !== "steam",
-  );
+  // فلتر «ستيم» يخص مكتبة ستيم، و«ملفات» يخص الألعاب المضافة يدوياً
+  const showSteam = steamInstalled && filter !== "files";
+  const showManual = filter !== "steam";
+  const filtered = games.items.filter((g) => g.kind !== "steam");
 
   return (
     <div className="stack">
@@ -343,43 +369,127 @@ export const LibraryPage = memo(function LibraryPage({
         />
       </div>
 
-      {games.items.length === 0 ? (
-        <Card>
-          <Empty
-            icon={<Icon.Gamepad size={26} />}
-            title={t("libraryEmptyTitle")}
-            desc={t("libraryEmptyDesc")}
-            action={
-              <Button
-                variant="filled"
-                icon={<Icon.Plus size={15} />}
-                onClick={() => games.add()}
-              >
-                {t("addGame")}
-              </Button>
-            }
-          />
-        </Card>
-      ) : (
-        <>
-          {!mainReady && (
-            <p className="muted small">{t("gameNeedBottle")}</p>
-          )}
-          {filtered.map((g) => (
-            <GameCard key={g.id} g={g} games={games} bottleReady={mainReady} />
-          ))}
-          {filtered.length === 0 && (
-            <Card>
-              <p className="muted">{t("libraryNoMatch")}</p>
-            </Card>
-          )}
-        </>
+      {showSteam && (
+        <SteamLibrary
+          games={steamGames}
+          loading={steamLoading}
+          running={steamRunning}
+          onRefresh={loadSteamGames}
+          onPlay={launchSteamGame}
+        />
       )}
+
+      {showManual &&
+        (games.items.length === 0 ? (
+          // إذا فيه ألعاب ستيم معروضة، ما نغطيها بكرت «فاضية» — زر الإضافة فوق
+          (filter === "files" || steamGames.length === 0) && (
+            <Card>
+              <Empty
+                icon={<Icon.Gamepad size={26} />}
+                title={t("libraryEmptyTitle")}
+                desc={t("libraryEmptyDesc")}
+                action={
+                  <Button
+                    variant="filled"
+                    icon={<Icon.Plus size={15} />}
+                    onClick={() => games.add()}
+                  >
+                    {t("addGame")}
+                  </Button>
+                }
+              />
+            </Card>
+          )
+        ) : (
+          <>
+            {!mainReady && (
+              <p className="muted small">{t("gameNeedBottle")}</p>
+            )}
+            {filtered.map((g) => (
+              <GameCard key={g.id} g={g} games={games} bottleReady={mainReady} />
+            ))}
+            {filtered.length === 0 && (
+              <Card>
+                <p className="muted">{t("libraryNoMatch")}</p>
+              </Card>
+            )}
+          </>
+        ))}
 
       <Card title={t("libraryNoteTitle")} icon={<Icon.Sparkle size={16} />}>
         <p className="muted">{t("libraryNoteDesc")}</p>
       </Card>
     </div>
+  );
+});
+
+// ============================================================
+//  مكتبة ستيم — ألعاب مثبّتة داخل القارورة (تُقرأ من appmanifest)
+// ============================================================
+const SteamLibrary = memo(function SteamLibrary({
+  games,
+  loading,
+  running,
+  onRefresh,
+  onPlay,
+}: {
+  games: SteamGame[];
+  loading: boolean;
+  running: boolean;
+  onRefresh: () => void;
+  onPlay: (g: SteamGame) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <Card title={t("steamLibraryTitle")} icon={<Icon.Gamepad size={16} />}>
+      <div className="bottle-row">
+        <span
+          className={
+            "dot " + (loading ? "busy" : games.length > 0 ? "ok" : "off")
+          }
+        />
+        <span className="value">
+          {loading
+            ? t("steamLibraryLoading")
+            : t("steamLibraryCount", { n: games.length })}
+        </span>
+        <Button variant="plain" onClick={onRefresh} disabled={loading}>
+          {t("refresh")}
+        </Button>
+      </div>
+
+      {!loading && games.length === 0 && (
+        <p className="muted small">{t("steamLibraryEmpty")}</p>
+      )}
+
+      {games.length > 0 && (
+        <div className="steam-games">
+          {games.map((g) => (
+            <div className="steam-game" key={g.appid}>
+              <div className="steam-game-info">
+                <span className="steam-game-name">{g.name}</span>
+                <span className="muted small">
+                  {t("steamAppId", { id: g.appid })}
+                  {g.size_bytes > 0 ? ` · ${fmtBytes(g.size_bytes)}` : ""}
+                </span>
+              </div>
+              <Button
+                variant="filled"
+                icon={<Icon.Play size={13} />}
+                disabled={!running}
+                onClick={() => onPlay(g)}
+              >
+                {t("gamePlay")}
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="muted small">
+        {running ? t("steamLibraryHint") : t("steamLibraryNeedRun")}
+      </p>
+    </Card>
   );
 });
 
@@ -768,10 +878,17 @@ export const SettingsPage = memo(function SettingsPage({
 }) {
   const { t, choice: langChoice, setChoice: setLangChoice } = useI18n();
   const { theme, setTheme } = useTheme();
-  const [gfx, setGfx] = usePersisted<"dxmt" | "dxvk" | "wined3d">(
-    "jisr.gfx",
-    "dxmt",
-  );
+  // وضع الرسومات الحقيقي (يُحفظ في الخلفية ويُطبَّق على التشغيل التالي)
+  const [gfx, setGfxState] = useState<GraphicsMode>("auto");
+  useEffect(() => {
+    getGraphicsMode()
+      .then(setGfxState)
+      .catch(() => {});
+  }, []);
+  const setGfx = useCallback((mode: GraphicsMode) => {
+    setGfxState(mode);
+    setGraphicsMode(mode).catch(() => {});
+  }, []);
 
   const engineDl = dl.items[ENGINE_ID];
   const engineBtn = engineButtonState(engineDl, !!sys?.engine_installed);
@@ -848,13 +965,13 @@ export const SettingsPage = memo(function SettingsPage({
             onCancel={() => dl.cancel(ENGINE_ID)}
           />
         )}
-        <Row label={t("graphicsLayer")}>
+        <Row label={t("graphicsLayer")} hint={t("gfxHint")}>
           <Segmented
             id="gfx"
             value={gfx}
             onChange={setGfx}
             options={[
-              { value: "dxmt", label: "DXMT" },
+              { value: "auto", label: t("gfxAuto") },
               { value: "dxvk", label: "DXVK" },
               { value: "wined3d", label: "WineD3D" },
             ]}

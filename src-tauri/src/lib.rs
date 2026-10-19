@@ -4,7 +4,7 @@
 //  • سجل أحداث يُرسل للواجهة **بمفاتيح/معاملات** (لا نصوص) — الترجمة في الواجهة
 // ============================================================
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -14,7 +14,9 @@ mod bottle;
 mod download;
 mod engine;
 mod game;
+mod graphics;
 mod steam;
+mod steam_library;
 
 // ---------- الأنواع اللي تروح للواجهة ----------
 #[derive(Serialize, Clone, Default)]
@@ -68,6 +70,10 @@ pub mod log_keys {
     pub const DOWNLOAD_FAILED: &str = "log.downloadFailed";
     pub const DOWNLOAD_CANCELLED: &str = "log.downloadCancelled";
     // الفك والتركيب
+    pub const GRAPHICS_READY: &str = "log.graphicsReady";
+    pub const GRAPHICS_FAILED: &str = "log.graphicsFailed";
+    pub const STEAM_GAME_LAUNCHING: &str = "log.steamGameLaunching";
+    pub const STEAM_GAME_LAUNCH_FAILED: &str = "log.steamGameLaunchFailed";
     pub const EXTRACT_STARTED: &str = "log.extractStarted";
     pub const EXTRACT_DONE: &str = "log.extractDone";
     pub const EXTRACT_FAILED: &str = "log.extractFailed";
@@ -172,7 +178,9 @@ pub(crate) fn data_dir() -> PathBuf {
             .join("Jisr")
     } else {
         PathBuf::from(
-            std::env::var("LOCALAPPDATA").or_else(|_| std::env::var("APPDATA")).unwrap_or_default(),
+            std::env::var("LOCALAPPDATA")
+                .or_else(|_| std::env::var("APPDATA"))
+                .unwrap_or_default(),
         )
         .join("Jisr")
     }
@@ -271,16 +279,25 @@ fn detect_system() -> SystemInfo {
         }
     }
 
-    let (engine, path, gfx) = engine_info();
+    let (engine, path, detected) = engine_info();
     info.engine_installed = engine;
     info.engine_path = path;
-    info.graphics_layer = gfx;
+    // الطبقة الفعلية: DXVK إن كان منزّلاً ومفعّلاً، وإلا WineD3D
+    info.graphics_layer = if engine {
+        Some(graphics::active_layer().to_string())
+    } else {
+        detected
+    };
     info
 }
 
 /// كروت الشاشة على الماك — JSON (ما يتأثر بلغة النظام)
 fn macos_gpus() -> Vec<GpuInfo> {
-    let Some(out) = run_env("system_profiler", &["-json", "SPDisplaysDataType"], &[("LC_ALL", "en_US.UTF-8")]) else {
+    let Some(out) = run_env(
+        "system_profiler",
+        &["-json", "SPDisplaysDataType"],
+        &[("LC_ALL", "en_US.UTF-8")],
+    ) else {
         return vec![];
     };
 
@@ -328,7 +345,10 @@ $cs = Get-CimInstance Win32_ComputerSystem
 Get-CimInstance Win32_VideoController | ForEach-Object { 'gpu=' + $_.Name + '|' + $_.AdapterRAM }
 "#;
 
-    let Some(out) = run_cmd("powershell", &["-NoProfile", "-NonInteractive", "-Command", script]) else {
+    let Some(out) = run_cmd(
+        "powershell",
+        &["-NoProfile", "-NonInteractive", "-Command", script],
+    ) else {
         return;
     };
 
@@ -427,6 +447,15 @@ fn log_line(app: AppHandle, level: String, key: String, params: Option<Value>) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // مهم: «النسخة الواحدة» لازم تُسجّل أول إضافة — نمنع نسختين تتخانق على
+        // نفس القارورة أو تشغّل ستيم مرتين (وهو مصدر نافذتين/تعارض ملفات)
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(LogState::default())
@@ -455,11 +484,16 @@ pub fn run() {
             steam::steam_status,
             steam::steam_install,
             steam::steam_run,
-            steam::steam_stop
+            steam::steam_stop,
+            steam_library::steam_games_list,
+            steam_library::steam_game_launch,
+            graphics::graphics_mode,
+            graphics::graphics_set_mode
         ])
         .setup(|app| {
             // نظافة: نمسح بقايا أي فك ضغط مات في جلسة سابقة
             engine::cleanup_staging();
+            graphics::cleanup_staging();
 
             // نحمّل مكتبة الألعاب المحفوظة
             game::init(app.handle());
@@ -473,6 +507,11 @@ pub fn run() {
                     "arch": std::env::consts::ARCH,
                 }),
             );
+
+            // مستخدم عنده محرك من نسخة سابقة: نجهّز DXVK بالخلفية (2.8MB)
+            if bottle::wine_bin().is_some() {
+                download::ensure_graphics_layer(app.handle());
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

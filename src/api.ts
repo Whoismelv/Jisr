@@ -182,3 +182,29 @@ export const steamRun = () => invoke<void>("steam_run");
 
 /** أوقف ستيم (أو التثبيت الجاري) */
 export const steamStop = () => invoke<void>("steam_stop");
+
+/** لعبة ستيم مثبّتة داخل القارورة (نقرأها محلياً من appmanifest) */
+export type SteamGame = {
+  appid: number;
+  name: string;
+  size_bytes: number;
+};
+
+/** كل ألعاب ستيم المثبّتة — قراءة محلية فقط */
+export const steamGamesList = () => invoke<SteamGame[]>("steam_games_list");
+
+/** تشغيل لعبة عبر Steam (ستيم لازم يكون شغّالاً) */
+export const steamGameLaunch = (appid: number) =>
+  invoke<void>("steam_game_launch", { appid });
+
+// ============================================================
+//  طبقة الرسومات
+// ============================================================
+export type GraphicsMode = "auto" | "dxvk" | "wined3d";
+
+/** الوضع الحالي لطبقة الرسومات (auto | dxvk | wined3d) */
+export const getGraphicsMode = () => invoke<GraphicsMode>("graphics_mode");
+
+/** يغيّر طبقة الرسومات ويُطبّقها على التشغيل التالي */
+export const setGraphicsMode = (mode: GraphicsMode) =>
+  invoke<void>("graphics_set_mode", { mode });

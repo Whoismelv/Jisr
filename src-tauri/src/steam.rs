@@ -17,15 +17,15 @@
 // ============================================================
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::{bottle, download, engine, log, log_keys};
+use crate::{bottle, download, engine, graphics, log, log_keys};
 
 /// تغيّرت حالة ستيم (تنزيل جاهز/تثبيت/تشغيل...)
 const EVENT: &str = "jisr-steam";
@@ -93,7 +93,7 @@ fn log_tail(n: usize) -> String {
 }
 
 /// steam.exe داخل القارورة الرئيسية؟ يرجع (مسار الماك، مسار ويندوز داخل C:)
-fn steam_exe() -> Option<(PathBuf, String)> {
+pub(crate) fn steam_exe() -> Option<(PathBuf, String)> {
     let dc = bottle::bottle_dir(bottle::MAIN_ID).join("drive_c");
     for dir in ["Program Files (x86)", "Program Files"] {
         let p = dc.join(dir).join("Steam").join("steam.exe");
@@ -123,43 +123,123 @@ fn is_cef_shim(path: &Path) -> bool {
         .any(|w| w == CEF_SHIM_MARKER)
 }
 
-/// نضمن أن ستيم يستخدم غلافنا مع الأصل المحفوظ بجانبه.
-/// `Some(true)` = ثبّتنا/حدّثنا الآن، `Some(false)` = جاهز مسبقاً،
-/// `None` = تعذّر أو النسخة غير منطبقة (ما نمنع التشغيل أبداً).
-fn ensure_cef_shim(steam_dir: &Path) -> Option<bool> {
-    let cef = steam_dir.join("bin").join("cef").join("cef.win64");
-    let helper = cef.join("steamwebhelper.exe");
-    let real = cef.join("steamwebhelper_real.exe");
-    if !cef.is_dir() || !helper.is_file() {
-        return None; // نسخة ستيم مختلفة — ما نلمس شيء
-    }
+/// هل الملف نسخة أصلية سليمة من Valve؟ (حجم غلاف CEF الحقيقي أكبر من ميغابايت)
+fn looks_like_real_helper(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.len() > 1_000_000)
+        .unwrap_or(false)
+}
 
-    // الأصل مفقود لكن الحالي غلافنا؟ نحاول استعادته من نسخة احتياطية
-    if is_cef_shim(&helper) {
-        if real.is_file() {
-            return Some(false);
+/// كتابة ذرّية: ملف مؤقت ثم تبديل — ما نترك ملفاً نصف مكتوب أبداً
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("jisr-tmp");
+    std::fs::write(&tmp, bytes)?;
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            // ويندوز ما يستبدل موجود — نمسح ثم نبدّل (داخل مجلد المستخدم فقط)
+            let _ = std::fs::remove_file(path);
+            std::fs::rename(&tmp, path)
         }
-        let backup = crate::data_dir()
-            .join("steam-cef-backup")
-            .join("steamwebhelper.exe");
-        if backup.is_file() && std::fs::copy(&backup, &real).is_ok() {
-            return Some(false);
-        }
+    }
+}
+
+/// نستعيد الأصل من النسخة الاحتياطية الدائمة
+fn restore_cef_backup(real: &Path, backup_dir: &Path) -> bool {
+    let backup = backup_dir.join("steamwebhelper.exe");
+    looks_like_real_helper(&backup) && std::fs::copy(&backup, real).is_ok()
+}
+
+/// مجلدات CEF داخل ستيم (عادة cef.win64 — نغطي أي cef.win* أخرى بأمان)
+fn cef_dirs(steam_dir: &Path) -> Vec<PathBuf> {
+    let root = steam_dir.join("bin").join("cef");
+    let Ok(rd) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = rd
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+            name.starts_with("cef.win") && e.path().is_dir()
+        })
+        .map(|e| e.path())
+        .collect();
+    out.sort();
+    out
+}
+
+/// يضمن الغلاف في مجلد CEF واحد.
+/// `Some(true)` = ثبّتنا/حدّثنا الآن، `Some(false)` = جاهز، `None` = تعذّر.
+fn ensure_shim_in(dir: &Path, backup_dir: &Path) -> Option<bool> {
+    let helper = dir.join("steamwebhelper.exe");
+    let real = dir.join("steamwebhelper_real.exe");
+    if !helper.is_file() {
         return None;
     }
 
-    // الحالي أصلي (أو نسخة ستيم محدّثة) → نحفظه بجانبه ثم نضع الغلاف
+    if is_cef_shim(&helper) {
+        // الغلاف مثبّت — نتأكد أن الأصل بجانبه سليم (حجم Valve لا حجم غلاف)
+        if looks_like_real_helper(&real) {
+            return Some(false);
+        }
+        // الأصل مفقود/تالف/غلاف بالغلط → نستعيده من النسخة الاحتياطية
+        return restore_cef_backup(&real, backup_dir).then_some(false);
+    }
+
+    // الملف الحالي أصلي (أو نسخة ستيم محدّثة) → نحفظه بجانبه ثم نضع الغلاف
     if std::fs::copy(&helper, &real).is_err() {
         return None;
     }
-    // نسخة احتياطية دائمة (لاستعادة الأصل لو انمسح بالغلط)
-    let backup_dir = crate::data_dir().join("steam-cef-backup");
+    // نسخة احتياطية دائمة (نحدّثها لو القديمة تالفة)
     let backup = backup_dir.join("steamwebhelper.exe");
-    if !backup.is_file() && std::fs::create_dir_all(&backup_dir).is_ok() {
+    if std::fs::create_dir_all(backup_dir).is_ok() && !looks_like_real_helper(&backup) {
         let _ = std::fs::copy(&helper, &backup);
     }
-    std::fs::write(&helper, CEF_SHIM).ok()?;
+    write_atomic(&helper, CEF_SHIM).ok()?;
     Some(true)
+}
+
+/// نضمن أن ستيم يستخدم غلافنا مع الأصل المحفوظ بجانبه (قبل كل تشغيل —
+/// تحديث ستيم ممكن يرجّع الأصل).
+fn ensure_cef_shim(steam_dir: &Path, backup_dir: &Path) -> Option<bool> {
+    let dirs = cef_dirs(steam_dir);
+    if dirs.is_empty() {
+        return None;
+    }
+
+    let mut handled = false;
+    let mut installed = false;
+    for dir in dirs {
+        if let Some(changed) = ensure_shim_in(&dir, backup_dir) {
+            handled = true;
+            installed |= changed;
+        }
+    }
+    if !handled {
+        None
+    } else if installed {
+        Some(true)
+    } else {
+        Some(false)
+    }
+}
+
+/// إصلاح تنزيلات ستيم على Wine: تعطيل HTTP/2 في عميل ويندوز
+/// (سبب شائع لتوقّف التنزيل عند 0 بايت). ملف إعدادات رسمي يقرأه ستيم.
+fn ensure_steam_dev_cfg(steam_dir: &Path) {
+    const KEY: &str = "@nClientDownloadEnableHTTP2PlatformWindows 0";
+    let path = steam_dir.join("steam_dev.cfg");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if existing.lines().any(|l| l.trim() == KEY) {
+        return;
+    }
+    let mut text = existing;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(KEY);
+    text.push('\n');
+    let _ = write_atomic(&path, text.as_bytes());
 }
 
 /// ملف اختياري لتجربة فلاقين CEF بدون بناء جديد:
@@ -183,6 +263,27 @@ fn set_phase(state: &SteamState, phase: Phase) {
     if let Ok(mut p) = state.phase.lock() {
         *p = phase;
     }
+}
+
+/// هل ستيم شغّال الآن؟ (تحتاجه مكتبة ستيم قبل إرسال أمر تشغيل)
+pub(crate) fn is_running(state: &SteamState) -> bool {
+    state
+        .phase
+        .lock()
+        .map(|p| *p == Phase::Running)
+        .unwrap_or(false)
+}
+
+/// إصلاحات واجهة ستيم قبل أي تشغيل (الغلاف + HTTP/2). مشتركة بين تشغيل
+/// ستيم العادي وتشغيل لعبة من مكتبة ستيم.
+pub(crate) fn prepare_steam_ui(app: &AppHandle, steam_dir: &Path) {
+    let backup_dir = crate::data_dir().join("steam-cef-backup");
+    match ensure_cef_shim(steam_dir, &backup_dir) {
+        Some(true) => log(app, "info", log_keys::STEAM_UI_FIX, json!({})),
+        Some(false) => {}
+        None => log(app, "warn", log_keys::STEAM_UI_FIX_FAILED, json!({})),
+    }
+    ensure_steam_dev_cfg(steam_dir);
 }
 
 fn emit(app: &AppHandle) {
@@ -228,14 +329,23 @@ async fn prepare_and_spawn(
     match download::sha256_file(src).await {
         Ok(h) if h.eq_ignore_ascii_case(asset.sha256) => {}
         Ok(_) => {
-            let msg =
-                "ملف المثبّت تغيّر — ما يطابق البصمة الرسمية. احذفه ونزّله من جديد".to_string();
-            log(app, "error", log_keys::STEAM_INSTALL_FAILED, json!({ "error": msg }));
+            let msg = "ملف المثبّت تغيّر — ما يطابق البصمة الرسمية. احذفه ونزّله من جديد".to_string();
+            log(
+                app,
+                "error",
+                log_keys::STEAM_INSTALL_FAILED,
+                json!({ "error": msg }),
+            );
             return Err(msg);
         }
         Err(e) => {
             let msg = format!("تعذّر التحقق من المثبّت: {e}");
-            log(app, "error", log_keys::STEAM_INSTALL_FAILED, json!({ "error": msg }));
+            log(
+                app,
+                "error",
+                log_keys::STEAM_INSTALL_FAILED,
+                json!({ "error": msg }),
+            );
             return Err(msg);
         }
     }
@@ -247,28 +357,45 @@ async fn prepare_and_spawn(
     if let Some(parent) = drop.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             let msg = format!("تعذّر تجهيز مجلد المثبّت: {e}");
-            log(app, "error", log_keys::STEAM_INSTALL_FAILED, json!({ "error": msg }));
+            log(
+                app,
+                "error",
+                log_keys::STEAM_INSTALL_FAILED,
+                json!({ "error": msg }),
+            );
             return Err(msg);
         }
     }
     if let Err(e) = std::fs::copy(src, &drop) {
         let msg = format!("تعذّر نسخ المثبّت داخل القارورة: {e}");
-        log(app, "error", log_keys::STEAM_INSTALL_FAILED, json!({ "error": msg }));
+        log(
+            app,
+            "error",
+            log_keys::STEAM_INSTALL_FAILED,
+            json!({ "error": msg }),
+        );
         return Err(msg);
     }
 
     let dos = format!("C:\\{}", DROP_IN_BOTTLE.replace('/', "\\"));
+    let prefix = bottle::bottle_dir(bottle::MAIN_ID);
+    // جذور الشهادات الرسمية من macOS → تحسين TLS داخل Wine/CEF (غير حرج)
+    bottle::sync_ca_bundle(&prefix);
     let (out, err) = stdio_to_log();
     let mut cmd = tokio::process::Command::new(wine);
-    cmd.env("WINEPREFIX", bottle::bottle_dir(bottle::MAIN_ID))
-        .arg(dos)
-        .stdin(Stdio::null())
-        .stdout(out)
-        .stderr(err);
+    cmd.env("WINEPREFIX", &prefix);
+    bottle::apply_wine_env(&mut cmd, true);
+    graphics::apply_env(&mut cmd, true);
+    cmd.arg(dos).stdin(Stdio::null()).stdout(out).stderr(err);
 
     cmd.spawn().map_err(|e| {
         let msg = format!("تعذّر تشغيل المثبّت: {e}");
-        log(app, "error", log_keys::STEAM_INSTALL_FAILED, json!({ "error": msg }));
+        log(
+            app,
+            "error",
+            log_keys::STEAM_INSTALL_FAILED,
+            json!({ "error": msg }),
+        );
         msg
     })
 }
@@ -288,7 +415,12 @@ pub async fn steam_install(app: AppHandle, state: State<'_, SteamState>) -> Resu
     // على ويندوز ما فيه Wine — نفس نمط الألعاب: خطأ واضح وآمن
     if cfg!(windows) {
         let msg = "تثبيت ستيم يحتاج Wine — وهذي بيئة تطوير ويندوز (التثبيت الحقيقي على الماك)";
-        log(&app, "error", log_keys::STEAM_INSTALL_FAILED, json!({ "error": msg }));
+        log(
+            &app,
+            "error",
+            log_keys::STEAM_INSTALL_FAILED,
+            json!({ "error": msg }),
+        );
         return Err(msg.into());
     }
 
@@ -349,7 +481,12 @@ pub async fn steam_install(app: AppHandle, state: State<'_, SteamState>) -> Resu
             } else {
                 format!("رمز {} — {}", code.unwrap_or(-1), stderr_tail)
             };
-            log(&app2, "error", log_keys::STEAM_INSTALL_FAILED, json!({ "error": err }));
+            log(
+                &app2,
+                "error",
+                log_keys::STEAM_INSTALL_FAILED,
+                json!({ "error": err }),
+            );
         } else {
             log(&app2, "warn", log_keys::STEAM_INSTALL_EXITED, json!({}));
         }
@@ -372,7 +509,12 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
     // على ويندوز ما فيه Wine — خطأ واضح وآمن
     if cfg!(windows) {
         let msg = "تشغيل ستيم يحتاج Wine — وهذي بيئة تطوير ويندوز (التشغيل الحقيقي على الماك)";
-        log(&app, "error", log_keys::STEAM_LAUNCH_FAILED, json!({ "error": msg }));
+        log(
+            &app,
+            "error",
+            log_keys::STEAM_LAUNCH_FAILED,
+            json!({ "error": msg }),
+        );
         return Err(msg.into());
     }
     if !bottle::bottle_ready(bottle::MAIN_ID) {
@@ -385,43 +527,54 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         return Err("ستيم مو مثبّت بعد — ثبّته أول".into());
     };
 
-    // إصلاح واجهة ستيم: نضمن غلاف CEF قبل كل تشغيل (تحديث ستيم ممكن يرجّع الأصل)
-    if let Some(dir) = mac_exe.parent() {
-        match ensure_cef_shim(dir) {
-            Some(true) => log(&app, "info", log_keys::STEAM_UI_FIX, json!({})),
-            Some(false) => {}
-            None => log(&app, "warn", log_keys::STEAM_UI_FIX_FAILED, json!({})),
-        }
-    }
+    let prefix = bottle::bottle_dir(bottle::MAIN_ID);
+    bottle::sync_ca_bundle(&prefix);
 
-    let (out, err) = stdio_to_log();
-    let mut cmd = tokio::process::Command::new(&wine);
-    cmd.env("WINEPREFIX", bottle::bottle_dir(bottle::MAIN_ID));
-    // تجاوز تشخيصي اختياري — الواجهة ما تكتبه، نقرأه لو الملف موجود
-    if let Some(flags) = cef_flags_override() {
-        cmd.env("JISR_CEF_FLAGS", flags);
-    }
-    cmd.arg(&dos_exe)
-        // معيار ستيم على Wine: بند Chromium الداخلي ما يشتغل صح تحت Wine
-        .arg("-no-cef-sandbox")
-        // ما نخلي مدقق الملفات يرجّع steamwebhelper.exe الأصلي فوق غلافنا
-        .arg("-noverifyfiles")
-        .stdin(Stdio::null())
-        .stdout(out)
-        .stderr(err);
-    if let Some(dir) = mac_exe.parent() {
-        cmd.current_dir(dir);
-    }
-
-    // قفل قصير: نضمن ما فيه أمر ثاني يبدأ بنفس اللحظة
+    // قفل التشغيل: نتحقق أولاً، ثم نثبّت الغلاف/الإعدادات ونشغّل — بلا await
     let child = {
         let mut ph = state.phase.lock().map_err(|_| "خطأ داخلي".to_string())?;
         if *ph != Phase::Idle {
             return Err("ستيم شغّال أصلاً".into());
         }
+
+        // إصلاح واجهة ستيم: نضمن غلاف CEF قبل كل تشغيل (تحديث ستيم يرجع الأصل)
+        // + إصلاح تنزيلات ستيم (HTTP/2) — ملف رسمي داخل مجلد ستيم
+        if let Some(dir) = mac_exe.parent() {
+            prepare_steam_ui(&app, dir);
+        }
+
+        let (out, err) = stdio_to_log();
+        let mut cmd = tokio::process::Command::new(&wine);
+        cmd.env("WINEPREFIX", &prefix);
+        bottle::apply_wine_env(&mut cmd, true);
+        graphics::apply_env(&mut cmd, true);
+        // تجاوز تشخيصي اختياري — الواجهة ما تكتبه، نقرأه لو الملف موجود
+        if let Some(flags) = cef_flags_override() {
+            cmd.env("JISR_CEF_FLAGS", flags);
+        }
+        cmd.arg(&dos_exe)
+            // معيار ستيم على Wine: بند Chromium الداخلي ما يشتغل صح تحت Wine
+            .arg("-no-cef-sandbox")
+            // ما نخلي مدقق الملفات يرجّع steamwebhelper.exe الأصلي فوق غلافنا
+            .arg("-noverifyfiles")
+            // مقياس واجهة صحيح على شاشات Retina
+            .arg("-forcedesktopscaling")
+            .arg("1")
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err);
+        if let Some(dir) = mac_exe.parent() {
+            cmd.current_dir(dir);
+        }
+
         let child = cmd.spawn().map_err(|e| {
             let msg = format!("تعذّر تشغيل ستيم: {e}");
-            log(&app, "error", log_keys::STEAM_LAUNCH_FAILED, json!({ "error": msg }));
+            log(
+                &app,
+                "error",
+                log_keys::STEAM_LAUNCH_FAILED,
+                json!({ "error": msg }),
+            );
             msg
         })?;
         *ph = Phase::Running;
@@ -459,7 +612,12 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
             } else {
                 format!("رمز {} — {}", code.unwrap_or(-1), stderr_tail)
             };
-            log(&app2, "error", log_keys::STEAM_LAUNCH_FAILED, json!({ "error": err }));
+            log(
+                &app2,
+                "error",
+                log_keys::STEAM_LAUNCH_FAILED,
+                json!({ "error": err }),
+            );
         } else {
             log(&app2, "info", log_keys::STEAM_EXITED, json!({}));
         }
@@ -494,4 +652,101 @@ pub async fn steam_stop(state: State<'_, SteamState>) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "jisr-test-{tag}-{}-{}",
+            std::process::id(),
+            crate::now_ms()
+        ));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn cef_dir(root: &Path) -> PathBuf {
+        let d = root.join("Steam").join("bin").join("cef").join("cef.win64");
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn fake_valve(path: &Path) {
+        let mut data = vec![0x41u8; 1_100_000];
+        data[0] = b'M';
+        data[1] = b'Z';
+        fs::write(path, data).unwrap();
+    }
+
+    #[test]
+    fn install_is_atomic_and_idempotent() {
+        let root = temp_root("install");
+        let cef = cef_dir(&root);
+        fake_valve(&cef.join("steamwebhelper.exe"));
+        let backup = root.join("backup");
+        let steam = root.join("Steam");
+
+        assert_eq!(ensure_cef_shim(&steam, &backup), Some(true));
+        assert!(is_cef_shim(&cef.join("steamwebhelper.exe")));
+        assert!(looks_like_real_helper(&cef.join("steamwebhelper_real.exe")));
+        assert!(looks_like_real_helper(&backup.join("steamwebhelper.exe")));
+        assert_eq!(ensure_cef_shim(&steam, &backup), Some(false));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restores_missing_or_corrupt_real_helper() {
+        let root = temp_root("restore");
+        let cef = cef_dir(&root);
+        let backup = root.join("backup");
+        let steam = root.join("Steam");
+        fake_valve(&cef.join("steamwebhelper.exe"));
+        assert_eq!(ensure_cef_shim(&steam, &backup), Some(true));
+
+        let real = cef.join("steamwebhelper_real.exe");
+        fs::remove_file(&real).unwrap();
+        assert_eq!(ensure_cef_shim(&steam, &backup), Some(false));
+        assert!(looks_like_real_helper(&real));
+
+        fs::write(&real, b"broken").unwrap();
+        assert_eq!(ensure_cef_shim(&steam, &backup), Some(false));
+        assert!(looks_like_real_helper(&real));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refuses_to_loop_when_both_files_are_shims() {
+        let root = temp_root("recursion");
+        let cef = cef_dir(&root);
+        fs::write(cef.join("steamwebhelper.exe"), CEF_SHIM).unwrap();
+        fs::write(cef.join("steamwebhelper_real.exe"), CEF_SHIM).unwrap();
+        assert_eq!(
+            ensure_cef_shim(&root.join("Steam"), &root.join("backup")),
+            None
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dev_cfg_keeps_user_lines_and_avoids_duplicates() {
+        let root = temp_root("cfg");
+        fs::write(root.join("steam_dev.cfg"), "user_setting 1\n").unwrap();
+        ensure_steam_dev_cfg(&root);
+        ensure_steam_dev_cfg(&root);
+        let text = fs::read_to_string(root.join("steam_dev.cfg")).unwrap();
+        assert!(text.contains("user_setting 1"));
+        assert_eq!(
+            text.matches("@nClientDownloadEnableHTTP2PlatformWindows 0")
+                .count(),
+            1
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 }
