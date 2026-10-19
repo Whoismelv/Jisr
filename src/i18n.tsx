@@ -249,6 +249,13 @@ const ar = {
     "يشغّل اللعبة داخل نافذة بدل ما تاخذ شاشة الماك كاملة — يمنع الشاشة السوداء",
   windowedApplied:
     "فعّلنا وضع النافذة في «{name}» — شغّلها الآن من زر «تشغيل».",
+  steamUiGpuOn: "رسم الواجهة: GPU",
+  steamUiGpuOff: "رسم الواجهة: برمجي",
+  steamUiGpuHint:
+    "الرسم بالـGPU (عبر Vulkan) أوضح وأسرع — لازم تعيد تشغيل ستيم بعد التبديل",
+  steamUiGpuSaved: "حفظنا الإعداد — أعد تشغيل ستيم لتطبيقه.",
+  steamUiScale:
+    "مقياس واجهة ستيم: {n}× — على شاشات Retina نستخدم 2× عشان تكون حادّة.",
   "log.graphicsReady": "تجهّزت طبقة DXVK لتسريع ألعاب DirectX 10/11.",
   "log.graphicsFailed":
     "تعذّر تجهيز DXVK — الألعاب ستشتغل بالطبقة الافتراضية: {error}",
@@ -503,6 +510,13 @@ const en: Record<TKey, string> = {
     "Runs the game inside a window instead of taking over the whole screen — prevents a black screen",
   windowedApplied:
     "Windowed mode is on for “{name}” — launch it now with Play.",
+  steamUiGpuOn: "UI rendering: GPU",
+  steamUiGpuOff: "UI rendering: software",
+  steamUiGpuHint:
+    "GPU rendering (via Vulkan) is sharper and faster — restart Steam after switching",
+  steamUiGpuSaved: "Saved — restart Steam to apply it.",
+  steamUiScale:
+    "Steam UI scale: {n}× — we use 2× on Retina displays so it stays sharp.",
   "log.graphicsReady": "DXVK is ready for DirectX 10/11 game acceleration.",
   "log.graphicsFailed":
     "DXVK setup failed — games will use the default layer: {error}",

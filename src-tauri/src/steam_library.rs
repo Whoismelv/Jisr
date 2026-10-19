@@ -542,6 +542,9 @@ pub async fn steam_game_launch(
     bottle::sync_ca_bundle(&prefix);
     // نشر طبقة DXVK داخل القارورة (لازم قبل التشغيل: بدونها Wine يتجاهل DXVK)
     let deployed = graphics::deploy_to_prefix(&prefix).is_ok();
+    // تجاوزات native في الريجستري — تسري على كل العمليات الجديدة
+    // (حتى لو ستيم شغّال من قبل نشر الطبقة)
+    let reg_ok = graphics::apply_registry_overrides(&wine, &prefix).await;
     // حزام أمان للعرض: يمنع الألعاب القديمة من تعتيم الشاشة أو احتكارها بالكامل
     let safety = bottle::ensure_mac_safety(&wine, &prefix).await;
     if let Some(dir) = mac_exe.parent() {

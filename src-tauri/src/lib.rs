@@ -1012,6 +1012,7 @@ pub fn run() {
             game::game_launch,
             game::game_stop,
             steam::steam_status,
+            steam::steam_ui_gpu,
             steam::steam_install,
             steam::steam_run,
             steam::steam_stop,

@@ -26,6 +26,7 @@ import {
   steamGameLaunch,
   steamGameWindowed,
   steamGamesList,
+  steamUiGpu,
   type Bottle,
   type DownloadProgress,
   type Game,
@@ -382,7 +383,7 @@ export const LibraryPage = memo(function LibraryPage({
 
   return (
     <div className="stack">
-      <SteamCard steam={steam} dl={dl} />
+      <SteamCard steam={steam} dl={dl} notify={notify} />
 
       <div className="filter-row">
         <Segmented
@@ -538,9 +539,11 @@ const SteamLibrary = memo(function SteamLibrary({
 const SteamCard = memo(function SteamCard({
   steam,
   dl,
+  notify,
 }: {
   steam: Steam;
   dl: Downloads;
+  notify: (msg: string) => void;
 }) {
   const { t } = useI18n();
   const s = steam.status;
@@ -591,25 +594,41 @@ const SteamCard = memo(function SteamCard({
       {!s ? null : !s.bottle_ready ? (
         <p className="muted small">{t("steamNeedBottle")}</p>
       ) : s.installed ? (
-        <div className="row-actions">
-          {running ? (
+        <>
+          <div className="row-actions">
+            {running ? (
+              <Button
+                variant="danger"
+                icon={<Icon.Stop size={13} />}
+                onClick={steam.stop}
+              >
+                {t("steamStop")}
+              </Button>
+            ) : (
+              <Button
+                variant="filled"
+                icon={<Icon.Play size={13} />}
+                onClick={steam.run}
+              >
+                {t("steamRunBtn")}
+              </Button>
+            )}
             <Button
-              variant="danger"
-              icon={<Icon.Stop size={13} />}
-              onClick={steam.stop}
+              variant="plain"
+              title={t("steamUiGpuHint")}
+              onClick={() => {
+                steamUiGpu(!(s?.ui_gpu ?? false))
+                  .then(() => notify(t("steamUiGpuSaved")))
+                  .catch((err) => notify(String(err)));
+              }}
             >
-              {t("steamStop")}
+              {s?.ui_gpu ? t("steamUiGpuOn") : t("steamUiGpuOff")}
             </Button>
-          ) : (
-            <Button
-              variant="filled"
-              icon={<Icon.Play size={13} />}
-              onClick={steam.run}
-            >
-              {t("steamRunBtn")}
-            </Button>
-          )}
-        </div>
+          </div>
+          <p className="muted small">
+            {t("steamUiScale", { n: s?.desktop_scale ?? 1 })}
+          </p>
+        </>
       ) : s.installing ? (
         <div className="row-actions">
           <Button variant="danger" onClick={steam.stop}>

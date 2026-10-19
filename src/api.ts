@@ -207,10 +207,18 @@ export type SteamStatus = {
   installing: boolean;
   running: boolean;
   bottle_ready: boolean;
+  /** رسم واجهة ستيم بالـGPU (أحدّ) بدل الرسم البرمجي */
+  ui_gpu: boolean;
+  /** معامل تحجيم الواجهة: 2 على شاشات Retina */
+  desktop_scale: number;
 };
 
 /** حالة ستيم الكاملة */
 export const steamStatus = () => call<SteamStatus>("steam_status");
+
+/** تبديل رسم واجهة ستيم (GPU ↔ برمجي) — لازم تعيد تشغيل ستيم */
+export const steamUiGpu = (enabled: boolean) =>
+  call<boolean>("steam_ui_gpu", { enabled });
 
 /** ثبّت ستيم داخل القارورة الرئيسية بالمثبّت الرسمي */
 export const steamInstall = () => call<void>("steam_install");

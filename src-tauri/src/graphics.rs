@@ -90,13 +90,19 @@ pub fn active_layer() -> &'static str {
 }
 
 /// يضبط متغيّرات DXVK على أمر Wine. يرجع true لو فُعّل.
-/// • **Native مهم:** ملفات DXVK ملفات Windows أصلية (PE) ⇒ لازم تُحمَّل
-///   **native** (`n`). لو استخدمنا `b` (builtin) ⇒ Wine يتجاهل DXVK ويستخدم
-///   wined3d (ترجمة GLSL) ⇒ على الماك: `Pixel shader error … E5000` + شاشة سودا.
-/// • d3d10core,d3d11,d3d9=n: نمنع أي نسخة قديمة داخل مجلد اللعبة/النظام
+///
+/// **ملاحظة مهمة (درس من الميدان):** تجاوزات `d3d*` ما نكتبها في
+/// `WINEDLLOVERRIDES` إطلاقاً — لأن المتغيّر البيئي **يتقدّم على الريجستري**،
+/// وعميل ستيم اللي شغّال من قبل نشر الطبقة يبقى بيئته القديمة ⇒ Wine يتجاهل
+/// DXVK ويستخدم wined3d (ترجمة GLSL) ⇒ `Pixel shader error … E5000` + شاشة
+/// سودا. الحل: نكتب التجاوزات في **ريجستري القارورة**
+/// (`HKCU\Software\Wine\DllOverrides` = native) ⇒ تسري على **كل** العمليات
+/// الجديدة، حتى لو ستيم شغّال من قبل (يموت معProcesses قديمة فقط).
+///
+/// • `winemenubuilder.exe=d` يمنع اختصارات .app خارج القارورة
+/// • `steamservice=d` يمنع أخطاء خدمة ستيم داخل Wine
 /// • DXVK_ASYNC: النسخة async تبني pipelines بالخلفية (أقل تقطيع)
-/// • steam=true: نضيف `steamservice=d` — **ضروري** لأن ألعاب ستيم ترث بيئة
-///   عميل ستيم نفسه، مو بيئة أمر `-applaunch` القصير.
+/// • DXVK_HUD: سطر صغير في زاوية اللعبة — **دليل ميداني** إن مسار Vulkan شغّال
 pub(crate) fn apply_env(cmd: &mut tokio::process::Command, steam: bool) -> bool {
     if !dxvk_enabled() {
         return false;
@@ -105,23 +111,39 @@ pub(crate) fn apply_env(cmd: &mut tokio::process::Command, steam: bool) -> bool 
     if steam {
         overrides.push_str(";steamservice=d");
     }
-    if deployed() {
-        // الطبقة منشورة داخل القارورة ⇒ حمّلها native (وليس builtin)
-        overrides.push_str(";d3d10core,d3d11=n");
-        if d3d9_available() {
-            overrides.push_str(";d3d9=n");
-        }
-    } else {
-        // ما نقدر نتأكد من النشر — نبقى على السلوك القديم (آمن)
-        overrides.push_str(";d3d10core,d3d11=b");
-    }
     cmd.env("WINEDLLPATH_PREPEND", install_dir())
         .env("DXVK_ASYNC", "1")
-        // HUD صغير في زاوية اللعبة (اسم DXVK + الإصدار) — **دليل ميداني** إن
-        // مسار DXVK شغّال فعلاً. يجاوب على سؤال: «هل اللعبة تسير على Vulkan؟»
         .env("DXVK_HUD", "devinfo")
         .env("WINEDLLOVERRIDES", overrides);
     true
+}
+
+/// يكتب تجاوزات DXVK في **ريجستري القارورة** (تسري على كل العمليات الجديدة).
+/// native = تحميل ملفات DXVK الأصلية (وليس wined3d الداخلي).
+pub async fn apply_registry_overrides(wine: &Path, prefix: &Path) -> bool {
+    let mut ok = true;
+    for dll in ["d3d9", "d3d10core", "d3d11"] {
+        let mut cmd = tokio::process::Command::new(wine);
+        cmd.env("WINEPREFIX", prefix)
+            .arg("reg")
+            .arg("add")
+            .arg("HKCU\\Software\\Wine\\DllOverrides")
+            .arg("/v")
+            .arg(dll)
+            .arg("/t")
+            .arg("REG_SZ")
+            .arg("/d")
+            .arg("native")
+            .arg("/f")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.status()).await {
+            Ok(Ok(st)) if st.success() => {}
+            _ => ok = false,
+        }
+    }
+    ok
 }
 
 /// علامة «الطبقة منشورة داخل القارورة» (نكتبها بعد نسخ الملفات بنجاح)

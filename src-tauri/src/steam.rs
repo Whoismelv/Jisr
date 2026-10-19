@@ -59,6 +59,10 @@ pub struct SteamStatus {
     pub installing: bool,
     pub running: bool,
     pub bottle_ready: bool,
+    /// رسم واجهة ستيم بالـGPU (أحدّ) بدل الرسم البرمجي (أكثر ثباتاً)
+    pub ui_gpu: bool,
+    /// معامل تحجيم الواجهة: 2 على شاشات Retina (حاد) و1 على غيرها
+    pub desktop_scale: u8,
 }
 
 /// ملف المثبّت المنزّل على الماك (تحققنا من بصمته وقت التنزيل — ونعيد التحقق قبله)
@@ -448,6 +452,31 @@ pub(crate) fn cef_flags_override() -> Option<String> {
     Some(line)
 }
 
+/// هل الشاشة Retina (2x)؟ — نكتشفها مرة واحدة ونخزّن النتيجة.
+///
+/// السبب: واجهة ستيم (CEF) داخل Wine ترسم بدقة 1x مهما كانت الشاشة ⇒
+/// **تظهر ضبابية** على شاشات Retina. الحل: `-forcedesktopscaling 2` (يعني 2x).
+pub(crate) fn retina_display() -> bool {
+    let cache = crate::data_dir().join("retina.txt");
+    if let Ok(text) = std::fs::read_to_string(&cache) {
+        return text.trim() == "1";
+    }
+    let out = std::process::Command::new("system_profiler")
+        .arg("SPDisplaysDataType")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
+        .unwrap_or_default();
+    let is_retina = out.contains("retina");
+    let _ = std::fs::write(&cache, if is_retina { "1" } else { "0" });
+    is_retina
+}
+
+/// معامل تحجيم الواجهة: 2 على شاشات Retina (حاد)، 1 على غيرها
+pub(crate) fn desktop_scaling() -> &'static str {
+    if retina_display() { "2" } else { "1" }
+}
+
 fn set_phase(state: &SteamState, phase: Phase) {
     if let Ok(mut p) = state.phase.lock() {
         *p = phase;
@@ -513,7 +542,37 @@ pub async fn steam_status(state: State<'_, SteamState>) -> Result<SteamStatus, S
         installing: phase == Phase::Installing,
         running: phase == Phase::Running,
         bottle_ready: bottle::bottle_ready(bottle::MAIN_ID),
+        ui_gpu: cef_flags_override().is_some(),
+        desktop_scale: if retina_display() { 2 } else { 1 },
     })
+}
+
+/// تبديل رسم واجهة ستيم:
+/// • `false` (الافتراضي): رسم برمجي — الأكثر ثباتاً (مهم مع CEF على Wine)
+/// • `true`: رسم عبر ANGLE → Vulkan → MoltenVK → Metal — **أحدّ وأسرع**
+///   (يعيد كتابة الفلاقين ⇒ لازم تعيد تشغيل ستيم)
+#[tauri::command]
+pub fn steam_ui_gpu(enabled: bool) -> Result<bool, String> {
+    let path = crate::data_dir().join("cef-flags.txt");
+    if enabled {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("تعذّر تجهيز مجلد الإعدادات: {e}"))?;
+        }
+        std::fs::write(
+            &path,
+            "--in-process-gpu --use-angle=vulkan --ignore-gpu-blocklist\n",
+        )
+        .map_err(|e| format!("تعذّر حفظ إعدادات الرسم: {e}"))?;
+    } else {
+        let _ = std::fs::remove_file(&path);
+    }
+    crate::debuglog::raw(
+        "info",
+        "steam",
+        &format!("ui_gpu_rendering = {enabled} (restart steam to apply)"),
+    );
+    Ok(enabled)
 }
 
 /// التحقق النهائي + النسخ داخل القارورة + تشغيل المثبّت (يرجع العملية للمراقبة)
@@ -789,9 +848,9 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
             .arg("-no-cef-sandbox")
             // ما نخلي مدقق الملفات يرجّع steamwebhelper.exe الأصلي فوق غلافنا
             .arg("-noverifyfiles")
-            // مقياس واجهة صحيح على شاشات Retina
+            // مقياس واجهة صحيح: 2x على شاشات Retina (sharp) و1x على غيرها
             .arg("-forcedesktopscaling")
-            .arg("1");
+            .arg(desktop_scaling());
         // وسائط طوارئ اختيارية من الملف النصي (قائمة بيضاء فقط)
         let extra = steam_args_override();
         for a in &extra {
@@ -806,10 +865,11 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
             "info",
             "steam",
             &format!(
-                "spawn steam wine={} exe={} prefix={} args=-no-cef-sandbox -noverifyfiles -forcedesktopscaling 1{} graphics={}",
+                "spawn steam wine={} exe={} prefix={} args=-no-cef-sandbox -noverifyfiles -forcedesktopscaling {}{} graphics={}",
                 wine.display(),
                 dos_exe,
                 prefix.display(),
+                desktop_scaling(),
                 if extra.is_empty() {
                     String::new()
                 } else {
