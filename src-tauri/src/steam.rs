@@ -59,6 +59,31 @@ fn installer_path() -> Option<PathBuf> {
     engine::archive_path(asset.url)
 }
 
+/// ملف تسجيل كلام ستيم الكامل (stdout + stderr) للآخر تشغيل —
+/// تشخيص ميداني: أي مشكلة تبان من هالملف مباشرة بدون تخمين
+fn run_log_path() -> PathBuf {
+    crate::data_dir().join("logs").join("steam-last-run.log")
+}
+
+/// نوجّه كلام ستيم كامل لملف (بدل الأنابيب اللي تضيع عند الإيقاف اليدوي)
+fn stdio_to_log() -> (Stdio, Stdio) {
+    let path = run_log_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match std::fs::File::create(&path).and_then(|f| f.try_clone().map(|c| (f, c))) {
+        Ok((out, err)) => (Stdio::from(out), Stdio::from(err)),
+        Err(_) => (Stdio::null(), Stdio::null()),
+    }
+}
+
+/// آخر سطور من كلام ستيم — تُضاف لرسائل الفشل السريع
+fn log_tail(n: usize) -> String {
+    std::fs::read(run_log_path())
+        .map(|b| crate::tail_lines(&b, n))
+        .unwrap_or_default()
+}
+
 /// steam.exe داخل القارورة الرئيسية؟ يرجع (مسار الماك، مسار ويندوز داخل C:)
 fn steam_exe() -> Option<(PathBuf, String)> {
     let dc = bottle::bottle_dir(bottle::MAIN_ID).join("drive_c");
@@ -150,12 +175,13 @@ async fn prepare_and_spawn(
     }
 
     let dos = format!("C:\\{}", DROP_IN_BOTTLE.replace('/', "\\"));
+    let (out, err) = stdio_to_log();
     let mut cmd = tokio::process::Command::new(wine);
     cmd.env("WINEPREFIX", bottle::bottle_dir(bottle::MAIN_ID))
         .arg(dos)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(out)
+        .stderr(err);
 
     cmd.spawn().map_err(|e| {
         let msg = format!("تعذّر تشغيل المثبّت: {e}");
@@ -217,10 +243,7 @@ pub async fn steam_install(app: AppHandle, state: State<'_, SteamState>) -> Resu
     tauri::async_runtime::spawn(async move {
         let res = child.wait_with_output().await;
         let code = res.as_ref().ok().and_then(|o| o.status.code());
-        let stderr_tail = res
-            .as_ref()
-            .map(|o| crate::tail_lines(&o.stderr, 3))
-            .unwrap_or_default();
+        let stderr_tail = log_tail(3);
 
         let stopped = match app2.try_state::<SteamState>() {
             Some(st) => {
@@ -279,14 +302,15 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         return Err("ستيم مو مثبّت بعد — ثبّته أول".into());
     };
 
+    let (out, err) = stdio_to_log();
     let mut cmd = tokio::process::Command::new(&wine);
     cmd.env("WINEPREFIX", bottle::bottle_dir(bottle::MAIN_ID))
         .arg(&dos_exe)
         // معيار ستيم على Wine: بند Chromium الداخلي ما يشتغل صح تحت Wine
         .arg("-no-cef-sandbox")
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(out)
+        .stderr(err);
     if let Some(dir) = mac_exe.parent() {
         cmd.current_dir(dir);
     }
@@ -316,10 +340,7 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         let res = child.wait_with_output().await;
         let played = crate::now_ms().saturating_sub(started);
         let code = res.as_ref().ok().and_then(|o| o.status.code());
-        let stderr_tail = res
-            .as_ref()
-            .map(|o| crate::tail_lines(&o.stderr, 3))
-            .unwrap_or_default();
+        let stderr_tail = log_tail(3);
 
         let stopped = match app2.try_state::<SteamState>() {
             Some(st) => {
