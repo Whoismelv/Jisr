@@ -47,6 +47,15 @@ xz2 = { version = "0.1", features = ["static"] }
 flate2 = "1"
 
 
+# ============================================================
+#  تدقيق الأمان (cargo-audit)
+# ============================================================
+# قائمة الاستثناءات في `.cargo/audit.toml` (المكان الرسمي لـ cargo-audit)
+# — وهي نفسها في `src-tauri/.cargo/audit.toml` حتى لو شغّلنا التدقيق من داخل المجلد.
+# السبب: `zip 4.6.1` تبعية **لويندوز فقط** من إضافة التحديث
+# (tauri-plugin-updater: target cfg(windows)) — ما تُبنى على ماك ولا تُستخدم.
+# المرجع: RUSTSEC-2026-0367 / 0368 / 0369
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1
