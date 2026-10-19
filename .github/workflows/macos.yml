@@ -76,10 +76,6 @@ jobs:
       - name: "🔨 بناء التطبيق (+ حزمة تحديث موقّعة)"
         run: npm run tauri build -- --target aarch64-apple-darwin
 
-      # نفس الهدف ونفس البروفايل ⇒ يعيد استخدام مخرجات البناء (بلا compile ثاني)
-      - name: "🧪 اختبارات الخلفية (شامل محاكاة macOS)"
-        run: cargo test --release --lib --target aarch64-apple-darwin --manifest-path src-tauri/Cargo.toml
-
       - name: "🛡️ فحص: لا اعتماد على مكتبات خارج النظام"
         run: |
           set -euo pipefail
@@ -160,7 +156,30 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # 2) تدقيق تبعيات Rust (تعمل بالتوازي مع البناء — بوابة أمان)
+  # 2) الاختبارات (تعمل بالتوازي مع البناء — بوابة جودة)
+  # ============================================================
+  test:
+    name: "اختبارات الخلفية"
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      - name: Cache (يبني أسرع)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+
+      - name: "🧪 اختبارات الخلفية (شامل محاكاة macOS)"
+        run: cargo test --lib --target aarch64-apple-darwin --manifest-path src-tauri/Cargo.toml
+
+  # ============================================================
+  # 3) تدقيق تبعيات Rust (تعمل بالتوازي مع البناء — بوابة أمان)
   # ============================================================
   audit:
     name: "تدقيق تبعيات Rust"
@@ -208,11 +227,11 @@ jobs:
           cargo audit --file src-tauri/Cargo.lock
 
   # ============================================================
-  # 3) النشر (ينتظر البناء + التدقيق — ما ينشر لو فيه ثغرة أو فشل)
+  # 4) النشر (ينتظر البناء + الاختبارات + التدقيق)
   # ============================================================
   release:
     name: "نشر الإصدار"
-    needs: [build, audit]
+    needs: [build, test, audit]
     # التشغيل اليدوي (workflow_dispatch) يبني ويختبر فقط — بدون نشر
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: macos-14
