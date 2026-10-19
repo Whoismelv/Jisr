@@ -83,6 +83,18 @@ pub(crate) fn bottle_dir(id: &str) -> PathBuf {
     bottles_dir().join(id)
 }
 
+/// حارس المعرّف: المعرّف يُركَّب في مسار على القرص، فأي حرف غير
+/// (a-z، 0-9، -، _) = ممنوع. هذا يمنع `..` و`/` و`\` والمسافات
+/// وبالتالي أي خروج عن مجلد القوارير (path traversal).
+/// المعرّفات المشروعة: "main" و"private-<ms>".
+pub(crate) fn valid_bottle_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
 /// هل القارورة جاهزة فعلاً؟ (الحالة + وجود ملفات ويندوز)
 pub(crate) fn bottle_ready(id: &str) -> bool {
     read_meta(id).map(|m| m.state == "ready").unwrap_or(false)
@@ -222,6 +234,10 @@ fn scan_bottles(
             continue;
         }
         let id = e.file_name().to_string_lossy().to_string();
+        // مجلدات غريبة (أُنشئت يدوياً أو من برنامج آخر) ما تُعرض ولا تُلمس
+        if !valid_bottle_id(&id) {
+            continue;
+        }
         seen.insert(id.clone());
         let dir = bottle_dir(&id);
 
@@ -510,6 +526,9 @@ pub async fn bottle_retry(
     id: String,
     simulate: Option<bool>,
 ) -> Result<(), String> {
+    if !valid_bottle_id(&id) {
+        return Err("معرّف قارورة غير صالح".into());
+    }
     let dir = bottle_dir(&id);
     if !dir.is_dir() {
         return Err("القارورة غير موجودة".into());
@@ -547,6 +566,10 @@ pub async fn bottle_delete(
     if id == MAIN_ID {
         return Err("ما نحذف القارورة الرئيسية".into());
     }
+    // حارس المسار: بدون هذا الفحص، id = "../../.." يحذف مجلدات خارج القوارير
+    if !valid_bottle_id(&id) {
+        return Err("معرّف قارورة غير صالح".into());
+    }
     if state.0.lock().map(|s| s.contains(&id)).unwrap_or(false) {
         return Err("التجهيز شغّال حالياً — انتظر يخلص".into());
     }
@@ -576,4 +599,29 @@ pub async fn bottle_delete(
     );
     emit(&app);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bottle_ids_reject_path_traversal() {
+        // المشروع منها
+        assert!(valid_bottle_id("main"));
+        assert!(valid_bottle_id("private-1699999999999"));
+        // مُدخلات خبيثة — كلها مرفوضة قبل أي عملية ملفات
+        assert!(!valid_bottle_id(""));
+        assert!(!valid_bottle_id("."));
+        assert!(!valid_bottle_id(".."));
+        assert!(!valid_bottle_id("../evil"));
+        assert!(!valid_bottle_id("../../Library"));
+        assert!(!valid_bottle_id("a/b"));
+        assert!(!valid_bottle_id("a\\b"));
+        assert!(!valid_bottle_id("C:"));
+        assert!(!valid_bottle_id("a b"));
+        assert!(!valid_bottle_id("MAIN"));
+        assert!(!valid_bottle_id("main\0"));
+        assert!(!valid_bottle_id(&"a".repeat(65)));
+    }
 }

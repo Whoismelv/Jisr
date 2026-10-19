@@ -749,4 +749,18 @@ mod tests {
         );
         let _ = fs::remove_dir_all(root);
     }
+
+    /// حارس سلسلة التوريد: الغلاف المدمج (ملف Windows ثنائي) مثبّت ببصمة.
+    /// أي تغيير غير مقصود في assets/steamwebhelper.exe يفشل الاختبار.
+    #[test]
+    fn cef_shim_hash_is_pinned() {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(CEF_SHIM);
+        let got = format!("{:x}", h.finalize());
+        assert_eq!(
+            got, "3f9fc346e423a573e87cba74ef31e7c3400c3b0b5094a4f76197040935a9dfa7",
+            "تغيّر غلاف CEF — أعد بناءه من tools/steamwebhelper-shim ثم حدّث البصمة هنا"
+        );
+    }
 }

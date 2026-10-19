@@ -381,12 +381,8 @@ pub async fn game_launch(
         }
     }
 
-    // دفاعياً: معرّف القارورة يُستخدم في مسار على القرص — نرفض أي حرف غريب
-    if !meta
-        .bottle
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-    {
+    // دفاعياً: معرّف القارورة يُستخدم في مسار على القرص — نفس حراسة bottle.rs
+    if !bottle::valid_bottle_id(&meta.bottle) {
         return Err("معرّف القارورة غير صالح".into());
     }
 

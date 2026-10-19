@@ -436,9 +436,18 @@ fn clear_logs(app: AppHandle) {
 }
 
 /// الواجهة تكتب سجل (بمفتاح محلي)
+/// مدخلات الواجهة غير موثوقة دفاعياً: نحدّ المستوى والمفتاح والحجم
 #[tauri::command]
 fn log_line(app: AppHandle, level: String, key: String, params: Option<Value>) {
-    log(&app, &level, &key, params.unwrap_or(json!({})));
+    let level = match level.as_str() {
+        "warn" | "error" => level,
+        _ => "info".to_string(),
+    };
+    let key: String = key.chars().take(80).collect();
+    let params = params
+        .filter(|v| v.to_string().len() <= 4000)
+        .unwrap_or_else(|| json!({}));
+    log(&app, &level, &key, params);
 }
 
 // ============================================================

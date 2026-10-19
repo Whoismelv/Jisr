@@ -15,31 +15,42 @@ on:
 
 permissions:
   contents: write
+  checks: write
 
 jobs:
   macos-arm64:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
 
       - name: Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin
 
       - name: Cache (يبني أسرع)
-        uses: swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
 
       - name: مكتبات الواجهة
         run: npm ci
+
+      - name: "🛡️ فحص ثغرات حزم npm"
+        run: npm audit --audit-level=high
+
+      - name: "🛡️ فحص ثغرات تبعيات Rust"
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: src-tauri
 
       - name: "🧪 اختبارات الخلفية قبل البناء"
         run: cargo test --lib --manifest-path src-tauri/Cargo.toml
@@ -83,21 +94,21 @@ jobs:
           echo "::notice::✔ جاهز للنشر: $(basename "$DMG") (${SIZE}MB)"
 
       - name: "📦 إنشاء الإصدار ورفع الـdmg"
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: v0.1.0-test.7
-          name: "جسر v0.1.0 — نسخة اختبار الماك ٧ (أداء DXVK + مكتبة ستيم)"
+          tag_name: v0.1.0-test.8
+          name: "جسر v0.1.0 — نسخة اختبار الماك ٨ (تحصين أمني + فحوص تلقائية)"
           prerelease: true
           files: dist/*.dmg
           body: |
-            ## 🍎 نسخة اختبار الماك — النسخة ٧ (أداء DXVK + مكتبة ستيم)
+            ## 🍎 نسخة اختبار الماك — النسخة ٨ (تحصين أمني + فحوص تلقائية)
 
-            > ⚡ **الجديد في هالنسخة:**
-            > 1. **DXVK-macOS 1.10.3 async** (2.8MB) يُنزَّل تلقائياً بعد تجهيز المحرك — يحوّل DirectX 10/11 إلى Vulkan ثم MoltenVK ثم Metal. يعمل عبر `WINEDLLPATH_PREPEND` بلا لمس ملفات القارورة، وإذا فشل ترجع الألعاب تلقائياً لـWineD3D بلا توقف.
-            > 2. **msync مفعّل** (`WINEMSYNC=1`) + لغة UTF-8 لستيم (`LC_ALL/LANG`).
-            > 3. **مكتبة ستيم:** التطبيق يقرأ ألعاب ستيم المثبّتة داخل القارورة ويعرضها في صفحة المكتبة — **شغّل ستيم أولاً** ثم اضغط «تشغيل» (يُرسل `-applaunch` لستيم).
-            > 4. **اختيار طبقة الرسومات صار حقيقياً:** الإعدادات → طبقة الرسومات → تلقائي / DXVK / WineD3D — التغيير يحتاج **إعادة تشغيل ستيم** حتى تصل الطبقة لمكتبته.
-            > 5. تشمل إصلاحات المراجعة الشاملة + غلاف CEF وإصلاح واجهة ستيم من النسخة ٦.
+            > 🛡️ **هذه نسخة تحصين — بلا تغيير وظيفي.** نفس ميزات النسخة ٧ بالضبط:
+            > 1. **إصلاح ثغرة حقيقية (Path Traversal):** أوامر حذف/إعادة تجهيز القوارير كانت تقبل معرّفاً خاماً — الآن تحقق صارم (`a-z` و`0-9` و`-` و`_` فقط، حد 64 حرفاً) يمنع أي خروج عن مجلد القوارير، مع اختبارات `../` و`\` وNUL.
+            > 2. **حراسة إضافية:** قائمة القوارير تتجاهل أي مجلد غريب، ومعرّف القارورة في تشغيل الألعاب يمر بنفس الحارس الموحّد.
+            > 3. **فحوص أمنية تلقائية في CI:** `cargo audit` + `npm audit` يفشلان البناء عند ثغرة معروفة، وفحص أسبوعي مجدول، وDependabot للتبعيات.
+            > 4. **تثبيت كل GitHub Actions على SHA** (ضد استبدال الوسوم) + فحص بصمة غلاف CEF داخل الاختبارات + حدود لسجل الواجهة.
+            > 5. **`SECURITY.md`:** سياسة إفصاح مسؤولة واضحة + نموذج الأمان والقيود المعروفة بصراحة.
             > 🔒 كل أصل بتحقّق SHA-256، نطاقات HTTPS صارمة، بلا shell، بلا sudo، بلا تتبّع.
             > ℹ️ DirectX 12 غير مدعوم بعد. D3D9 (LIMBO) يبقى على WineD3D، وD3D11 (Aperture Desk Job) يستخدم DXVK. **ما نعد بأرقام FPS** — القياس الميداني على الماك هو الحكم.
 
