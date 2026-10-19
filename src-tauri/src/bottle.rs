@@ -184,6 +184,54 @@ pub(crate) fn apply_wine_env(cmd: &mut tokio::process::Command, steam: bool) {
     }
 }
 
+/// حزام أمان للعرض على macOS — مرة واحدة لكل قارورة (علامة داخل المجلد).
+///
+/// السبب الميداني: ألعاب قديمة (DirectX 9) ممكن تظلم **شاشة الماك كلها**
+/// أو تاخذ الشاشة بالكامل في وضع windowed-fullscreen → المستخدم يشوف شاشة
+/// سودا ويظن إن الماك تعطّل. Wine يخلي ذلك ممكناً عبر:
+///   • `AllowSetGamma=n`  — يمنع اللعبة من تظليل الشاشة عبر gamma ramp
+///   • `CaptureDisplaysForFullscreen=n` — يمنع احتكار الشاشة بالوضع الكامل
+/// القيمتان موجودتان في `winemac.drv` (مصدر Wine: dlls/winemac.drv/macdrv_main.c).
+/// غير حرج: أي فشل يُتجاهل (ما نمنع اللعبة من العمل بسبب إعداد).
+pub(crate) async fn ensure_mac_safety(wine: &Path, prefix: &Path) -> bool {
+    if !cfg!(target_os = "macos") {
+        return true;
+    }
+    let marker = prefix.join(".jisr-mac-safety-v1");
+    if marker.is_file() {
+        return true;
+    }
+    let mut ok = true;
+    for (value, setting) in [
+        ("AllowSetGamma", "n"),
+        ("CaptureDisplaysForFullscreen", "n"),
+    ] {
+        let mut cmd = tokio::process::Command::new(wine);
+        cmd.env("WINEPREFIX", prefix)
+            .arg("reg")
+            .arg("add")
+            .arg("HKCU\\Software\\Wine\\Mac Driver")
+            .arg("/v")
+            .arg(value)
+            .arg("/t")
+            .arg("REG_SZ")
+            .arg("/d")
+            .arg(setting)
+            .arg("/f")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        match tokio::time::timeout(Duration::from_secs(25), cmd.status()).await {
+            Ok(Ok(st)) if st.success() => {}
+            _ => ok = false,
+        }
+    }
+    if ok {
+        let _ = std::fs::write(&marker, "1");
+    }
+    ok
+}
+
 /// ننسخ جذر الشهادات الرسمي من macOS إلى القارورة (تحسين TLS في Wine/CEF).
 /// غير حرج: أي فشل يُتجاهل بهدوء، وما نعيد النسخ لو الحجم مطابق.
 pub(crate) fn sync_ca_bundle(prefix: &Path) {

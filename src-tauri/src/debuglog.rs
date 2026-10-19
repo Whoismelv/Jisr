@@ -10,7 +10,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 const FILE_NAME: &str = "jisr-debug.log";
 /// الحد الأقصى قبل التدوير (نحتفظ بنسخة واحدة قديمة .1.log)
@@ -232,6 +232,73 @@ pub fn clear() {
     }
 }
 
+/// يفكّ سطر السجل الخام: (الوقت، المستوى، النص بدون الطابع الزمني)
+/// شكل السطر: "2026-10-20 12:34:56.789 +03:00 [INFO ] [scope] الرسالة"
+fn parse_line(line: &str) -> (u64, &'static str, String) {
+    let level = if line.contains("[ERROR]") {
+        "error"
+    } else if line.contains("[WARN ]") {
+        "warn"
+    } else if line.contains("[DEBUG]") {
+        "debug"
+    } else {
+        "info"
+    };
+
+    let stamp = line
+        .get(..23)
+        .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.3f").ok());
+    let time_ms = stamp
+        .and_then(|ndt| ndt.and_local_timezone(chrono::Local).single())
+        .map(|dt| dt.timestamp_millis() as u64)
+        .unwrap_or_else(crate::now_ms);
+
+    let mut rest = line.get(23..).unwrap_or(line).trim_start();
+    if rest.starts_with('+') || rest.starts_with('-') {
+        // نفصل فرق التوقيت (+03:00) عن باقي السطر
+        rest = rest.splitn(2, ' ').nth(1).unwrap_or(rest).trim_start();
+    }
+    if rest.starts_with('[') {
+        // نشيل رمز المستوى ([ERROR]) ونبقي [scope] الرسالة — مثل السطر الحي
+        if let Some(end) = rest.find(']') {
+            rest = rest[end + 1..].trim_start();
+        }
+    }
+    (time_ms, level, rest.to_string())
+}
+
+/// نرجّع آخر سطور **الجلسة السابقة** إلى واجهة السجل عند الإقلاع.
+/// السبب: بعد إعادة تشغيل الماك أو التطبيق كانت القائمة تظهر فاضية
+/// ويظن المستخدم أن السجل «اختفى» — والمهم فيه بالضبط ما صار قبل الإغلاق.
+pub fn seed(app: &AppHandle, max_lines: usize) {
+    let Some(p) = path() else { return };
+    let text = tail_file(&p, max_lines, 400_000);
+    if text.trim().is_empty() {
+        return;
+    }
+    let Some(state) = app.try_state::<crate::LogState>() else {
+        return;
+    };
+    let Ok(mut v) = state.0.lock() else { return };
+    v.clear();
+
+    for line in text.lines() {
+        let (time_ms, level, body) = parse_line(line);
+        v.push(crate::LogEntry {
+            time_ms,
+            level: level.to_string(),
+            key: "log.raw".to_string(),
+            params: json!({ "line": body }),
+        });
+    }
+    v.push(crate::LogEntry {
+        time_ms: crate::now_ms(),
+        level: "info".to_string(),
+        key: "log.raw".to_string(),
+        params: json!({ "line": "────────── ↑ سجل الجلسة السابقة · ما تحت = الجلسة الحالية ──────────" }),
+    });
+}
+
 /// آخر أسطر من ملف كبير بدون تحميله كاملاً (seek من النهاية).
 pub fn tail_file(path: &Path, max_lines: usize, max_bytes: usize) -> String {
     let Ok(mut f) = File::open(path) else {
@@ -294,5 +361,26 @@ mod tests {
         let huge = "ا".repeat(MAX_CHARS * 2);
         let text = format_block("info", "x", &huge);
         assert!(text.chars().count() < MAX_CHARS + 120);
+    }
+
+    #[test]
+    fn parse_line_extracts_level_and_body() {
+        let line = "2026-10-20 12:34:56.789 +03:00 [ERROR] [steam] فشل التشغيل";
+        let (ms, level, body) = parse_line(line);
+        assert_eq!(level, "error");
+        assert!(body.starts_with("[steam]"));
+        assert!(body.contains("فشل التشغيل"));
+        assert!(
+            ms > 1_700_000_000_000,
+            "وقت السطر لازم يكون بصيغة ميلي ثانية"
+        );
+    }
+
+    #[test]
+    fn parse_line_survives_garbage() {
+        let (ms, level, body) = parse_line("سطر مكسور بدون طابع");
+        assert_eq!(level, "info");
+        assert_eq!(body, "سطر مكسور بدون طابع");
+        assert!(ms > 0);
     }
 }

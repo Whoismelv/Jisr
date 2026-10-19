@@ -163,6 +163,8 @@ pub struct SystemInfo {
     pub os_name: String,
     pub os_version: String,
     pub arch: String,
+    /// إصدار التطبيق الفعلي (من tauri.conf.json) — مهمة للتشخيص الميداني
+    pub app_version: String,
     pub is_apple_silicon: bool,
     pub chip: String,
     pub cpu_cores: Option<usize>,
@@ -208,6 +210,7 @@ pub mod log_keys {
     pub const GRAPHICS_FAILED: &str = "log.graphicsFailed";
     pub const STEAM_GAME_LAUNCHING: &str = "log.steamGameLaunching";
     pub const STEAM_GAME_LAUNCH_FAILED: &str = "log.steamGameLaunchFailed";
+    pub const STEAM_GAME_WINDOWED: &str = "log.steamGameWindowed";
     pub const EXTRACT_STARTED: &str = "log.extractStarted";
     pub const EXTRACT_DONE: &str = "log.extractDone";
     pub const EXTRACT_FAILED: &str = "log.extractFailed";
@@ -647,7 +650,8 @@ Get-CimInstance Win32_VideoController | ForEach-Object { 'gpu=' + $_.Name + '|' 
 /// فحص الجهاز + أحداث سجل بمفاتيح
 #[tauri::command]
 fn system_info(app: AppHandle) -> SystemInfo {
-    let info = detect_system();
+    let mut info = detect_system();
+    info.app_version = app_version().to_string();
 
     log(&app, "info", log_keys::SCAN_DONE, json!({}));
 
@@ -1013,12 +1017,15 @@ pub fn run() {
             steam::steam_stop,
             steam_library::steam_games_list,
             steam_library::steam_game_launch,
+            steam_library::steam_game_windowed,
             graphics::graphics_mode,
             graphics::graphics_set_mode
         ])
         .setup(|app| {
             // السجل الدائم أول شيء — حتى أخطاء الإقلاع تنتسجّل
             let log_path = debuglog::init(&data_dir().join("logs"), app.handle().clone());
+            // نرجّع سطور الجلسة السابقة للواجهة — السجل ما «يختفي» بعد إعادة التشغيل
+            debuglog::seed(app.handle(), 400);
 
             let os_version = if cfg!(target_os = "macos") {
                 run_cmd("sw_vers", &["-productVersion"]).unwrap_or_default()

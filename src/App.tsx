@@ -139,7 +139,7 @@ export default function App() {
       text = await exportDebugReport();
     } catch {
       text = [
-        `${t("appName")} — ${t("preview")}`,
+        `${t("appName")} — ${t("preview")}${sys?.app_version ? ` v${sys.app_version}` : ""}`,
         `time: ${new Date().toISOString()}`,
         `os: ${[sys?.os_name, sys?.os_version].filter(Boolean).join(" ") || "-"}`,
         `arch: ${sys?.arch ?? "-"}`,
@@ -278,7 +278,8 @@ export default function App() {
               </span>
             </div>
             <span className="foot-note">
-              {t("preview")} · {t("openSource")}
+              {t("preview")} {sys?.app_version ? `v${sys.app_version}` : ""} ·{" "}
+              {t("openSource")}
             </span>
           </div>
         </aside>

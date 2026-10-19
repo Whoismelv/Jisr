@@ -24,6 +24,7 @@ import {
   getGraphicsMode,
   setGraphicsMode,
   steamGameLaunch,
+  steamGameWindowed,
   steamGamesList,
   type Bottle,
   type DownloadProgress,
@@ -361,6 +362,16 @@ export const LibraryPage = memo(function LibraryPage({
     [notify, t],
   );
 
+  // «تشغيل في نافذة»: يمنع اللعبة من أخذ شاشة الماك بالكامل (شاشة سودا)
+  const windowedSteamGame = useCallback(
+    (g: SteamGame) => {
+      steamGameWindowed(g.appid, true)
+        .then(() => notify(t("windowedApplied", { name: g.name })))
+        .catch((err) => notify(String(err)));
+    },
+    [notify, t],
+  );
+
   const mainReady = bottles.items.some(
     (b) => b.kind === "main" && b.state === "ready",
   );
@@ -393,6 +404,7 @@ export const LibraryPage = memo(function LibraryPage({
           running={steamRunning}
           onRefresh={loadSteamGames}
           onPlay={launchSteamGame}
+          onWindowed={windowedSteamGame}
         />
       )}
 
@@ -449,12 +461,14 @@ const SteamLibrary = memo(function SteamLibrary({
   running,
   onRefresh,
   onPlay,
+  onWindowed,
 }: {
   games: SteamGame[];
   loading: boolean;
   running: boolean;
   onRefresh: () => void;
   onPlay: (g: SteamGame) => void;
+  onWindowed: (g: SteamGame) => void;
 }) {
   const { t } = useI18n();
   return (
@@ -497,6 +511,14 @@ const SteamLibrary = memo(function SteamLibrary({
                 onClick={() => onPlay(g)}
               >
                 {t("gamePlay")}
+              </Button>
+              {/* تشغيل في نافذة: يمنع الشاشة السوداء مع الألعاب القديمة */}
+              <Button
+                variant="plain"
+                title={t("windowedHint")}
+                onClick={() => onWindowed(g)}
+              >
+                {t("windowedBtn")}
               </Button>
             </div>
           ))}

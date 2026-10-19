@@ -37,6 +37,7 @@ export type SystemInfo = {
   os_name: string;
   os_version: string;
   arch: string;
+  app_version: string;
   is_apple_silicon: boolean;
   chip: string;
   cpu_cores: number | null;
@@ -233,6 +234,13 @@ export const steamGamesList = () => call<SteamGame[]>("steam_games_list");
 /** تشغيل لعبة عبر Steam (ستيم لازم يكون شغّالاً) */
 export const steamGameLaunch = (appid: number) =>
   call<void>("steam_game_launch", { appid });
+
+/** تفعيل/تعطيل وضع النافذة للعبة (settings.txt) — يمنع الشاشة السوداء */
+export const steamGameWindowed = (appid: number, enabled: boolean) =>
+  call<{ applied: boolean; file?: string }>("steam_game_windowed", {
+    appid,
+    enabled,
+  });
 
 // ============================================================
 //  طبقة الرسومات

@@ -245,7 +245,8 @@ fn parse_manifest(text: &str) -> Option<(u32, String, u64, Option<u64>)> {
     Some((appid, name, size, flags))
 }
 
-fn scan() -> Vec<SteamGame> {
+/// جذور مكتبات ستيم (مجلدات steamapps): الأساسية + أي مسار في libraryfolders.vdf
+fn library_roots() -> Vec<PathBuf> {
     let Some((mac_exe, _)) = steam::steam_exe() else {
         return Vec::new();
     };
@@ -255,37 +256,175 @@ fn scan() -> Vec<SteamGame> {
     let prefix = bottle::bottle_dir(bottle::MAIN_ID);
     let root_apps = steam_dir.join("steamapps");
 
-    // جذور المكتبات: الأساسية + أي مسار في libraryfolders.vdf
     let mut libs: Vec<PathBuf> = Vec::new();
-    {
-        let mut seen: HashMap<PathBuf, ()> = HashMap::new();
-        let mut add_lib = |host: PathBuf| {
-            let apps = host.join("steamapps");
-            if !apps.is_dir() {
-                return;
-            }
-            let Ok(real) = std::fs::canonicalize(&apps) else {
-                return;
-            };
-            if libs.len() < MAX_LIBRARIES && !seen.contains_key(&real) {
-                seen.insert(real.clone(), ());
-                libs.push(real);
-            }
+    let mut seen: HashMap<PathBuf, ()> = HashMap::new();
+    let mut add_lib = |host: PathBuf| {
+        let apps = host.join("steamapps");
+        if !apps.is_dir() {
+            return;
+        }
+        let Ok(real) = std::fs::canonicalize(&apps) else {
+            return;
         };
+        if libs.len() < MAX_LIBRARIES && !seen.contains_key(&real) {
+            seen.insert(real.clone(), ());
+            libs.push(real);
+        }
+    };
 
-        add_lib(steam_dir.to_path_buf());
+    add_lib(steam_dir.to_path_buf());
 
-        if let Some(text) = read_limited(&root_apps.join("libraryfolders.vdf")) {
-            for (k, v) in vdf_pairs(&text) {
-                if k.eq_ignore_ascii_case("path")
-                    && let Some(host) = win_to_host(&prefix, &v)
-                {
-                    add_lib(host);
-                }
+    if let Some(text) = read_limited(&root_apps.join("libraryfolders.vdf")) {
+        for (k, v) in vdf_pairs(&text) {
+            if k.eq_ignore_ascii_case("path")
+                && let Some(host) = win_to_host(&prefix, &v)
+            {
+                add_lib(host);
             }
         }
     }
+    libs
+}
 
+/// مجلد تثبيت لعبة (appid) داخل القارورة — None لو ما لقيناها
+fn install_dir(appid: u32) -> Option<PathBuf> {
+    for apps in library_roots() {
+        let acf = apps.join(format!("appmanifest_{appid}.acf"));
+        let Some(text) = read_limited(&acf) else {
+            continue;
+        };
+        let pairs = vdf_pairs(&text);
+        let Some(dir) = pair(&pairs, "installdir").and_then(safe_component) else {
+            continue;
+        };
+        let full = apps.join("common").join(dir);
+        if full.is_dir() {
+            return Some(full);
+        }
+    }
+    None
+}
+
+/// يبحث عن ملف بالاسم داخل مجلد (غير حساس لحالة الأحرف)
+fn find_file_ci(dir: &Path, name: &str) -> Option<PathBuf> {
+    let want = name.to_ascii_lowercase();
+    let rd = std::fs::read_dir(dir).ok()?;
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_file()
+            && p.file_name()
+                .map(|n| n.to_string_lossy().to_ascii_lowercase() == want)
+                .unwrap_or(false)
+        {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// يستبدل قيمة `windowedmode` داخل settings.txt.
+/// يرجع None لو الملف ما فيه هذا المفتاح (لعبة ما تدعمه) — ما نكتب شي عندها.
+/// نحافظ على نمط نهاية السطر عشان محرّك اللعبة يقرأه بنفس الطريقة.
+fn patch_windowed(text: &str, enabled: bool) -> Option<String> {
+    let want = if enabled { "true" } else { "false" };
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut found = false;
+    let mut out = String::with_capacity(text.len() + 8);
+
+    for raw in text.split_inclusive('\n') {
+        let had_nl = raw.ends_with('\n');
+        let body = raw.trim_end_matches('\n').trim_end_matches('\r');
+        let lower = body.trim_start().to_ascii_lowercase();
+        let is_key = lower
+            .strip_prefix("windowedmode")
+            .map(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+            .unwrap_or(false);
+        if is_key && body.contains('=') {
+            found = true;
+            let eq = body.find('=').unwrap_or(0);
+            out.push_str(body[..eq].trim_end());
+            out.push_str(" = ");
+            out.push_str(want);
+            out.push_str(eol);
+            continue;
+        }
+        out.push_str(body);
+        if had_nl {
+            out.push_str(eol);
+        }
+    }
+
+    if !found {
+        return None;
+    }
+    Some(out)
+}
+
+/// نتيجة أمر «تشغيل في نافذة»
+#[derive(Serialize, Clone)]
+pub struct WindowedResult {
+    pub applied: bool,
+    pub file: Option<String>,
+}
+
+/// يفعّل (أو يعطّل) وضع النافذة للعبة عبر ملف settings.txt الخاص بها.
+/// السبب: ألعاب قديقة (DirectX 9) تاخذ الشاشة بالكامل في الوضع الكامل، وداخل
+/// Wine على الماك هذا يعني شاشة سودا. وضع النافذة يمنعها تماماً.
+/// ما نكتب إلا داخل مجلد اللعبة، ومع نسخة احتياطية (.jisr.bak) قبل أول تعديل.
+#[tauri::command]
+pub async fn steam_game_windowed(
+    app: AppHandle,
+    appid: u32,
+    enabled: bool,
+) -> Result<WindowedResult, String> {
+    let _t = crate::debuglog::trace(
+        "steam",
+        "steam_game_windowed",
+        format!("appid={appid} enabled={enabled}"),
+    );
+    if appid == 0 {
+        return Err("رقم اللعبة غير صالح".into());
+    }
+    let dir = install_dir(appid)
+        .ok_or_else(|| "ما لقيت مجلد اللعبة — تأكد إنها منزّلة بالكامل".to_string())?;
+    let file = find_file_ci(&dir, "settings.txt").ok_or_else(|| {
+        "هذي اللعبة ما فيها ملف settings.txt — فعّل وضع النافذة من إعدادات اللعبة نفسها".to_string()
+    })?;
+
+    let md = std::fs::metadata(&file).map_err(|e| format!("تعذّر قراءة إعدادات اللعبة: {e}"))?;
+    if md.len() > 512 * 1024 {
+        return Err("ملف إعدادات اللعبة كبير بشكل غير متوقع — ما نلمسه".into());
+    }
+    let text =
+        std::fs::read_to_string(&file).map_err(|e| format!("تعذّر قراءة إعدادات اللعبة: {e}"))?;
+    let Some(patched) = patch_windowed(&text, enabled) else {
+        return Err(
+            "هذي اللعبة ما تدعم windowedmode في settings.txt — جرّب من قائمة إعدادات اللعبة".into(),
+        );
+    };
+
+    // نسخة احتياطية مرة واحدة (لا نلمس الأصل)
+    let backup = file.with_extension("txt.jisr.bak");
+    if !backup.is_file() {
+        let _ = std::fs::copy(&file, &backup);
+    }
+    std::fs::write(&file, patched).map_err(|e| format!("تعذّر حفظ إعدادات اللعبة: {e}"))?;
+
+    log(
+        &app,
+        "info",
+        log_keys::STEAM_GAME_WINDOWED,
+        json!({ "appid": appid, "enabled": enabled, "file": file.display().to_string() }),
+    );
+
+    Ok(WindowedResult {
+        applied: true,
+        file: Some(file.display().to_string()),
+    })
+}
+
+fn scan() -> Vec<SteamGame> {
+    let libs = library_roots();
     let mut games: HashMap<u32, SteamGame> = HashMap::new();
     let mut scanned = 0usize;
 
@@ -382,6 +521,8 @@ pub async fn steam_game_launch(
 
     let prefix = bottle::bottle_dir(bottle::MAIN_ID);
     bottle::sync_ca_bundle(&prefix);
+    // حزام أمان للعرض: يمنع الألعاب القديمة من تعتيم الشاشة أو احتكارها بالكامل
+    let safety = bottle::ensure_mac_safety(&wine, &prefix).await;
     if let Some(dir) = mac_exe.parent() {
         steam::prepare_steam_ui(&app, dir);
     }
@@ -391,14 +532,61 @@ pub async fn steam_game_launch(
     cmd.env("WINEPREFIX", &prefix);
     bottle::apply_wine_env(&mut cmd, true);
     graphics::apply_env(&mut cmd, true);
+    let (out, err) = launch_stdio(appid);
     cmd.arg(&dos_exe)
         .arg("-applaunch")
         .arg(appid.to_string())
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdout(out)
+        .stderr(err);
     if let Some(dir) = mac_exe.parent() {
         cmd.current_dir(dir);
+    }
+
+    // سجل كامل للأمر — لو ما اشتغلت اللعبة نعرف وش انطلق بالضبط
+    crate::debuglog::raw(
+        "info",
+        "steam",
+        &format!(
+            "spawn game appid={appid} wine={} exe={} prefix={} graphics={} mac_safety={safety}",
+            wine.display(),
+            dos_exe,
+            prefix.display(),
+            graphics::active_layer()
+        ),
+    );
+
+    // وصف مجلد اللعبة (تشخيص ميداني): هل فيه settings.txt؟ وما الملفات التنفيذية؟
+    if let Some(dir) = install_dir(appid) {
+        let mut exes: Vec<String> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                if exes.len() >= 8 {
+                    break;
+                }
+                let p = e.path();
+                if p.extension()
+                    .and_then(|x| x.to_str())
+                    .map(|x| x.eq_ignore_ascii_case("exe"))
+                    .unwrap_or(false)
+                {
+                    exes.push(
+                        p.file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default(),
+                    );
+                }
+            }
+        }
+        let has_settings = find_file_ci(&dir, "settings.txt").is_some();
+        crate::debuglog::raw(
+            "info",
+            "steam",
+            &format!(
+                "game_dir={} settings_txt={has_settings} exes={exes:?}",
+                dir.display()
+            ),
+        );
     }
 
     let mut child = cmd.spawn().map_err(|e| {
@@ -423,12 +611,15 @@ pub async fn steam_game_launch(
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
         match child.wait().await {
-            Ok(st) if !st.success() => log(
-                &app2,
-                "warn",
-                log_keys::STEAM_GAME_LAUNCH_FAILED,
-                json!({ "appid": appid, "error": format!("رمز {}", st.code().unwrap_or(-1)) }),
-            ),
+            Ok(st) if !st.success() => {
+                let tail = launch_tail();
+                log(
+                    &app2,
+                    "warn",
+                    log_keys::STEAM_GAME_LAUNCH_FAILED,
+                    json!({ "appid": appid, "error": format!("رمز {}", st.code().unwrap_or(-1)), "output": tail }),
+                );
+            }
             Ok(_) => {}
             Err(e) => log(
                 &app2,
@@ -440,6 +631,45 @@ pub async fn steam_game_launch(
     });
 
     Ok(())
+}
+
+/// ملف مخرجات تشغيل اللعبة — كلام ستيم/اللعبة الذي يمرّ عبر نفس المقابض.
+/// قبل هذا كانت المخرجات تذهب إلى null: أي خطأ من اللعبة كان يضيع تماماً.
+fn launch_log_path() -> PathBuf {
+    crate::data_dir().join("logs").join("game-launch.log")
+}
+
+/// مقابض الكتابة: السطران يخرجان لنفس الملف (بلا فقد أي رسالة)
+fn launch_stdio(appid: u32) -> (std::process::Stdio, std::process::Stdio) {
+    use std::io::Write;
+    let path = launch_log_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let header = format!(
+        "\n===== launch appid={appid} @ {} =====\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    );
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return (std::process::Stdio::null(), std::process::Stdio::null());
+    };
+    let _ = f.write_all(header.as_bytes());
+    let _ = f.flush();
+    match (f.try_clone(), f.try_clone()) {
+        (Ok(a), Ok(b)) => (std::process::Stdio::from(a), std::process::Stdio::from(b)),
+        _ => (std::process::Stdio::from(f), std::process::Stdio::null()),
+    }
+}
+
+/// آخر أسطر من مخرجات التشغيل — تُرفق برسالة الفشل (تشخيص ميداني)
+fn launch_tail() -> String {
+    std::fs::read(launch_log_path())
+        .map(|b| crate::tail_lines(&b, 8))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -497,5 +727,32 @@ mod tests {
         assert_eq!(safe_component(".."), None);
         assert_eq!(safe_component("."), None);
         assert_eq!(safe_component("a\\b"), None);
+    }
+
+    #[test]
+    fn patch_windowed_flips_the_flag_only() {
+        let text = "-identifiers-\r\nwindowedmode = false\r\nbackbufferwidth = 1280\r\n";
+        let out = patch_windowed(text, true).expect("المفتاح موجود");
+        assert!(out.contains("windowedmode = true"));
+        assert!(!out.contains("false"));
+        assert!(out.contains("backbufferwidth = 1280"));
+        // نمط نهاية السطر محفوظ (محرك اللعبة يقرأه بنفس الطريقة)
+        assert!(out.contains("\r\n"));
+        assert!(!out.contains("\n\r"));
+    }
+
+    #[test]
+    fn patch_windowed_is_case_insensitive_and_ignores_prefix_keys() {
+        let text = "WindowedMode=false\nwindowedmodeExtra=1\nfoo=2\n";
+        let out = patch_windowed(text, true).unwrap();
+        assert!(out.contains("WindowedMode = true"));
+        assert!(out.contains("windowedmodeExtra=1"), "مفتاح مشابه ما ينمس");
+        assert!(out.contains("foo=2"));
+    }
+
+    #[test]
+    fn patch_windowed_returns_none_when_unsupported() {
+        assert!(patch_windowed("fullscreen=1\n", true).is_none());
+        assert!(patch_windowed("", true).is_none());
     }
 }

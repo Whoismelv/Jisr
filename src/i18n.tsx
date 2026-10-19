@@ -244,11 +244,17 @@ const ar = {
     "شغّل ستيم أولاً من الأعلى، ثم تقدر تشغّل أي لعبة من هنا.",
   steamGameLaunched: "أرسلنا أمر تشغيل «{name}» إلى ستيم.",
   steamAppId: "رقم {id}",
+  windowedBtn: "نافذة",
+  windowedHint:
+    "يشغّل اللعبة داخل نافذة بدل ما تاخذ شاشة الماك كاملة — يمنع الشاشة السوداء",
+  windowedApplied:
+    "فعّلنا وضع النافذة في «{name}» — شغّلها الآن من زر «تشغيل».",
   "log.graphicsReady": "تجهّزت طبقة DXVK لتسريع ألعاب DirectX 10/11.",
   "log.graphicsFailed":
     "تعذّر تجهيز DXVK — الألعاب ستشتغل بالطبقة الافتراضية: {error}",
   "log.steamGameLaunching": "أرسلنا أمر تشغيل لعبة ستيم ({appid}).",
   "log.steamGameLaunchFailed": "تعذّر تشغيل لعبة ستيم ({appid}): {error}",
+  "log.steamGameWindowed": "فعّلنا وضع النافذة للعبة ({appid}).",
   "log.steamInstalling": "بدأنا تثبيت ستيم داخل القارورة الرئيسية…",
   "log.steamInstalled": "تم تثبيت ستيم ✓ — جاهز للتشغيل",
   "log.steamInstallExited": "المثبّت انتهى بدون ما يظهر ستيم — جرّب مرة ثانية",
@@ -492,11 +498,17 @@ const en: Record<TKey, string> = {
     "Start Steam above first, then you can launch any game from here.",
   steamGameLaunched: "Asked Steam to launch “{name}”.",
   steamAppId: "App {id}",
+  windowedBtn: "Windowed",
+  windowedHint:
+    "Runs the game inside a window instead of taking over the whole screen — prevents a black screen",
+  windowedApplied:
+    "Windowed mode is on for “{name}” — launch it now with Play.",
   "log.graphicsReady": "DXVK is ready for DirectX 10/11 game acceleration.",
   "log.graphicsFailed":
     "DXVK setup failed — games will use the default layer: {error}",
   "log.steamGameLaunching": "Asked Steam to launch app {appid}.",
   "log.steamGameLaunchFailed": "Couldn't launch Steam app {appid}: {error}",
+  "log.steamGameWindowed": "Enabled windowed mode for app {appid}.",
   "log.steamInstalling": "Started installing Steam into the main bottle…",
   "log.steamInstalled": "Steam installed ✓ — ready to launch",
   "log.steamInstallExited": "The installer ended without Steam appearing — try again",
