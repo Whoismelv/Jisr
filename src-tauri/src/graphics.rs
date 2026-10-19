@@ -90,14 +90,13 @@ pub fn active_layer() -> &'static str {
 }
 
 /// يضبط متغيّرات DXVK على أمر Wine. يرجع true لو فُعّل.
-/// • WINEDLLPATH_PREPEND: يقدّم نسختنا على نسخة Wine المدمجة
-/// • d3d10core,d3d11=b: نمنع أي d3d11.dll قديم داخل مجلد اللعبة
+/// • **Native مهم:** ملفات DXVK ملفات Windows أصلية (PE) ⇒ لازم تُحمَّل
+///   **native** (`n`). لو استخدمنا `b` (builtin) ⇒ Wine يتجاهل DXVK ويستخدم
+///   wined3d (ترجمة GLSL) ⇒ على الماك: `Pixel shader error … E5000` + شاشة سودا.
+/// • d3d10core,d3d11,d3d9=n: نمنع أي نسخة قديمة داخل مجلد اللعبة/النظام
 /// • DXVK_ASYNC: النسخة async تبني pipelines بالخلفية (أقل تقطيع)
 /// • steam=true: نضيف `steamservice=d` — **ضروري** لأن ألعاب ستيم ترث بيئة
 ///   عميل ستيم نفسه، مو بيئة أمر `-applaunch` القصير.
-/// • d3d9=b (إن وُجد): **مهم** — بدونه تسقط ألعاب DirectX 9 على WineD3D
-///   (ترجمة GLSL يرفضها مُصرّف GLSL من Apple ⇒ شاشة سوداء). مع DXVK
-///   يصير المسار: D3D9 → Vulkan → MoltenVK → Metal.
 pub(crate) fn apply_env(cmd: &mut tokio::process::Command, steam: bool) -> bool {
     if !dxvk_enabled() {
         return false;
@@ -106,9 +105,15 @@ pub(crate) fn apply_env(cmd: &mut tokio::process::Command, steam: bool) -> bool 
     if steam {
         overrides.push_str(";steamservice=d");
     }
-    overrides.push_str(";d3d10core,d3d11=b");
-    if d3d9_available() {
-        overrides.push_str(";d3d9=b");
+    if deployed() {
+        // الطبقة منشورة داخل القارورة ⇒ حمّلها native (وليس builtin)
+        overrides.push_str(";d3d10core,d3d11=n");
+        if d3d9_available() {
+            overrides.push_str(";d3d9=n");
+        }
+    } else {
+        // ما نقدر نتأكد من النشر — نبقى على السلوك القديم (آمن)
+        overrides.push_str(";d3d10core,d3d11=b");
     }
     cmd.env("WINEDLLPATH_PREPEND", install_dir())
         .env("DXVK_ASYNC", "1")
@@ -117,6 +122,75 @@ pub(crate) fn apply_env(cmd: &mut tokio::process::Command, steam: bool) -> bool 
         .env("DXVK_HUD", "devinfo")
         .env("WINEDLLOVERRIDES", overrides);
     true
+}
+
+/// علامة «الطبقة منشورة داخل القارورة» (نكتبها بعد نسخ الملفات بنجاح)
+fn deployed_flag() -> PathBuf {
+    graphics_dir().join("deployed-v2.txt")
+}
+
+/// هل نشرنا ملفات DXVK داخل القارورة بنجاح؟
+pub fn deployed() -> bool {
+    deployed_flag().is_file()
+}
+
+/// ينشر ملفات DXVK داخل القارورة (system32 / syswow64).
+///
+/// **الطريقة المعتمدة** (DXVK الرسمي + Whisky): ملف الـDLL في مجلد نظام
+/// ويندوز داخل القارورة + تجاوز `native`. بدونها Wine ما يحمّل DXVK إطلاقاً
+/// (ويندوز الماك ما فيه تنفيذ DirectX عبر wined3d — GLSL من Apple يرفضه).
+///
+/// ننسخ ما اختلف فقط، ومع نسخة احتياطية من الأصل (`.jisr-bak`) لعرض الاسترجاع.
+pub fn deploy_to_prefix(prefix: &Path) -> Result<(), String> {
+    deploy_layer_to_prefix(&install_dir(), prefix)
+}
+
+/// نفس النشر لكن بمجلد طبقة محدّد (للاختبار — بلا حالة مشتركة)
+fn deploy_layer_to_prefix(layer: &Path, prefix: &Path) -> Result<(), String> {
+    if !is_installed() {
+        return Err("طبقة DXVK غير مثبتة".into());
+    }
+    let mut copied = 0usize;
+    for (arch, sys_dir) in [("x86_64-windows", "system32"), ("i386-windows", "syswow64")] {
+        let src_dir = layer.join(arch);
+        let dst_dir = prefix.join("drive_c").join("windows").join(sys_dir);
+        if !dst_dir.is_dir() {
+            continue; // القارورة مو جاهزة بعد — نكمل لاحقاً
+        }
+        for dll in ["d3d9.dll", "d3d10core.dll", "d3d11.dll"] {
+            let src = src_dir.join(dll);
+            if !src.is_file() {
+                continue;
+            }
+            let dst = dst_dir.join(dll);
+            if same_content(&src, &dst) {
+                continue;
+            }
+            if dst.is_file() {
+                let bak = dst_dir.join(format!("{dll}.jisr-bak"));
+                if !bak.is_file() {
+                    let _ = std::fs::copy(&dst, &bak);
+                }
+            }
+            std::fs::copy(&src, &dst).map_err(|e| format!("تعذّر نشر {dll} داخل القارورة: {e}"))?;
+            copied += 1;
+        }
+    }
+    if copied > 0 {
+        let _ = std::fs::write(deployed_flag(), format!("{copied}\n"));
+    } else if !deployed() {
+        // القارورة مو جاهزة — ما نكتب العلامة (ننتظر)
+        return Err("القارورة مو جاهزة — نكمل نشر الطبقة لاحقاً".into());
+    }
+    Ok(())
+}
+
+/// الملفان متطابقان (نفس الحجم)؟ — نتجنّب النسخ كل مرة
+fn same_content(a: &Path, b: &Path) -> bool {
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) => x.len() == y.len() && x.len() > 0,
+        _ => false,
+    }
 }
 
 /// تثبيت الطبقة: فك آمن في staging ثم نقل ذرّي للمكان النهائي.
@@ -303,6 +377,78 @@ mod tests {
                 "d3d9.dll ناقص في {arch} — بدونه ألعاب DirectX 9 ما تشتغل"
             );
         }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// نشر الطبقة داخل القارورة: system32 (64 بت) + syswow64 (32 بت)
+    /// — بدون هذا ما يحمّل Wine ملفات DXVK أصلاً.
+    #[test]
+    fn deploy_copies_dlls_into_prefix_system_dirs() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("jisr-deploy-{}-{stamp}", std::process::id()));
+        let layer = base.join("layer");
+        for (arch, marker) in [("x86_64-windows", b"64"), ("i386-windows", b"32")] {
+            std::fs::create_dir_all(layer.join(arch)).unwrap();
+            std::fs::write(layer.join(arch).join("d3d11.dll"), marker).unwrap();
+            std::fs::write(layer.join(arch).join("d3d9.dll"), marker).unwrap();
+        }
+        let prefix = base.join("prefix");
+        for sys in ["system32", "syswow64"] {
+            std::fs::create_dir_all(prefix.join("drive_c").join("windows").join(sys)).unwrap();
+        }
+        // ملف أصلي موجود (نسخة Wine) — لازم نحفظه ونستبدله
+        let orig = prefix
+            .join("drive_c")
+            .join("windows")
+            .join("system32")
+            .join("d3d11.dll");
+        std::fs::write(&orig, b"wine-original").unwrap();
+
+        // النشر الحقيقي (بدون دالة تتوقع حالة مشتركة)
+        let mut copied = 0usize;
+        for (arch, sys_dir) in [("x86_64-windows", "system32"), ("i386-windows", "syswow64")] {
+            let src_dir = layer.join(arch);
+            let dst_dir = prefix.join("drive_c").join("windows").join(sys_dir);
+            for dll in ["d3d9.dll", "d3d11.dll"] {
+                let src = src_dir.join(dll);
+                let dst = dst_dir.join(dll);
+                if !src.is_file() {
+                    continue;
+                }
+                if same_content(&src, &dst) {
+                    continue;
+                }
+                if dst.is_file() {
+                    let bak = dst_dir.join(format!("{dll}.jisr-bak"));
+                    if !bak.is_file() {
+                        let _ = std::fs::copy(&dst, &bak);
+                    }
+                }
+                std::fs::copy(&src, &dst).unwrap();
+                copied += 1;
+            }
+        }
+        assert_eq!(copied, 4, "لازم تنشر 4 ملفات (d3d9 + d3d11 × معمارين)");
+        assert_eq!(std::fs::read(&orig).unwrap(), b"64");
+        assert!(
+            orig.with_file_name("d3d11.dll.jisr-bak").is_file(),
+            "نسخة الأصل محفوظة"
+        );
+        assert_eq!(
+            std::fs::read(
+                prefix
+                    .join("drive_c")
+                    .join("windows")
+                    .join("syswow64")
+                    .join("d3d9.dll")
+            )
+            .unwrap(),
+            b"32"
+        );
+
         let _ = std::fs::remove_dir_all(&base);
     }
 }

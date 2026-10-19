@@ -540,6 +540,8 @@ pub async fn steam_game_launch(
 
     let prefix = bottle::bottle_dir(bottle::MAIN_ID);
     bottle::sync_ca_bundle(&prefix);
+    // نشر طبقة DXVK داخل القارورة (لازم قبل التشغيل: بدونها Wine يتجاهل DXVK)
+    let deployed = graphics::deploy_to_prefix(&prefix).is_ok();
     // حزام أمان للعرض: يمنع الألعاب القديمة من تعتيم الشاشة أو احتكارها بالكامل
     let safety = bottle::ensure_mac_safety(&wine, &prefix).await;
     if let Some(dir) = mac_exe.parent() {
@@ -567,7 +569,7 @@ pub async fn steam_game_launch(
         "info",
         "steam",
         &format!(
-            "spawn game appid={appid} wine={} exe={} prefix={} graphics={} mac_safety={safety}",
+            "spawn game appid={appid} wine={} exe={} prefix={} graphics={} dxvk_deployed={deployed} mac_safety={safety}",
             wine.display(),
             dos_exe,
             prefix.display(),

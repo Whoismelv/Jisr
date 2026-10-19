@@ -163,7 +163,8 @@ fn simulated_mac_environment_runs_the_whole_critical_path() {
     );
 
     // 3) تنظيف البقايا: المسار الحقيقي لكاش CEF + القفل القديم
-    crate::steam::cleanup_stale_steam_state(&mac.steam_dir);
+    //    (نمرّر «ستيم مو شغّال» صراحةً — الاختبار ما يعتمد على pgrep الجهاز)
+    crate::steam::cleanup_stale_steam_state_with(&mac.steam_dir, false);
     assert!(!mac.user_local.join("htmlcache").exists(), "الكاش انمسح");
     assert!(
         !mac.user_local.join("SingletonLock").exists(),

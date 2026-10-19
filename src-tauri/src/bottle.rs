@@ -496,6 +496,11 @@ async fn run_wineboot(id: &str) -> Result<(), String> {
     remove_z_drive(&prefix);
     // شهادات النظام الرسمية → جلسات TLS داخل القارورة (تحسين غير حرج)
     sync_ca_bundle(&prefix);
+    // طبقة DXVK داخل القارورة (system32/syswow64) — لازم تكون موجودة
+    // قبل أول تشغيل لعبة، وإلا Wine ما حمّل DXVK أصلاً
+    if let Err(e) = crate::graphics::deploy_to_prefix(&prefix) {
+        crate::debuglog::write("debug", "bottle", &format!("dxvk deploy skipped: {e}"));
+    }
     Ok(())
 }
 

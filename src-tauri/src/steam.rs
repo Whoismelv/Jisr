@@ -327,7 +327,14 @@ fn rename_stale_items(base: &Path, stamp: u64, renamed: &mut Vec<String>) {
 /// ملاحظة: كاش CEF الحقيقي يعيش في بروفايل مستخدم ويندوز داخل البottle:
 /// `drive_c/users/<user>/AppData/Local/Steam/htmlcache` (وليس داخل مجلد ستيم).
 pub(crate) fn cleanup_stale_steam_state(steam_dir: &Path) {
-    if steam_processes_running() {
+    cleanup_stale_steam_state_with(steam_dir, steam_processes_running())
+}
+
+/// نفس الدالة لكن مع «فيه ستيم شغّال» كمعلَم صريح.
+/// السبب: الاختبار ما يعتمد على pgrep (نتائج الجهاز بتختلف) — والقرار
+/// يبقى قابلاً للاختبار deterministically.
+pub(crate) fn cleanup_stale_steam_state_with(steam_dir: &Path, steam_running: bool) {
+    if steam_running {
         crate::debuglog::raw(
             "debug",
             "steam",
@@ -1037,7 +1044,7 @@ mod tests {
         // ملف ما له علاقة — لازم ما ينمس
         fs::write(steam.join("config").join("config.vdf"), b"z").unwrap();
 
-        cleanup_stale_steam_state(&steam);
+        cleanup_stale_steam_state_with(&steam, false);
 
         // الأصول ما عادت موجودة (أُعيدت تسميتها) وما حذفنا شي
         assert!(!user_local.join("htmlcache").exists());

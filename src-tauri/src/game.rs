@@ -408,6 +408,8 @@ pub async fn game_launch(
     // نبني الأمر — بلا shell إطلاقاً (args مباشرة، ما فيه حقن)
     let prefix = bottle::bottle_dir(&meta.bottle);
     bottle::sync_ca_bundle(&prefix);
+    // نشر طبقة DXVK داخل القارورة (لازم قبل التشغيل: بدونها Wine يتجاهل DXVK)
+    let _ = graphics::deploy_to_prefix(&prefix);
     let (out, err) = stdio_to_log(&meta.id);
     let mut cmd = tokio::process::Command::new(&wine);
     cmd.env("WINEPREFIX", &prefix);
