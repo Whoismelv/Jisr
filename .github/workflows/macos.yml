@@ -216,7 +216,7 @@ jobs:
       - name: "📦 إنشاء الإصدار ورفع الملفات"
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: v0.1.0-test.13
+          tag_name: ${{ github.ref_name }}
           name: "جسر v0.1.0 — نسخة اختبار الماك ١٣ (تحديث تلقائي موقّع + محاكاة macOS + بناء أسرع)"
           # ملاحظة: لازم يكون غير prerelease حتى يشتغل مسار
           # /releases/latest/download/latest.json (GitHub يستثني الـprerelease من "latest")
