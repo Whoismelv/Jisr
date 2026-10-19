@@ -57,9 +57,13 @@ flate2 = "1"
 # المرجع: RUSTSEC-2026-0367 / 0368 / 0369
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+#
+# ⚡ السرعة: `lto = true` + `codegen-units = 1` = أبطأ إعدادات الرابط ممكنة
+# (بناء ٣١٠ ثانية). `lto = "thin"` + `codegen-units = 16` يقرّب البناء
+# للنصف تقريباً، والفرق في الحجم/الأداء مهمل لتطبيق بحجم ~٤ ميجابايت.
 [profile.release]
-codegen-units = 1
-lto = true
+codegen-units = 16
+lto = "thin"
 opt-level = 3
 panic = "abort"
 strip = true

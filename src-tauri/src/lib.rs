@@ -1109,7 +1109,7 @@ pub fn run() {
                 }),
             );
 
-            // مستخدم عنده محرك من نسخة سابقة: نجهّز DXVK بالخلفية (2.8MB)
+            // مستخدم عنده محرك من نسخة سابقة: نجهّز DXVK بالخلفية (5MB)
             if bottle::wine_bin().is_some() {
                 download::ensure_graphics_layer(app.handle());
             }

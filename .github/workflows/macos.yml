@@ -6,11 +6,16 @@
 #  • حارس أمان: يفشّل البناء لو التطبيق اعتمد على مكتبة خارج مكتبات النظام
 #    (درس أول تجربة حقيقية: liblzma من Homebrew سيرفر البناء)
 #
-#  ⚡ السرعة: البناء مقسوم على ثلاث وظائف متوازية
-#     1) checks  — فحوص الأمان + اختبارات Rust     (لا تعطّل البناء)
-#     2) build   — بناء التطبيق + حزمة التحديث      (المسار الحرج)
-#     3) release — ينشر الـdmg + latest.json        (ينتظر الاثنين)
-#     ⇒ زمن البناء ≈ زمن أبطأ الوظيفة بدل مجموعها (كان ~11 دقيقة، صار ~2-3)
+#  ⚡ السرعة (أُعيد تصميمها ٢٠٢٦-١٠-٢٠ — كانت ٧.٥ دقيقة، والهدف ~٢-٣):
+#     1) build  — بناء + اختبارات + تجهيز الملفات   (وظيفة واحدة)
+#     2) audit  — تدقيق تبعيات Rust                 (تعمل بالتوازي مع البناء)
+#     3) release— ينشر الـdmg + latest.json         (ينتظر الاثنين)
+#     ⇒ الزمن = أبطأ الوظيفة بدل مجموعها.
+#
+#  أسباب البطء (كلها عولجت):
+#     • `lto = true` + `codegen-units = 1` = أبطأ إعدادات الرابط (الحل: thin LTO)
+#     • الاختبارات كانت ببروفايل dev منفصل ⇒ بناء مزدوج (الحل: نفس بروفايل البناء)
+#     • `cargo audit` كان ينسخ قاعدة الثغرات (أرشيف ضخم) كل مرة (الحل: كاش يومي)
 # ============================================================
 name: macOS build
 
@@ -30,11 +35,18 @@ concurrency:
 
 jobs:
   # ============================================================
-  # 1) الفحوص (تعمل بالتوازي مع البناء)
+  # 1) البناء + الاختبارات (المسار الحرج — كل شيء في وظيفة واحدة)
   # ============================================================
-  checks:
-    name: "فحوص الأمان والاختبارات"
+  build:
+    name: "بناء التطبيق + اختبارات"
     runs-on: macos-14
+    env:
+      # مفتاح توقيع حزمة التحديث (minisign) — سر داخل GitHub فقط
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # بلا ملفات تصحيح أخطاء: حجم أصغر وكاش أسرع (النتيجة الجريبية مطابقة)
+      CARGO_PROFILE_RELEASE_DEBUG: 0
+      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -54,14 +66,6 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
-
-      - name: "🛡️ Cache (أداة التدقيق)"
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/bin
-          key: cargo-audit-bin-${{ runner.os }}-v1
-          restore-keys: cargo-audit-bin-${{ runner.os }}-
 
       - name: مكتبات الواجهة
         run: npm ci
@@ -69,52 +73,12 @@ jobs:
       - name: "🛡️ فحص ثغرات حزم npm"
         run: npm audit --audit-level=high
 
-      - name: "🧪 اختبارات الخلفية (شامل محاكاة macOS)"
-        run: cargo test --lib --manifest-path src-tauri/Cargo.toml
-
-      - name: "🛡️ تدقيق تبعيات Rust"
-        run: |
-          set -euo pipefail
-          if ! command -v cargo-audit >/dev/null 2>&1; then
-            cargo install cargo-audit --locked
-          fi
-          cargo audit --file src-tauri/Cargo.lock
-
-  # ============================================================
-  # 2) البناء (المسار الحرج)
-  # ============================================================
-  build:
-    name: "بناء تطبيق الماك"
-    runs-on: macos-14
-    env:
-      # مفتاح توقيع حزمة التحديث (minisign) — سر داخل GitHub فقط
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Rust
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          toolchain: stable
-          targets: aarch64-apple-darwin
-
-      - name: Cache (يبني أسرع)
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: src-tauri
-
-      - name: مكتبات الواجهة
-        run: npm ci
-
       - name: "🔨 بناء التطبيق (+ حزمة تحديث موقّعة)"
         run: npm run tauri build -- --target aarch64-apple-darwin
+
+      # نفس الهدف ونفس البروفايل ⇒ يعيد استخدام مخرجات البناء (بلا compile ثاني)
+      - name: "🧪 اختبارات الخلفية (شامل محاكاة macOS)"
+        run: cargo test --release --lib --target aarch64-apple-darwin --manifest-path src-tauri/Cargo.toml
 
       - name: "🛡️ فحص: لا اعتماد على مكتبات خارج النظام"
         run: |
@@ -196,11 +160,59 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # 3) النشر (ينتظر الفحوص + البناء — ما ينشر لو فيه ثغرة أو فشل)
+  # 2) تدقيق تبعيات Rust (تعمل بالتوازي مع البناء — بوابة أمان)
+  # ============================================================
+  audit:
+    name: "تدقيق تبعيات Rust"
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - name: Cache (مستودعات crates)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          cache-target: false
+
+      - name: "🛡️ Cache (أداة التدقيق)"
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin
+          key: cargo-audit-bin-${{ runner.os }}-v1
+          restore-keys: cargo-audit-bin-${{ runner.os }}-
+
+      - name: "📅 تاريخ اليوم (مفتاح كاش يومي لقاعدة الثغرات)"
+        id: day
+        run: echo "value=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - name: "🛡️ Cache (قاعدة الثغرات — مرة كل يوم)"
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/advisory-db
+          key: advisory-db-${{ runner.os }}-${{ steps.day.outputs.value }}
+          restore-keys: advisory-db-${{ runner.os }}-
+
+      - name: "🛡️ تدقيق تبعيات Rust"
+        run: |
+          set -euo pipefail
+          if ! command -v cargo-audit >/dev/null 2>&1; then
+            cargo install cargo-audit --locked
+          fi
+          cargo audit --file src-tauri/Cargo.lock
+
+  # ============================================================
+  # 3) النشر (ينتظر البناء + التدقيق — ما ينشر لو فيه ثغرة أو فشل)
   # ============================================================
   release:
     name: "نشر الإصدار"
-    needs: [checks, build]
+    needs: [build, audit]
     # التشغيل اليدوي (workflow_dispatch) يبني ويختبر فقط — بدون نشر
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: macos-14
@@ -217,7 +229,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: "جسر v0.1.0 — نسخة اختبار الماك ١٥ (السجل ما ينضيع · زر «نافذة» · تشخيص أعمق)"
+          name: "جسر v0.1.0 — نسخة اختبار الماك ١٦ (DirectX 9 عبر DXVK · بناء أسرع)"
           # ملاحظة: لازم يكون غير prerelease حتى يشتغل مسار
           # /releases/latest/download/latest.json (GitHub يستثني الـprerelease من "latest")
           prerelease: false
@@ -227,15 +239,14 @@ jobs:
             dist/*.app.tar.gz
             dist/latest.json
           body: |
-            ## 🍎 نسخة اختبار الماك — النسخة ١٥ (السجل ما ينضيع · زر «نافذة» · تشخيص أعمق)
+            ## 🍎 نسخة اختبار الماك — النسخة ١٦ (DirectX 9 صار يشتغل · بناء أسرع)
 
-            > 🩺 **السجل ما ينضيع:** بعد إعادة تشغيل الماك أو التطبيق، تلقى **سطور الجلسة السابقة** في صفحة السجل (فوق سطور الجلسة الحالية). وتقرير «انسخ السجل كامل» يقرأ من الملفات — فلو الشاشة طارت، التقرير يبقى كامل.
-            > 🪟 **زر «نافذة» جديد:** في المكتبة ← بجانب كل لعبة. يفعّل **وضع النافذة** في `settings.txt` الخاص باللعبة (مع نسخة احتياطية `.jisr.bak`) — يمنع اللعبة القديمة من أخذ شاشة الماك بالكامل (الشاشة السوداء). وإذا اللعبة ما تدعم الإعداد، جسر يقول لك بوضوح ولا يكتب شي.
-            > 🛡️ **حزام أمان للعرض:** نمنع اللعبة من تعتيم **شاشة الماك كلها** (gamma ramp) أو من احتكار الشاشة في الوضع الكامل (`winemac.drv`: `AllowSetGamma=n` + `CaptureDisplaysForFullscreen=n`) — مرة واحدة لكل قارورة.
-            > 🔬 **تشخيص أعمق:** نلتقط الآن **مخرجات تشغيل اللعبة** في `logs/game-launch.log` (كانت تضيع تماماً)، ونسجّل مسار مجلد اللعبة وملفاتها ووجود `settings.txt`، ونطبع **الإصدار الفعلي** داخل التطبيق.
+            > 🎯 **DirectX 9 صار له مسار صحيح:** كان WineD3D يترجم شيدرات D3D9 إلى **GLSL**، ومُصرّف GLSL من **Apple** يرفضها (`Pixel shader error … E5000: syntax error`) ⇒ **الألعاب القديمة ما كانت تشتغل إطلاقاً**. الآن نضيف **`d3d9.dll` من DXVK** ⇒ المسار يصير **D3D9 → Vulkan → MoltenVK → Metal** (بلا GLSL نهائياً).
+            > 🎮 **جديد في المكتبة:** زر **«نافذة»** بجانب كل لعبة (يمنع اللعبة من أخذ شاشة الماك كاملة = يمنع الشاشة السوداء).
+            > 🩺 **السجل ما ينضيع:** بعد إعادة تشغيل الماك أو التطبيق، تلقى **سطور الجلسة السابقة** في صفحة السجل. ومخرجات تشغيل اللعبة صارت تُحفظ في `logs/game-launch.log` (كانت تضيع تماماً).
+            > 🛡️ **حزام أمان للعرض:** نمنع اللعبة من تعتيم **شاشة الماك كلها** أو احتكارها بالوضع الكامل (`winemac.drv`: `AllowSetGamma=n` + `CaptureDisplaysForFullscreen=n`).
+            > ⚡ **البناء صار أسرع بكثير:** `thin LTO` بدل `lto=true`، والاختبارات صارت بنفس بروفايل البناء (بلا compile مزدوج)، والتدقيق بقاعدة ثغرات مخزّنة، والوظائف متوازية. من **٧.٥ دقيقة** ≈ **٢-٣ دقائق**.
             > 🔄 **تحديث تلقائي:** من الإعدادات ← «تحقّق من التحديثات». التحديث **موقّع** بمفتاح minisign داخل التطبيق، فما يجيك إلا من بناء عندنا. بعد التثبيت: «أعد التشغيل الآن».
-            > 🧪 **محاكاة macOS كاملة داخل الاختبارات:** نبني شجرة `~/Library/Application Support/Jisr` + قارورة + تثبيت ستيم + بروفايل مستخدم ونشغّل عليها نفس الكود — قبل ما نلمس الماك.
-            > ⚡ **البناء ~2-3 دقائق** بدل 11 (فحوص متوازية + cache ثابت) — قياس حقيقي: **2.67 دقيقة**.
             > 🔒 بلا أي تتبّع تلقائي. لا تُسجَّل كلمة مرور ستيم.
 
             ### قبل ما تبدأ (متطلبات — مرة وحدة)
@@ -253,10 +264,10 @@ jobs:
             4. افتح التطبيق عادي — وبعدها التحديثات تصير تلقائية من داخله.
 
             ### رحلة التجربة
-            1️⃣ نزّل المحرك → 2️⃣ جهّز القارورة الرئيسية → 3️⃣ ثبّت ستيم للويندوز → 4️⃣ سجّل دخولك (خلّ تحديث ستيم يخلص) → 5️⃣ نزّل **LIMBO Demo** و**Aperture Desk Job** → 6️⃣ من صفحة **المكتبة** شغّل اللعبة 🎮
+            1️⃣ نزّل المحرك → 2️⃣ جهّز القارورة الرئيسية → 3️⃣ ثبّت ستيم للويندوز → 4️⃣ سجّل دخولك (خلّ تحديث ستيم يخلص) → 5️⃣ نزّل **LIMBO Demo** (DirectX 9 — صار له مسار DXVK) → 6️⃣ من صفحة **المكتبة** شغّل اللعبة 🎮
 
             > 💡 **قبل الألعاب:** ستيم ← Settings ← In-Game ← أطفئ ✓ **Steam Overlay** (يتعارض مع DXVK).
-            > 🪟 **إذا الشاشة سودا:** المكتبة ← زر **«نافذة»** ← ثم «تشغيل» (الوضع الكامل هو السبب الأشهر).
+            > 🪟 **إذا الشاشة سودا:** المكتبة ← زر **«نافذة»** ← ثم «تشغيل».
             > 🩺 **لو صار خطأ:** صفحة **السجل** ← «انسخ السجل كامل» ← أرسله لنا مع صورة.
 
             شكراً مقدماً 🌉

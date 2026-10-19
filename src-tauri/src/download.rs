@@ -80,16 +80,20 @@ pub fn catalog() -> Vec<Asset> {
             sha256: "aa0ea4c82e636ae7bca2076387cb0a5affa26509ad13f119ecd0d62bd7ba6f82",
             size: 190_974_384,
         },
-        // طبقة DXVK-macOS (مفتوحة المصدر) — تسريع DirectX 10/11 داخل Wine.
-        // نسخة «builtin» مقصودة: تُحمَّل عبر WINEDLLPATH_PREPEND بلا لمس القارورة.
+        // طبقة DXVK-macOS (مفتوحة المصدر) — DirectX 9/10/11 داخل Wine.
+        // الحزمة: d3d10core + d3d11 من repack Gcenx (مبني للماك)
+        //        + d3d9 من DXVK الرسمي 1.10.3 (لأن repack Gcenx ما يجي معه)
+        // بدون d3d9 تسقط ألعاب DirectX 9 على WineD3D → ترجمة GLSL → Apple
+        // يرفضها (Pixel shader error E5000) → شاشة سوداء.
+        // تُحمَّل عبر WINEDLLPATH_PREPEND بلا لمس ملفات القارورة.
         Asset {
             id: graphics::ASSET_ID,
             name: "DXVK",
-            version: "1.10.3",
+            version: "1.10.3+d3d9",
             kind: "graphics",
-            url: "https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack-builtin.tar.gz",
-            sha256: "810b1e5caf8ce975b784fae866a130ad23fa0ea233b0e5609cbc4a45f3ef6f00",
-            size: 2_785_833,
+            url: "https://github.com/Whoismelv/Jisr/releases/download/dxvk-d3d9-1.10.3/dxvk-macos-d3d9-1.10.3.tar.gz",
+            sha256: "b99a3865a995a60fc0af7b58bc703be3c3e41e755ad1afcd8240637e8c6f3b9c",
+            size: 5_043_067,
         },
         // مثبّت ستيم الرسمي من Valve.
         // ⚠️ البصمة مربوطة بملف اليوم — Valve يحدّث الملف دورياً؛ لو تغيّر،
@@ -1012,7 +1016,7 @@ fn begin_download(app: &AppHandle, asset: Asset) -> Result<(), String> {
     Ok(())
 }
 
-/// DXVK يُنزَّل تلقائياً بعد تجهيز Wine (2.8MB فقط) — وإلا تبقى الألعاب
+/// DXVK يُنزَّل تلقائياً بعد تجهيز Wine (5MB فقط) — وإلا تبقى الألعاب
 /// على WineD3D الأبطأ. أي فشل هنا غير قاتل: الألعاب تشتغل بالطبقة الافتراضية.
 pub(crate) fn ensure_graphics_layer(app: &AppHandle) {
     if graphics::is_installed() {

@@ -14,7 +14,9 @@ use std::sync::atomic::AtomicBool;
 use crate::engine::{self, ExtErr};
 
 /// معرّف الأصل في كتالوج التنزيل (download.rs)
-pub const ASSET_ID: &str = "dxvk-macos-1.10.3";
+pub const ASSET_ID: &str = "dxvk-macos-d3d9-1.10.3";
+/// معرّف الطبقة القديمة (بدون d3d9) — ننظّفها عند التثبيت الجديد
+const OLD_ASSET_ID: &str = "dxvk-macos-1.10.3";
 /// وضع الرسومات الافتراضي: DXVK إن كان منزّلاً، وإلا WineD3D
 pub const MODE_AUTO: &str = "auto";
 pub const MODE_DXVK: &str = "dxvk";
@@ -45,6 +47,16 @@ pub fn is_installed() -> bool {
             .iter()
             .all(|file| d.join(arch).join(file).is_file())
     })
+}
+
+/// DXVK فيه دعم **DirectX 9** (d3d9.dll)؟ بدونه، ألعاب D3D9 تسقط على
+/// WineD3D ⇒ ترجمة GLSL ⇒ مُصرّف GLSL من Apple يرفضها
+/// (`Pixel shader error … E5000: syntax error`) ⇒ شاشة سوداء.
+pub fn d3d9_available() -> bool {
+    let d = install_dir();
+    ["x86_64-windows", "i386-windows"]
+        .iter()
+        .all(|arch| d.join(arch).join("d3d9.dll").is_file())
 }
 
 /// تحقّق من قيمة الوضع (نفس القيم في الواجهة والملف)
@@ -83,15 +95,21 @@ pub fn active_layer() -> &'static str {
 /// • DXVK_ASYNC: النسخة async تبني pipelines بالخلفية (أقل تقطيع)
 /// • steam=true: نضيف `steamservice=d` — **ضروري** لأن ألعاب ستيم ترث بيئة
 ///   عميل ستيم نفسه، مو بيئة أمر `-applaunch` القصير.
+/// • d3d9=b (إن وُجد): **مهم** — بدونه تسقط ألعاب DirectX 9 على WineD3D
+///   (ترجمة GLSL يرفضها مُصرّف GLSL من Apple ⇒ شاشة سوداء). مع DXVK
+///   يصير المسار: D3D9 → Vulkan → MoltenVK → Metal.
 pub(crate) fn apply_env(cmd: &mut tokio::process::Command, steam: bool) -> bool {
     if !dxvk_enabled() {
         return false;
     }
-    let overrides = if steam {
-        "winemenubuilder.exe=d;steamservice=d;d3d10core,d3d11=b"
-    } else {
-        "winemenubuilder.exe=d;d3d10core,d3d11=b"
-    };
+    let mut overrides = String::from("winemenubuilder.exe=d");
+    if steam {
+        overrides.push_str(";steamservice=d");
+    }
+    overrides.push_str(";d3d10core,d3d11=b");
+    if d3d9_available() {
+        overrides.push_str(";d3d9=b");
+    }
     cmd.env("WINEDLLPATH_PREPEND", install_dir())
         .env("DXVK_ASYNC", "1")
         .env("WINEDLLOVERRIDES", overrides);
@@ -125,6 +143,12 @@ pub fn install(
     }
     std::fs::rename(&root, &target)
         .map_err(|e| ExtErr::Failed(format!("تعذّر تثبيت طبقة DXVK: {e}")))?;
+
+    // الطبقة القديمة (بدون d3d9) ما نايدة — ننظّفها حتى ما تاخذ مساحة
+    let old = graphics_dir().join(OLD_ASSET_ID);
+    if old.exists() {
+        let _ = std::fs::remove_dir_all(&old);
+    }
 
     let _ = std::fs::remove_dir_all(&staging);
     Ok((files, bytes))
@@ -250,6 +274,32 @@ mod tests {
         let (_files, _bytes, _skipped) =
             engine::extract_tar_gz(Path::new(&path), &dest, &cancel, &|_, _, _| {}).unwrap();
         assert!(find_root(&dest).is_some(), "بنية DXVK غير متوقعة");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// الأرشيف الحقيقي اللي نشحنه (DXVK + d3d9) — نفس الفحص اليدوي
+    #[test]
+    #[ignore]
+    fn real_dxvk_d3d9_archive_has_d3d9() {
+        let Ok(path) = std::env::var("JISR_DXVK_ARCHIVE") else {
+            return;
+        };
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("jisr-dxvk-d3d9-{stamp}"));
+        let dest = base.join("out");
+        let cancel = AtomicBool::new(false);
+        let (_files, _bytes, _skipped) =
+            engine::extract_tar_gz(Path::new(&path), &dest, &cancel, &|_, _, _| {}).unwrap();
+        let root = find_root(&dest).expect("بنية DXVK غير متوقعة");
+        for arch in ["x86_64-windows", "i386-windows"] {
+            assert!(
+                root.join(arch).join("d3d9.dll").is_file(),
+                "d3d9.dll ناقص في {arch} — بدونه ألعاب DirectX 9 ما تشتغل"
+            );
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 }
