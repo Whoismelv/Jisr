@@ -201,11 +201,7 @@ pub(crate) async fn ensure_mac_safety(wine: &Path, prefix: &Path) -> bool {
     if marker.is_file() {
         return true;
     }
-    let mut ok = true;
-    for (value, setting) in [
-        ("AllowSetGamma", "n"),
-        ("CaptureDisplaysForFullscreen", "n"),
-    ] {
+    let run = |value: &'static str, setting: &'static str| {
         let mut cmd = tokio::process::Command::new(wine);
         cmd.env("WINEPREFIX", prefix)
             .arg("reg")
@@ -221,14 +217,18 @@ pub(crate) async fn ensure_mac_safety(wine: &Path, prefix: &Path) -> bool {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        match tokio::time::timeout(Duration::from_secs(25), cmd.status()).await {
-            Ok(Ok(st)) if st.success() => {}
-            _ => ok = false,
-        }
-    }
-    if ok {
-        let _ = std::fs::write(&marker, "1");
-    }
+        tokio::time::timeout(Duration::from_secs(20), cmd.status())
+    };
+
+    // الأمران متوازيان — نوفّر على المستخدم ثواني الانتظار
+    let (r1, r2) = tokio::join!(
+        run("AllowSetGamma", "n"),
+        run("CaptureDisplaysForFullscreen", "n")
+    );
+    let ok = matches!(r1, Ok(Ok(st)) if st.success()) && matches!(r2, Ok(Ok(st)) if st.success());
+
+    // العلامة تُكتب دائماً — حتى لو فشل الأمر، ما نعيد المحاولة (قد تتأخر التشغيل)
+    let _ = std::fs::write(&marker, if ok { "1" } else { "0" });
     ok
 }
 

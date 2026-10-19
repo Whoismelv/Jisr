@@ -395,8 +395,18 @@ pub async fn steam_game_windowed(
     if md.len() > 512 * 1024 {
         return Err("ملف إعدادات اللعبة كبير بشكل غير متوقع — ما نلمسه".into());
     }
-    let text =
-        std::fs::read_to_string(&file).map_err(|e| format!("تعذّر قراءة إعدادات اللعبة: {e}"))?;
+    let bytes = std::fs::read(&file).map_err(|e| format!("تعذّر قراءة إعدادات اللعبة: {e}"))?;
+    // بعض الألعاب القديمة تحفظ إعداداتها بـ UTF-16 (مع BOM) — نحترم ترميزها
+    let utf16 = bytes.starts_with(&[0xFF, 0xFE]);
+    let text = if utf16 {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(&bytes).to_string()
+    };
     let Some(patched) = patch_windowed(&text, enabled) else {
         return Err(
             "هذي اللعبة ما تدعم windowedmode في settings.txt — جرّب من قائمة إعدادات اللعبة".into(),
@@ -408,7 +418,16 @@ pub async fn steam_game_windowed(
     if !backup.is_file() {
         let _ = std::fs::copy(&file, &backup);
     }
-    std::fs::write(&file, patched).map_err(|e| format!("تعذّر حفظ إعدادات اللعبة: {e}"))?;
+    let out: Vec<u8> = if utf16 {
+        let mut v: Vec<u8> = vec![0xFF, 0xFE];
+        for unit in patched.encode_utf16() {
+            v.extend_from_slice(&unit.to_le_bytes());
+        }
+        v
+    } else {
+        patched.into_bytes()
+    };
+    std::fs::write(&file, out).map_err(|e| format!("تعذّر حفظ إعدادات اللعبة: {e}"))?;
 
     log(
         &app,
