@@ -4,7 +4,8 @@
 //    ويُتحقق منها مرة ثانية قبل كل تشغيل (ثقة صفرية)
 //  • ننسخ المثبّت داخل القارورة (C:) قبل تشغيله — Wine ما يقدر
 //    يشغّل ملفات من نظام الماك مباشرة (وبلا أي ربط لملفات الماك)
-//  • التشغيل: steam.exe مع -no-cef-sandbox (معيار ستيم على Wine)
+//  • التشغيل: steam.exe مع أعلام CEF الرسمية (-no-cef-sandbox + تعطيل GPU)
+//    — حل «الشاشة السوداء» المعتمد على CrossOver/Whisky (درس تجربة الماك #5)
 //  • على ويندوز (بيئة تطوير): أخطاء واضحة وآمنة فقط — نفس نمط الألعاب
 // ============================================================
 use std::path::{Path, PathBuf};
@@ -308,6 +309,11 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         .arg(&dos_exe)
         // معيار ستيم على Wine: بند Chromium الداخلي ما يشتغل صح تحت Wine
         .arg("-no-cef-sandbox")
+        // درس التجربة #5: واجهة ستيم (CEF) ترسم عبر تسريع GPU، وWineD3D على
+        // الماك ما يقدّمه صح → نافذة سوداء. هذولا فلاقان رسميان من Valve
+        // (نفس حل مجتمع CrossOver/Whisky) يجبران الرسم البرمجي
+        .arg("-cef-disable-gpu")
+        .arg("-cef-disable-gpu-compositing")
         .stdin(Stdio::null())
         .stdout(out)
         .stderr(err);
