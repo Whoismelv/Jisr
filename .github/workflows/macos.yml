@@ -46,17 +46,20 @@ jobs:
 
       - name: "🛡️ فحص: لا اعتماد على مكتبات خارج النظام"
         run: |
+          set -euo pipefail
           BIN=src-tauri/target/aarch64-apple-darwin/release/jisr
+          test -f "$BIN" || { echo "::error::الملف التنفيذي غير موجود — مسار الفحص خاطئ!"; exit 1; }
           echo "== المكتبات الديناميكية =="
-          otool -L "$BIN"
-          BAD=$(otool -L "$BIN" | tail -n +2 | grep -Ev '^[[:space:]]*(/usr/lib/|/System/)' || true)
+          DEPS=$(otool -L "$BIN")
+          echo "$DEPS"
+          BAD=$(echo "$DEPS" | tail -n +2 | grep -Ev '^[[:space:]]*(/usr/lib/|/System/)' || true)
           if [ -n "$BAD" ]; then
             echo "$BAD"
             echo "::error::مكتبات غير نظامية مرصودة: $(echo "$BAD" | tr '\n' ' ')"
             echo "التطبيق يعتمد على مكتبة من خارج مكتبات النظام — أوقفنا النشر لمنع نسخة معطوبة!"
             exit 1
           fi
-          echo "✔ كل الاعتمادات من مكتبات النظام"
+          echo "✔ كل الاعتمادات من مكتبات النظام (العدد: $(echo "$DEPS" | tail -n +2 | wc -l | tr -d ' '))"
 
       - name: "📦 إنشاء الإصدار ورفع الـdmg"
         uses: softprops/action-gh-release@v2
