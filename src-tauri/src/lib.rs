@@ -563,6 +563,27 @@ fn build_report(app: &AppHandle) -> String {
         out.push_str(&format!("cef_flags_override: {}\n", flags.trim()));
     }
 
+    // حكم سريع: هل وصل فلاقين غلاف CEF إلى ستيم فعلاً؟
+    // (webhelper.txt = سطر الأمر الحقيقي اللي شغّل به ستيم الـwebhelper)
+    let mut webhelper_tail = String::new();
+    if let Some((mac_exe, _)) = steam::steam_exe() {
+        if let Some(dir) = mac_exe.parent() {
+            webhelper_tail =
+                debuglog::tail_file(&dir.join("logs").join("webhelper.txt"), 400, 60_000);
+        }
+    }
+    if webhelper_tail.trim().is_empty() {
+        out.push_str(
+            "cef_shim_flags_seen: (webhelper.txt غير موجود — الـwebhelper ما اشتغل بعد)\n",
+        );
+    } else {
+        out.push_str(&format!(
+            "cef_shim_flags_seen: single-process={} disable-gpu={}\n",
+            webhelper_tail.contains("--single-process"),
+            webhelper_tail.contains("--disable-gpu")
+        ));
+    }
+
     if let Some(p) = debuglog::path() {
         push_section(
             &mut out,
@@ -606,6 +627,37 @@ fn build_report(app: &AppHandle) -> String {
             &format!("{name} (last lines)"),
             &debuglog::tail_file(&p, 1_200, 400_000),
         );
+    }
+
+    // سجلات ستيم الرسمية — أهم источ لفهم واجهة ستيم:
+    // webhelper.txt (الفلاقين الفعلية) · bootstrap_log.txt (تحقق الملفات)
+    // cef_log.txt (أخطاء CEF) · وكل *.txt آخر في مجلد logs
+    if let Some((mac_exe, _)) = steam::steam_exe() {
+        if let Some(steam_dir) = mac_exe.parent() {
+            let logs_dir = steam_dir.join("logs");
+            let mut files: Vec<PathBuf> = std::fs::read_dir(&logs_dir)
+                .map(|rd| {
+                    rd.flatten()
+                        .map(|e| e.path())
+                        .filter(|p| {
+                            p.is_file() && p.extension().and_then(|x| x.to_str()) == Some("txt")
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            files.sort();
+            for p in files.into_iter().take(6) {
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                push_section(
+                    &mut out,
+                    &format!("Steam/logs/{name} (last lines)"),
+                    &debuglog::tail_file(&p, 250, 80_000),
+                );
+            }
+        }
     }
 
     // سجل غلاف CEF — أهم ملف لتشخيص واجهة ستيم

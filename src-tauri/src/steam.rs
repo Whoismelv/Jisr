@@ -276,6 +276,78 @@ fn ensure_steam_dev_cfg(steam_dir: &Path) {
     let _ = write_atomic(&path, text.as_bytes());
 }
 
+/// هل ستيم شغّال الآن على مستوى العمليات؟ (حارس أمان قبل لمس ملفات ستيم)
+/// pgrep يرجع كود 1 لما مالقى — والمخرج الفارغ يعني ما فيه ستيم.
+/// لو فشل pgrep نفسه نعتبره «شغّال» ونمتنع عن التنظيف (أفضل نكون متحفظين).
+fn steam_processes_running() -> bool {
+    if !cfg!(unix) {
+        return false;
+    }
+    std::process::Command::new("pgrep")
+        .arg("-f")
+        .arg("steamwebhelper.exe|steam.exe")
+        .output()
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(true)
+}
+
+/// تنظيف بقايا الكاش والأقفال القديمة — سبب معروف موثّق لمشكلة
+/// «ستيم يفتح بدون نافذة» (htmlcache/Singleton* عالقة من جلسة سابقة).
+/// قواعد الأمان:
+///  1. ما نلمس شي إذا فيه أي عملية ستيم حيّة (pgrep).
+///  2. نعيد **التسمية** بدل الحذف — كل شي قابل للتراجع (`.jisr-bak-<وقت>`).
+///  3. داخل مجلد ستيم داخل قارورة المستخدم فقط — ما نخرج منه أبداً.
+pub(crate) fn cleanup_stale_steam_state(steam_dir: &Path) {
+    if steam_processes_running() {
+        crate::debuglog::raw(
+            "debug",
+            "steam",
+            "cleanup skipped — a steam process is still running",
+        );
+        return;
+    }
+
+    let stamp = crate::now_ms();
+    let mut renamed: Vec<String> = Vec::new();
+
+    for base in [steam_dir.to_path_buf(), steam_dir.join("config")] {
+        // ذاكرة CEF (htmlcache) — نبنيها من الصفر لو كانت عالقة
+        let cache = base.join("htmlcache");
+        if cache.is_dir() {
+            let bak = base.join(format!("htmlcache.jisr-bak-{stamp}"));
+            if std::fs::rename(&cache, &bak).is_ok() {
+                renamed.push(cache.display().to_string());
+            }
+        }
+
+        // أقفال Chromium (Singleton*) — ملفات قديمة ما عادت لازمة
+        if let Ok(rd) = std::fs::read_dir(&base) {
+            for entry in rd.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.starts_with("Singleton") {
+                    continue;
+                }
+                let path = entry.path();
+                let bak = path.with_file_name(format!("{name}.jisr-bak-{stamp}"));
+                if std::fs::rename(&path, &bak).is_ok() {
+                    renamed.push(path.display().to_string());
+                }
+            }
+        }
+    }
+
+    if !renamed.is_empty() {
+        crate::debuglog::raw(
+            "info",
+            "steam",
+            &format!(
+                "cleaned stale steam state (renamed, recoverable): {}",
+                renamed.join(", ")
+            ),
+        );
+    }
+}
+
 /// ملف اختياري لتجربة فلاقين CEF بدون بناء جديد:
 /// `~/Library/Application Support/Jisr/cef-flags.txt` (أول سطر، بحدود آمنة)
 fn cef_flags_override() -> Option<String> {
@@ -615,6 +687,8 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         // إصلاح واجهة ستيم: نضمن غلاف CEF قبل كل تشغيل (تحديث ستيم يرجع الأصل)
         // + إصلاح تنزيلات ستيم (HTTP/2) — ملف رسمي داخل مجلد ستيم
         if let Some(dir) = mac_exe.parent() {
+            // بقايا الكاش والأقفال القديمة — سبب موثّق لـ«ستيم يفتح بدون نافذة»
+            cleanup_stale_steam_state(dir);
             prepare_steam_ui(&app, dir);
         }
 
@@ -838,6 +912,40 @@ mod tests {
             ensure_cef_shim(&root.join("Steam"), &root.join("backup")),
             None
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cleanup_renames_stale_cache_instead_of_deleting() {
+        let root = temp_root("cleanup");
+        let steam = root.join("Steam");
+        fs::create_dir_all(steam.join("config").join("htmlcache")).unwrap();
+        fs::write(steam.join("SingletonLock"), b"x").unwrap();
+        fs::write(steam.join("config").join("SingletonCookie"), b"y").unwrap();
+        // ملف ما له علاقة — لازم ما ينمس
+        fs::write(steam.join("config").join("config.vdf"), b"z").unwrap();
+
+        cleanup_stale_steam_state(&steam);
+
+        // الأصول ما عادت موجودة (أُعيدت تسميتها) وما حذفنا شي
+        assert!(!steam.join("config").join("htmlcache").exists());
+        assert!(!steam.join("SingletonLock").exists());
+        assert!(steam.join("config").join("config.vdf").exists());
+
+        // النسخ الاحتياطية موجودة (قابلة للتراجع)
+        let backups: Vec<PathBuf> = fs::read_dir(&steam.join("config"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("jisr-bak")
+            })
+            .collect();
+        assert!(!backups.is_empty(), "expected a recoverable backup copy");
+
         let _ = fs::remove_dir_all(root);
     }
 

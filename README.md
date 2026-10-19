@@ -25,7 +25,7 @@
 
 1. **Rosetta 2:** أول تشغيل، الماك يطلبه تلقائياً (اضغط تثبيت) — أو يدوياً: `softwareupdate --install-rosetta --agree-to-license`
 2. **GStreamer.framework** (متطلب محرّك Wine رسمياً — لجميع المستخدمين، يحتاج كلمة سر الماك):
-   👉 [gstreamer-1.0-1.28.5-universal.pkg](https://gstreamer.freedesktop.org/data/pkg/osx/1.28.5/gstreamer-1.0-1.28.5-universal.pkg) (~146 MB)
+   👉 [gstreamer-1.0-1.28.8-universal.pkg](https://gstreamer.freedesktop.org/data/pkg/osx/1.28.8/gstreamer-1.0-1.28.8-universal.pkg) (~146 MB)
 
 ## 📥 التنزيل
 من صفحة **[الإصدارات](../../releases)** — نزّل ملف `.dmg`.
