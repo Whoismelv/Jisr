@@ -348,3 +348,27 @@ fn clearing_the_log_truncates_the_file() {
     reset_data_dir();
     mac.cleanup();
 }
+
+/// سجل الجلسة السابقة يبقى على القرص بعد «إعادة التشغيل» — ونرجّعه للواجهة
+#[test]
+fn previous_session_log_survives_restart() {
+    let _guard = SIM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mac = FakeMac::build("prev");
+    crate::set_data_dir_override(Some(mac.data.clone()));
+    let log_path = crate::debuglog::init_path(&mac.data.join("logs"));
+
+    crate::debuglog::raw("error", "sim", "خطأ قبل إعادة التشغيل");
+    assert!(fs::read_to_string(&log_path).unwrap().contains("قبل إعادة"));
+
+    // «إعادة تشغيل»: نفتح نفس الملف من جديد (كما لو التطبيق أُغلق وفُتح)
+    let reopened = crate::debuglog::init_path(&mac.data.join("logs"));
+    assert_eq!(reopened, log_path, "نفس ملف السجل الدائم");
+    let tail = crate::debuglog::tail_file(&reopened, 50, 200_000);
+    assert!(
+        tail.contains("خطأ قبل إعادة التشغيل"),
+        "سطر الجلسة السابقة لازم يرجع للواجهة"
+    );
+
+    reset_data_dir();
+    mac.cleanup();
+}
