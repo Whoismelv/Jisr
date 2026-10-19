@@ -112,6 +112,9 @@ pub(crate) fn apply_env(cmd: &mut tokio::process::Command, steam: bool) -> bool 
     }
     cmd.env("WINEDLLPATH_PREPEND", install_dir())
         .env("DXVK_ASYNC", "1")
+        // HUD صغير في زاوية اللعبة (اسم DXVK + الإصدار) — **دليل ميداني** إن
+        // مسار DXVK شغّال فعلاً. يجاوب على سؤال: «هل اللعبة تسير على Vulkan؟»
+        .env("DXVK_HUD", "devinfo")
         .env("WINEDLLOVERRIDES", overrides);
     true
 }
