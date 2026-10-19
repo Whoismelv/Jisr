@@ -212,10 +212,16 @@ fn clean_name(raw: &str) -> Option<String> {
     Some(name)
 }
 
-/// installdir لازم يكون مجلداً واحداً بسيطاً (ما نسمح بمسار داخل المانيفست)
+/// installdir لازم يكون مجلداً واحداً بسيطاً (ما نسمح بمسار داخل المانيفست).
+/// نرفض الفواصل يدوياً بدل الاعتماد على منصة التشغيل فقط: ملفات ستيم (ACF/VDF)
+/// بصيغة ويندوز، والشرطة المائلة العكسية فاصل فيها حتى لو البرنامج شغال على ماك.
+/// بدون هذا الفحص كان "..\\evil" يمرّ على ماك ويُرفض على ويندوز (فشل CI).
 fn safe_component(raw: &str) -> Option<&str> {
     let raw = raw.trim();
-    if raw.is_empty() {
+    if raw.is_empty() || raw == "." || raw == ".." {
+        return None;
+    }
+    if raw.contains('/') || raw.contains('\\') {
         return None;
     }
     let mut comps = Path::new(raw).components();
@@ -487,5 +493,8 @@ mod tests {
         assert_eq!(safe_component("Spacewar"), Some("Spacewar"));
         assert_eq!(safe_component("..\\evil"), None);
         assert_eq!(safe_component("a/b"), None);
+        assert_eq!(safe_component(".."), None);
+        assert_eq!(safe_component("."), None);
+        assert_eq!(safe_component("a\\b"), None);
     }
 }
