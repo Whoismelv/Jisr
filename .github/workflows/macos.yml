@@ -149,18 +149,41 @@ jobs:
           SIZE=$(( $(stat -f%z "$DMG") / 1048576 ))
           mkdir -p dist
           cp "$DMG" dist/
-          # حزمة التحديث الموقّعة + بيان latest.json (يقرأه التطبيق نفسه)
+          # حزمة التحديث الموقّعة + توقيعها (Tauri ينشئ .sig فقط، ولا ينشئ latest.json)
           APPTGZ=$(find src-tauri/target -type f -name '*.app.tar.gz' | head -n 1 || true)
           if [ -n "$APPTGZ" ]; then cp "$APPTGZ" dist/; else echo "::error::ما لقينا حزمة التحديث (.app.tar.gz) — توقف النشر!"; exit 1; fi
-          MANIFEST=$(find src-tauri/target -type f -name 'latest.json' | head -n 1 || true)
-          if [ -n "$MANIFEST" ]; then
-            cp "$MANIFEST" dist/
-            echo "== بيان التحديث =="
-            head -c 400 dist/latest.json; echo
-          else
-            echo "::error::ما لقينا latest.json — التحديث التلقائي ما راح يشتغل. توقف النشر!"
+          SIG=$(find src-tauri/target -type f -name '*.app.tar.gz.sig' | head -n 1 || true)
+          if [ -z "$SIG" ]; then
+            echo "::error::ما لقينا توقيع حزمة التحديث (.sig) — المفتاح الخاص غير متاح في CI؟ توقف النشر!"
             exit 1
           fi
+          echo "== التوقيع =="; head -c 120 "$SIG"; echo
+          # نولّد latest.json بأنفسنا: الإصدار من tauri.conf.json + التوقيع الفعلي + رابط الوسم
+          export SIG_PATH="$SIG"
+          export APP_ASSET="$(basename "$APPTGZ")"
+          node - <<'NODE'
+          const fs = require('fs');
+          const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+          const sig = fs.readFileSync(process.env.SIG_PATH, 'utf8').trim();
+          const tag = process.env.GITHUB_REF_NAME;
+          const manifest = {
+            version: conf.version,
+            notes: `Jisr ${tag} — نسخة اختبار موقّعة`,
+            pub_date: new Date().toISOString(),
+            platforms: {
+              'darwin-aarch64': {
+                signature: sig,
+                url: `https://github.com/Whoismelv/Jisr/releases/download/${tag}/${process.env.APP_ASSET}`,
+              },
+            },
+          };
+          fs.writeFileSync('dist/latest.json', JSON.stringify(manifest, null, 2) + '\n');
+          console.log('manifest version:', manifest.version);
+          console.log('manifest url:', manifest.platforms['darwin-aarch64'].url);
+          console.log('signature lines:', sig.split('\n').length);
+          NODE
+          echo "== بيان التحديث =="
+          cat dist/latest.json
           ls -la dist/
           echo "::notice::✔ جاهز للنشر: $(basename "$DMG") (${SIZE}MB)"
 
@@ -195,7 +218,9 @@ jobs:
         with:
           tag_name: v0.1.0-test.13
           name: "جسر v0.1.0 — نسخة اختبار الماك ١٣ (تحديث تلقائي موقّع + محاكاة macOS + بناء أسرع)"
-          prerelease: true
+          # ملاحظة: لازم يكون غير prerelease حتى يشتغل مسار
+          # /releases/latest/download/latest.json (GitHub يستثني الـprerelease من "latest")
+          prerelease: false
           make_latest: true
           files: |
             dist/*.dmg
