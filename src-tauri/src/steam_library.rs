@@ -360,6 +360,7 @@ pub async fn steam_game_launch(
     state: State<'_, steam::SteamState>,
     appid: u32,
 ) -> Result<(), String> {
+    let _trace = crate::debuglog::trace("steam", "steam_game_launch", format!("appid={appid}"));
     if cfg!(windows) {
         return Err("تشغيل ألعاب ستيم يحتاج Wine — هذي بيئة تطوير ويندوز".into());
     }

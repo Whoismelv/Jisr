@@ -482,6 +482,11 @@ pub async fn bottle_create(
     kind: Option<String>,
     simulate: Option<bool>,
 ) -> Result<(), String> {
+    let _trace = crate::debuglog::trace(
+        "bottle",
+        "bottle_create",
+        format!("name={name:?} kind={kind:?} simulate={simulate:?}"),
+    );
     // وضع التطوير مسموح على ويندوز فقط — على الماك دائماً تجهيز حقيقي
     let simulate = simulate.unwrap_or(false) && cfg!(windows);
     let kind = match kind.as_deref() {
@@ -526,6 +531,7 @@ pub async fn bottle_retry(
     id: String,
     simulate: Option<bool>,
 ) -> Result<(), String> {
+    let _trace = crate::debuglog::trace("bottle", "bottle_retry", format!("id={id}"));
     if !valid_bottle_id(&id) {
         return Err("معرّف قارورة غير صالح".into());
     }
@@ -563,6 +569,7 @@ pub async fn bottle_delete(
     state: State<'_, BottlesState>,
     id: String,
 ) -> Result<(), String> {
+    let _trace = crate::debuglog::trace("bottle", "bottle_delete", format!("id={id}"));
     if id == MAIN_ID {
         return Err("ما نحذف القارورة الرئيسية".into());
     }

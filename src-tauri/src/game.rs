@@ -266,6 +266,7 @@ pub async fn game_add(
     state: State<'_, GamesState>,
     exe: String,
 ) -> Result<Game, String> {
+    let _trace = crate::debuglog::trace("game", "game_add", format!("exe={exe}"));
     let path = PathBuf::from(exe.trim());
     if !path.is_absolute() {
         return Err("اختر الملف من نافذة الاختيار — المسار غير صالح".into());
@@ -330,6 +331,7 @@ pub async fn game_remove(
     state: State<'_, GamesState>,
     id: String,
 ) -> Result<(), String> {
+    let _trace = crate::debuglog::trace("game", "game_remove", format!("id={id}"));
     if state
         .run
         .lock()
@@ -366,6 +368,7 @@ pub async fn game_launch(
     state: State<'_, GamesState>,
     id: String,
 ) -> Result<(), String> {
+    let _trace = crate::debuglog::trace("game", "game_launch", format!("id={id}"));
     let meta = {
         let list = state.list.lock().map_err(|_| "خطأ داخلي".to_string())?;
         list.iter()
@@ -419,6 +422,19 @@ pub async fn game_launch(
     for a in meta.args.split_whitespace() {
         cmd.arg(a);
     }
+
+    crate::debuglog::raw(
+        "info",
+        "game",
+        &format!(
+            "spawn wine={} exe={} prefix={} args={:?} graphics={}",
+            wine.display(),
+            dos_exe,
+            prefix.display(),
+            meta.args,
+            graphics::active_layer()
+        ),
+    );
 
     let child = cmd.spawn().map_err(|e| {
         let msg = format!("تعذّر تشغيل اللعبة: {e}");
@@ -481,6 +497,29 @@ pub async fn game_launch(
             let _ = save_games(&snap);
         }
 
+        crate::debuglog::raw(
+            "info",
+            "game",
+            &format!(
+                "exit game={} code={:?} played_ms={} stopped={} log={}",
+                name2,
+                code,
+                played,
+                stop_requested,
+                run_log_path(&id2).display()
+            ),
+        );
+        if !stop_requested && code.unwrap_or(0) != 0 {
+            crate::debuglog::raw(
+                "debug",
+                "game",
+                &format!(
+                    "process output tail:\n{}",
+                    crate::debuglog::tail_file(&run_log_path(&id2), 80, 20_000)
+                ),
+            );
+        }
+
         let quick_fail = !stop_requested && code.unwrap_or(0) != 0 && played < 5_000;
         if stop_requested {
             log(
@@ -530,6 +569,7 @@ pub async fn game_launch(
 /// إيقاف لعبة شغّالة — نكيل جلسة القارورة كلها بأمان (wineserver -k)
 #[tauri::command]
 pub async fn game_stop(state: State<'_, GamesState>, id: String) -> Result<(), String> {
+    let _trace = crate::debuglog::trace("game", "game_stop", format!("id={id}"));
     let bottle_id = {
         let list = state.list.lock().map_err(|_| "خطأ داخلي".to_string())?;
         list.iter()

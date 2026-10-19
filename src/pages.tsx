@@ -18,6 +18,8 @@ import {
 } from "./ui";
 import * as Icon from "./Icons";
 import {
+  debugLogPath,
+  exportDebugReport,
   getGraphicsMode,
   setGraphicsMode,
   steamGameLaunch,
@@ -990,17 +992,45 @@ export const SettingsPage = memo(function SettingsPage({
 export const LogsPage = memo(function LogsPage({
   logs,
   onClear,
+  notify,
 }: {
   logs: LogEntry[];
   onClear: () => void;
+  notify: (msg: string) => void;
 }) {
   const { t } = useI18n();
   const endRef = useRef<HTMLDivElement>(null);
+  const [busy, setBusy] = useState(false);
 
   // نتابع آخر سطر تلقائياً (مثل تطبيقات الطرفية)
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [logs.length]);
+
+  // «انسخ السجل كامل»: تقرير واحد فيه الجهاز + كل السجل + سجلات ستيم والألعاب
+  const onCopyFull = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const report = await exportDebugReport();
+      await navigator.clipboard.writeText(report);
+      notify(t("logCopied"));
+    } catch {
+      notify(t("logCopyFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, notify, t]);
+
+  // «إظهار في Finder»: نكشف ملف السجل الدائم — أسهل لو النسخ ما نفع
+  const onReveal = useCallback(async () => {
+    try {
+      const path = await debugLogPath();
+      if (path) await revealItemInDir(path);
+    } catch {
+      /* لا شيء — الزر تحسيني */
+    }
+  }, []);
 
   return (
     <div className="stack">
@@ -1014,24 +1044,47 @@ export const LogsPage = memo(function LogsPage({
           {logs.length === 0 ? (
             <span className="muted">{t("logsEmpty")}</span>
           ) : (
-            logs.map((l, i) => (
-              <div className="logline" key={`${l.time_ms}-${i}`}>
-                <span className="log-time">
-                  {new Date(l.time_ms).toLocaleTimeString()}
-                </span>
-                <span className={"log-level " + l.level}>
-                  {l.level.toUpperCase()}
-                </span>
-                <span className="log-msg">
-                  {t(l.key as TKey, logParams(l.params, t))}
-                </span>
-              </div>
-            ))
+            logs.map((l, i) => {
+              // سطور التشخيص الخام تُعرض حرفياً كما كُتبت (بدون ترجمة)
+              const isRaw = l.key === "log.raw";
+              const rawLine = isRaw ? String(l.params?.line ?? "") : "";
+              return (
+                <div
+                  className={"logline" + (isRaw ? " raw" : "")}
+                  key={`${l.time_ms}-${i}`}
+                >
+                  <span className="log-time">
+                    {new Date(l.time_ms).toLocaleTimeString()}
+                  </span>
+                  <span className={"log-level " + l.level}>
+                    {l.level.toUpperCase()}
+                  </span>
+                  <span className="log-msg">
+                    {isRaw ? rawLine : t(l.key as TKey, logParams(l.params, t))}
+                  </span>
+                </div>
+              );
+            })
           )}
           <div ref={endRef} />
         </div>
 
         <div className="log-actions">
+          <Button
+            variant="plain"
+            icon={<Icon.Copy size={15} />}
+            disabled={busy}
+            onClick={() => void onCopyFull()}
+          >
+            {t("copyFullLog")}
+          </Button>
+          <Button
+            variant="plain"
+            icon={<Icon.Folder size={15} />}
+            onClick={() => void onReveal()}
+          >
+            {t("revealLog")}
+          </Button>
           <Button
             variant="plain"
             icon={<Icon.Trash size={15} />}

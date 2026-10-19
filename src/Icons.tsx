@@ -159,6 +159,12 @@ export const Copy = (p: IconProps) => (
   </Svg>
 );
 
+export const Folder = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3.6 7.4c0-1 .8-1.8 1.8-1.8h3.5l1.7 1.9h8c1 0 1.8.8 1.8 1.8v6.9c0 1-.8 1.8-1.8 1.8H5.4c-1 0-1.8-.8-1.8-1.8z" />
+  </Svg>
+);
+
 export const Trash = (p: IconProps) => (
   <Svg {...p}>
     <path d="M4.6 6.8h14.8" />

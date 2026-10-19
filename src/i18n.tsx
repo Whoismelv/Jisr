@@ -144,6 +144,10 @@ const ar = {
   copied: "تم النسخ ✓",
   clearLogs: "تفريغ",
   logsEmpty: "ما فيه أحداث بعد — أي شي يصير بينكتب هنا.",
+  copyFullLog: "انسخ السجل كامل",
+  revealLog: "إظهار في Finder",
+  logCopied: "نسخنا التقرير كامل — أرسله للمطوّر",
+  logCopyFailed: "تعذّر النسخ — جرّب مرة ثانية",
 
   // التنزيل
   dlPreparing: "جاري التحضير…",
@@ -172,6 +176,7 @@ const ar = {
   "log.rosettaReady": "Rosetta 2 جاهزة ✓",
   "log.rosettaMissing": "Rosetta 2 غير مثبتة — نحتاجها لتشغيل ألعاب ويندوز",
   "log.cleared": "تم تفريغ السجل",
+  "log.raw": "{line}",
   "log.downloadStarted": "بدأ تنزيل {name} {version} — {size}",
   "log.downloadDone": "اكتمل تنزيل {name} {version} — البصمة مطابقة ✓",
   "log.downloadFailed": "فشل تنزيل {name}: {error}",
@@ -373,6 +378,10 @@ const en: Record<TKey, string> = {
   copied: "Copied ✓",
   clearLogs: "Clear",
   logsEmpty: "Nothing logged yet — anything that happens shows up here.",
+  copyFullLog: "Copy full log",
+  revealLog: "Show in Finder",
+  logCopied: "Full report copied — send it to the developer",
+  logCopyFailed: "Copy failed — try again",
 
   // Downloads
   dlPreparing: "Preparing…",
@@ -400,6 +409,7 @@ const en: Record<TKey, string> = {
   "log.rosettaReady": "Rosetta 2 is ready ✓",
   "log.rosettaMissing": "Rosetta 2 is not installed — required to run Windows games",
   "log.cleared": "Log cleared",
+  "log.raw": "{line}",
   "log.downloadStarted": "Downloading {name} {version} — {size}",
   "log.downloadDone": "Finished {name} {version} — checksum verified ✓",
   "log.downloadFailed": "Failed to download {name}: {error}",

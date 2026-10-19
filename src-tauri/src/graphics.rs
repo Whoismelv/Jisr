@@ -183,6 +183,7 @@ pub fn graphics_mode() -> String {
 /// تغيير الوضع — يُحفظ فوراً ويُطبَّق على التشغيل التالي
 #[tauri::command]
 pub fn graphics_set_mode(mode: String) -> Result<(), String> {
+    let _trace = crate::debuglog::trace("graphics", "graphics_set_mode", format!("mode={mode}"));
     let value = parse_mode(&mode).ok_or_else(|| "وضع رسومات غير معروف".to_string())?;
     let path = mode_path();
     if let Some(parent) = path.parent() {

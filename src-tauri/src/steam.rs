@@ -174,20 +174,41 @@ fn ensure_shim_in(dir: &Path, backup_dir: &Path) -> Option<bool> {
     let helper = dir.join("steamwebhelper.exe");
     let real = dir.join("steamwebhelper_real.exe");
     if !helper.is_file() {
+        crate::debuglog::raw(
+            "warn",
+            "cef",
+            &format!("helper missing: {}", helper.display()),
+        );
         return None;
     }
 
     if is_cef_shim(&helper) {
         // الغلاف مثبّت — نتأكد أن الأصل بجانبه سليم (حجم Valve لا حجم غلاف)
         if looks_like_real_helper(&real) {
+            crate::debuglog::raw("debug", "cef", &format!("shim ready: {}", dir.display()));
             return Some(false);
         }
         // الأصل مفقود/تالف/غلاف بالغلط → نستعيده من النسخة الاحتياطية
-        return restore_cef_backup(&real, backup_dir).then_some(false);
+        let restored = restore_cef_backup(&real, backup_dir);
+        crate::debuglog::raw(
+            if restored { "info" } else { "error" },
+            "cef",
+            &format!(
+                "restore real helper in {}: {}",
+                dir.display(),
+                if restored { "ok" } else { "FAILED (no backup)" }
+            ),
+        );
+        return restored.then_some(false);
     }
 
     // الملف الحالي أصلي (أو نسخة ستيم محدّثة) → نحفظه بجانبه ثم نضع الغلاف
     if std::fs::copy(&helper, &real).is_err() {
+        crate::debuglog::raw(
+            "error",
+            "cef",
+            &format!("copy real helper failed: {}", real.display()),
+        );
         return None;
     }
     // نسخة احتياطية دائمة (نحدّثها لو القديمة تالفة)
@@ -195,8 +216,21 @@ fn ensure_shim_in(dir: &Path, backup_dir: &Path) -> Option<bool> {
     if std::fs::create_dir_all(backup_dir).is_ok() && !looks_like_real_helper(&backup) {
         let _ = std::fs::copy(&helper, &backup);
     }
-    write_atomic(&helper, CEF_SHIM).ok()?;
-    Some(true)
+    let installed = write_atomic(&helper, CEF_SHIM).is_ok();
+    crate::debuglog::raw(
+        if installed { "info" } else { "error" },
+        "cef",
+        &format!(
+            "install shim in {}: {}",
+            dir.display(),
+            if installed {
+                "ok (real helper saved)"
+            } else {
+                "FAILED"
+            }
+        ),
+    );
+    installed.then_some(true)
 }
 
 /// نضمن أن ستيم يستخدم غلافنا مع الأصل المحفوظ بجانبه (قبل كل تشغيل —
@@ -278,6 +312,15 @@ pub(crate) fn is_running(state: &SteamState) -> bool {
 /// ستيم العادي وتشغيل لعبة من مكتبة ستيم.
 pub(crate) fn prepare_steam_ui(app: &AppHandle, steam_dir: &Path) {
     let backup_dir = crate::data_dir().join("steam-cef-backup");
+    crate::debuglog::raw(
+        "debug",
+        "steam",
+        &format!(
+            "prepare ui: steam_dir={} backup={}",
+            steam_dir.display(),
+            backup_dir.display()
+        ),
+    );
     match ensure_cef_shim(steam_dir, &backup_dir) {
         Some(true) => log(app, "info", log_keys::STEAM_UI_FIX, json!({})),
         Some(false) => {}
@@ -386,7 +429,19 @@ async fn prepare_and_spawn(
     cmd.env("WINEPREFIX", &prefix);
     bottle::apply_wine_env(&mut cmd, true);
     graphics::apply_env(&mut cmd, true);
-    cmd.arg(dos).stdin(Stdio::null()).stdout(out).stderr(err);
+    cmd.arg(&dos).stdin(Stdio::null()).stdout(out).stderr(err);
+
+    crate::debuglog::raw(
+        "info",
+        "steam",
+        &format!(
+            "spawn installer wine={} exe={} prefix={} sha256={}",
+            wine.display(),
+            dos,
+            prefix.display(),
+            asset.sha256
+        ),
+    );
 
     cmd.spawn().map_err(|e| {
         let msg = format!("تعذّر تشغيل المثبّت: {e}");
@@ -403,6 +458,7 @@ async fn prepare_and_spawn(
 /// ثبّت ستيم داخل القارورة الرئيسية (المثبّت الرسمي — المستخدم يكمّله بنفسه)
 #[tauri::command]
 pub async fn steam_install(app: AppHandle, state: State<'_, SteamState>) -> Result<(), String> {
+    let _trace = crate::debuglog::trace("steam", "steam_install", "");
     {
         let ph = state.phase.lock().map_err(|_| "خطأ داخلي".to_string())?;
         match *ph {
@@ -460,6 +516,24 @@ pub async fn steam_install(app: AppHandle, state: State<'_, SteamState>) -> Resu
         let code = res.as_ref().ok().and_then(|o| o.status.code());
         let stderr_tail = log_tail(3);
 
+        crate::debuglog::raw(
+            "info",
+            "steam",
+            &format!(
+                "installer exit code={:?} | log={}",
+                code,
+                run_log_path().display()
+            ),
+        );
+        crate::debuglog::raw(
+            "debug",
+            "steam",
+            &format!(
+                "installer output tail:\n{}",
+                crate::debuglog::tail_file(&run_log_path(), 80, 24_000)
+            ),
+        );
+
         let stopped = match app2.try_state::<SteamState>() {
             Some(st) => {
                 let s = st.stopped.load(Ordering::Relaxed);
@@ -506,6 +580,7 @@ pub async fn steam_install(app: AppHandle, state: State<'_, SteamState>) -> Resu
 /// شغّل ستيم داخل القارورة الرئيسية
 #[tauri::command]
 pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(), String> {
+    let _trace = crate::debuglog::trace("steam", "steam_run", "");
     // على ويندوز ما فيه Wine — خطأ واضح وآمن
     if cfg!(windows) {
         let msg = "تشغيل ستيم يحتاج Wine — وهذي بيئة تطوير ويندوز (التشغيل الحقيقي على الماك)";
@@ -567,6 +642,18 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
             cmd.current_dir(dir);
         }
 
+        crate::debuglog::raw(
+            "info",
+            "steam",
+            &format!(
+                "spawn steam wine={} exe={} prefix={} args=-no-cef-sandbox -noverifyfiles -forcedesktopscaling 1 graphics={}",
+                wine.display(),
+                dos_exe,
+                prefix.display(),
+                graphics::active_layer()
+            ),
+        );
+
         let child = cmd.spawn().map_err(|e| {
             let msg = format!("تعذّر تشغيل ستيم: {e}");
             log(
@@ -592,6 +679,25 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         let played = crate::now_ms().saturating_sub(started);
         let code = res.as_ref().ok().and_then(|o| o.status.code());
         let stderr_tail = log_tail(3);
+
+        crate::debuglog::raw(
+            "info",
+            "steam",
+            &format!(
+                "steam exit code={:?} played_ms={} | log={}",
+                code,
+                played,
+                run_log_path().display()
+            ),
+        );
+        crate::debuglog::raw(
+            "debug",
+            "steam",
+            &format!(
+                "steam output tail:\n{}",
+                crate::debuglog::tail_file(&run_log_path(), 120, 32_000)
+            ),
+        );
 
         let stopped = match app2.try_state::<SteamState>() {
             Some(st) => {
@@ -630,6 +736,7 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
 /// أوقف ستيم (أو التثبيت الجاري) — نكيل جلسة القارورة بأمان (wineserver -k)
 #[tauri::command]
 pub async fn steam_stop(state: State<'_, SteamState>) -> Result<(), String> {
+    let _trace = crate::debuglog::trace("steam", "steam_stop", "");
     {
         let ph = state.phase.lock().map_err(|_| "خطأ داخلي".to_string())?;
         if *ph == Phase::Idle {

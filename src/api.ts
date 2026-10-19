@@ -3,6 +3,29 @@
 // ============================================================
 import { invoke } from "@tauri-apps/api/core";
 
+/**
+ * كل نداء للخلفية يمر من هنا: أي فشل يُكتب في السجل الدائم باسم الأمر —
+ * حتى لو الواجهة ما عرضته، يبقى أثر التشخيص موجود للتقرير.
+ */
+async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(cmd, args);
+  } catch (e) {
+    const msg =
+      typeof e === "string"
+        ? e
+        : e instanceof Error
+          ? (e.stack ?? e.message)
+          : JSON.stringify(e);
+    // invoke مباشرة (لا call) حتى لا ندخل في حلقة لو فشل التسجيل نفسه
+    void invoke<void>("debug_log", {
+      level: "error",
+      message: `invoke ${cmd} failed: ${msg}`,
+    }).catch(() => {});
+    throw e;
+  }
+}
+
 export type GpuInfo = {
   name: string;
   vendor: string;
@@ -33,17 +56,29 @@ export type LogEntry = {
 };
 
 /** فحص الجهاز (نظام، معالج، ذاكرة، رسومات، Rosetta، المحرك) */
-export const getSystemInfo = () => invoke<SystemInfo>("system_info");
+export const getSystemInfo = () => call<SystemInfo>("system_info");
 
 /** كل السجل المخزّن */
-export const getLogs = () => invoke<LogEntry[]>("get_logs");
+export const getLogs = () => call<LogEntry[]>("get_logs");
 
 /** تفريغ السجل */
-export const clearLogs = () => invoke<void>("clear_logs");
+export const clearLogs = () => call<void>("clear_logs");
 
 /** نكتب سطر في السجل من الواجهة (بمفتاح + معاملات) */
 export const logLine = (level: string, key: string, params?: Record<string, unknown>) =>
-  invoke<void>("log_line", { level, key, params: params ?? {} });
+  call<void>("log_line", { level, key, params: params ?? {} });
+
+/** سطر تشخيص خام من الواجهة (أخطاء JS…) — يظهر حرفياً في السجل الدائم */
+export const debugLog = (
+  level: "debug" | "info" | "warn" | "error",
+  message: string,
+) => call<void>("debug_log", { level, message }).catch(() => {});
+
+/** مسار ملف السجل الدائم (لعرضه في Finder) */
+export const debugLogPath = () => call<string | null>("debug_log_path");
+
+/** تقرير تشخيص كامل: الجهاز + السجل الدائم + سجلات ستيم والألعاب — جاهز للنسخ */
+export const exportDebugReport = () => call<string>("export_debug_report");
 
 // ============================================================
 //  محرّك التنزيل
@@ -81,19 +116,19 @@ export type DownloadProgress = {
 };
 
 /** كتالوج المحركات الرسمي (إصدارات وبصمات موثّقة من المصدر) */
-export const getEngineCatalog = () => invoke<EngineAsset[]>("download_catalog");
+export const getEngineCatalog = () => call<EngineAsset[]>("download_catalog");
 
 /** ابدأ تنزيل عنصر من الكتالوج (id مثل "wine-11.18") */
 export const startDownload = (id: string) =>
-  invoke<void>("download_start", { id });
+  call<void>("download_start", { id });
 
 /** ألغِ التنزيل — الجزء المنزّل يُحفظ ويُستكمل لاحقاً */
 export const cancelDownload = (id: string) =>
-  invoke<void>("download_cancel", { id });
+  call<void>("download_cancel", { id });
 
 /** آخر حالة معروفة لكل تنزيل (لما تُفتح الواجهة من جديد) */
 export const downloadsSnapshot = () =>
-  invoke<DownloadProgress[]>("downloads_snapshot");
+  call<DownloadProgress[]>("downloads_snapshot");
 
 // ============================================================
 //  القوارير
@@ -112,18 +147,18 @@ export type Bottle = {
 };
 
 /** كل القوارير مع أحجامها */
-export const bottlesList = () => invoke<Bottle[]>("bottles_list");
+export const bottlesList = () => call<Bottle[]>("bottles_list");
 
 /** إنشاء قارورة — kind: "main" | "private" (simulate للتطوير على ويندوز فقط) */
 export const bottleCreate = (kind: "main" | "private", simulate = false) =>
-  invoke<void>("bottle_create", { name: null, kind, simulate });
+  call<void>("bottle_create", { name: null, kind, simulate });
 
 /** إعادة محاولة تجهيز قارورة فشلت */
 export const bottleRetry = (id: string, simulate = false) =>
-  invoke<void>("bottle_retry", { id, simulate });
+  call<void>("bottle_retry", { id, simulate });
 
 /** حذف قارورة خاصة (الرئيسية محميّة في الخلفية) */
-export const bottleDelete = (id: string) => invoke<void>("bottle_delete", { id });
+export const bottleDelete = (id: string) => call<void>("bottle_delete", { id });
 
 // ============================================================
 //  الألعاب
@@ -142,19 +177,19 @@ export type Game = {
 };
 
 /** كل الألعاب مع حالة التشغيل */
-export const gamesList = () => invoke<Game[]>("games_list");
+export const gamesList = () => call<Game[]>("games_list");
 
 /** إضافة لعبة من مسار .exe (يجي من نافذة الاختيار الأصلية) */
-export const gameAdd = (exe: string) => invoke<Game>("game_add", { exe });
+export const gameAdd = (exe: string) => call<Game>("game_add", { exe });
 
 /** حذف لعبة من المكتبة (ملفاتها ما تُمس) */
-export const gameRemove = (id: string) => invoke<void>("game_remove", { id });
+export const gameRemove = (id: string) => call<void>("game_remove", { id });
 
 /** تشغيل لعبة داخل قارورتها */
-export const gameLaunch = (id: string) => invoke<void>("game_launch", { id });
+export const gameLaunch = (id: string) => call<void>("game_launch", { id });
 
 /** إيقاف لعبة شغّالة */
-export const gameStop = (id: string) => invoke<void>("game_stop", { id });
+export const gameStop = (id: string) => call<void>("game_stop", { id });
 
 // ============================================================
 //  ستيم (المسار الرسمي)
@@ -172,16 +207,16 @@ export type SteamStatus = {
 };
 
 /** حالة ستيم الكاملة */
-export const steamStatus = () => invoke<SteamStatus>("steam_status");
+export const steamStatus = () => call<SteamStatus>("steam_status");
 
 /** ثبّت ستيم داخل القارورة الرئيسية بالمثبّت الرسمي */
-export const steamInstall = () => invoke<void>("steam_install");
+export const steamInstall = () => call<void>("steam_install");
 
 /** شغّل ستيم */
-export const steamRun = () => invoke<void>("steam_run");
+export const steamRun = () => call<void>("steam_run");
 
 /** أوقف ستيم (أو التثبيت الجاري) */
-export const steamStop = () => invoke<void>("steam_stop");
+export const steamStop = () => call<void>("steam_stop");
 
 /** لعبة ستيم مثبّتة داخل القارورة (نقرأها محلياً من appmanifest) */
 export type SteamGame = {
@@ -191,11 +226,11 @@ export type SteamGame = {
 };
 
 /** كل ألعاب ستيم المثبّتة — قراءة محلية فقط */
-export const steamGamesList = () => invoke<SteamGame[]>("steam_games_list");
+export const steamGamesList = () => call<SteamGame[]>("steam_games_list");
 
 /** تشغيل لعبة عبر Steam (ستيم لازم يكون شغّالاً) */
 export const steamGameLaunch = (appid: number) =>
-  invoke<void>("steam_game_launch", { appid });
+  call<void>("steam_game_launch", { appid });
 
 // ============================================================
 //  طبقة الرسومات
@@ -203,8 +238,8 @@ export const steamGameLaunch = (appid: number) =>
 export type GraphicsMode = "auto" | "dxvk" | "wined3d";
 
 /** الوضع الحالي لطبقة الرسومات (auto | dxvk | wined3d) */
-export const getGraphicsMode = () => invoke<GraphicsMode>("graphics_mode");
+export const getGraphicsMode = () => call<GraphicsMode>("graphics_mode");
 
 /** يغيّر طبقة الرسومات ويُطبّقها على التشغيل التالي */
 export const setGraphicsMode = (mode: GraphicsMode) =>
-  invoke<void>("graphics_set_mode", { mode });
+  call<void>("graphics_set_mode", { mode });

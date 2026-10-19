@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { clearLogs, getLogs, type LogEntry } from "./api";
 
-const MAX_IN_UI = 500;
+const MAX_IN_UI = 800;
 
 export function useLogs() {
   const [logs, setLogs] = useState<LogEntry[]>([]);

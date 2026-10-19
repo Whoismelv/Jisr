@@ -21,6 +21,7 @@ import {
 import { useBottles } from "./useBottles";
 import { useGames } from "./useGames";
 import { useSteam } from "./useSteam";
+import { debugLog, exportDebugReport } from "./api";
 import { Button, SPRINGS, type IconComp } from "./ui";
 import {
   HomePage,
@@ -94,41 +95,58 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // أي خطأ في الواجهة (JS) أو وعد مرفوض ينكتب في السجل الدائم — ما يضيع أي أثر
+  useEffect(() => {
+    const onError = (e: ErrorEvent) =>
+      void debugLog(
+        "error",
+        `frontend error: ${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`,
+      );
+    const onReject = (e: PromiseRejectionEvent) => {
+      const r: unknown = e.reason;
+      const msg = r instanceof Error ? (r.stack ?? r.message) : String(r);
+      void debugLog("error", `unhandled rejection: ${msg}`);
+    };
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onReject);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onReject);
+    };
+  }, []);
+
   const onScan = useCallback(() => void scan(), [scan]);
   const onClear = useCallback(() => void clear(), [clear]);
 
-  // تقرير التشخيص: معلومات حقيقية من الجهاز
+  // تقرير التشخيص: من الخلفية (جهاز + سجل كامل + سجلات ستيم والألعاب).
+  // لو تعذّر لأي سبب، نسخة مختصرة تبقى متاحة.
   const copyReport = useCallback(async () => {
-    const lines = [
-      `${t("appName")} — ${t("preview")}`,
-      `time: ${new Date().toISOString()}`,
-      `os: ${[sys?.os_name, sys?.os_version].filter(Boolean).join(" ") || "-"}`,
-      `arch: ${sys?.arch ?? "-"}`,
-      `chip: ${sys?.chip ?? "-"}${
-        sys?.cpu_cores ? ` (${sys.cpu_cores} ${t("coresSuffix")})` : ""
-      }`,
-      `memory: ${
-        sys?.memory_mb ? `${Math.round(sys.memory_mb / 1024)} GB` : "-"
-      }`,
-      `gpu: ${sys?.gpus.map((g) => g.name).join(" / ") || "-"}`,
-      `rosetta: ${
-        sys ? (sys.rosetta_installed ? "installed" : "missing") : "-"
-      }`,
-      `engine: ${
-        sys
-          ? sys.engine_installed
-            ? (sys.engine_path ?? "installed")
-            : "missing"
-          : "-"
-      }`,
-      `graphics: ${sys?.graphics_layer ?? "-"}`,
-    ];
+    let text = "";
     try {
-      await navigator.clipboard.writeText(lines.join("\n"));
+      text = await exportDebugReport();
     } catch {
-      /* الحافظة غير متاحة — نكمل على أي حال */
+      text = [
+        `${t("appName")} — ${t("preview")}`,
+        `time: ${new Date().toISOString()}`,
+        `os: ${[sys?.os_name, sys?.os_version].filter(Boolean).join(" ") || "-"}`,
+        `arch: ${sys?.arch ?? "-"}`,
+        `chip: ${sys?.chip ?? "-"}`,
+        `rosetta: ${sys ? (sys.rosetta_installed ? "installed" : "missing") : "-"}`,
+        `engine: ${
+          sys
+            ? sys.engine_installed
+              ? (sys.engine_path ?? "installed")
+              : "missing"
+            : "-"
+        }`,
+      ].join("\n");
     }
-    notify(t("copied"));
+    try {
+      await navigator.clipboard.writeText(text);
+      notify(t("copied"));
+    } catch {
+      notify(t("logCopyFailed"));
+    }
   }, [notify, sys, t]);
 
   const current = NAV.find((n) => n.id === page)!;
@@ -359,7 +377,9 @@ export default function App() {
                 )}
                 {page === "bottles" && <BottlesPage bottles={bottles} sys={sys} />}
                 {page === "settings" && <SettingsPage sys={sys} dl={dl} />}
-                {page === "logs" && <LogsPage logs={logs} onClear={onClear} />}
+                {page === "logs" && (
+                  <LogsPage logs={logs} onClear={onClear} notify={notify} />
+                )}
               </motion.div>
             </AnimatePresence>
           </div>

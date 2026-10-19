@@ -1043,13 +1043,30 @@ html.is-macos[dir="rtl"] .toolbar {
   color: var(--danger-text);
 }
 
+.log-level.debug {
+  color: var(--text-muted);
+}
+
 .log-msg {
   unicode-bidi: plaintext; /* العربي يطلع من اليمين تلقائياً */
   text-align: start;
 }
 
+/* سطور التشخيص الخام (مخرجات Wine/الأوامر) — حرفية وبخط ثابت */
+.logline.raw .log-msg {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  direction: ltr;
+  text-align: left;
+}
+
 .log-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-start;
 }
 

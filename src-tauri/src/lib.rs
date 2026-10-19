@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
 mod bottle;
+mod debuglog;
 mod download;
 mod engine;
 mod game;
@@ -124,15 +125,8 @@ pub(crate) fn tail_lines(bytes: &[u8], n: usize) -> String {
     lines.join(" | ").chars().take(300).collect()
 }
 
-/// نضيف سطر للسجل + نرسله للواجهة فوراً
-pub(crate) fn log(app: &AppHandle, level: &str, key: &str, params: Value) {
-    let entry = LogEntry {
-        time_ms: now_ms(),
-        level: level.to_string(),
-        key: key.to_string(),
-        params,
-    };
-
+/// نحفظ الحدث في الذاكرة (يُعرض عند فتح صفحة السجل) — بحد أقصى ثابت
+pub(crate) fn remember(app: &AppHandle, entry: &LogEntry) {
     if let Some(state) = app.try_state::<LogState>() {
         if let Ok(mut v) = state.0.lock() {
             v.push(entry.clone());
@@ -142,6 +136,25 @@ pub(crate) fn log(app: &AppHandle, level: &str, key: &str, params: Value) {
             }
         }
     }
+}
+
+/// نضيف سطر للسجل + نرسله للواجهة فوراً
+pub(crate) fn log(app: &AppHandle, level: &str, key: &str, params: Value) {
+    // السجل الدائم: المفتاح + كل المعاملات (حتى لو الواجهة ما تعرف ترجمته)
+    let detail = match params.as_object() {
+        Some(o) if o.is_empty() => String::new(),
+        _ => format!(" {params}"),
+    };
+    debuglog::write(level, "event", &format!("{key}{detail}"));
+
+    let entry = LogEntry {
+        time_ms: now_ms(),
+        level: level.to_string(),
+        key: key.to_string(),
+        params,
+    };
+
+    remember(app, &entry);
     let _ = app.emit("jisr-log", entry);
 }
 
@@ -288,6 +301,15 @@ fn detect_system() -> SystemInfo {
     } else {
         detected
     };
+    // نحفظ نتيجة الفحص كاملة في السجل الدائم (تشخيص من الجهاز نفسه)
+    debuglog::raw(
+        "debug",
+        "system",
+        &format!(
+            "scan: {}",
+            serde_json::to_string(&info).unwrap_or_else(|_| "{}".into())
+        ),
+    );
     info
 }
 
@@ -432,6 +454,8 @@ fn clear_logs(app: AppHandle) {
             v.clear();
         }
     }
+    // نبدأ ملف التشخيص من جديد أيضاً — «تفريغ» يعني تفريغ فعلاً
+    debuglog::clear();
     log(&app, "info", log_keys::CLEARED, json!({}));
 }
 
@@ -450,15 +474,216 @@ fn log_line(app: AppHandle, level: String, key: String, params: Option<Value>) {
     log(&app, &level, &key, params);
 }
 
+/// سطر تشخيص خام من الواجهة (أخطاء JS، فشل الأوامر…) — يظهر حرفياً في السجل
+#[tauri::command]
+fn debug_log(level: String, message: String) {
+    let level = match level.as_str() {
+        "warn" | "error" | "info" | "debug" => level,
+        _ => "debug".to_string(),
+    };
+    let message: String = message.chars().take(4000).collect();
+    debuglog::raw(&level, "ui", &message);
+}
+
+/// مسار ملف السجل الحالي (زر «إظهار في Finder»)
+#[tauri::command]
+fn debug_log_path() -> Option<String> {
+    debuglog::path().map(|p| p.to_string_lossy().to_string())
+}
+
+fn push_section(out: &mut String, title: &str, body: &str) {
+    out.push_str("\n\n========== ");
+    out.push_str(title);
+    out.push_str(" ==========\n");
+    if body.trim().is_empty() {
+        out.push_str("(empty)\n");
+    } else {
+        out.push_str(body.trim_end());
+        out.push('\n');
+    }
+}
+
+/// تقرير تشخيص كامل بنسخة واحدة: بيئة الجهاز + السجل الدائم + سجلات ستيم والألعاب.
+/// المستخدم ينسخه ويرسله — ما يحتاج يفتح مجلدات ولا يبحث عن ملفات.
+fn build_report(app: &AppHandle) -> String {
+    let info = system_info(app.clone());
+    let mut out = String::with_capacity(256 * 1024);
+    out.push_str("============================================================\n");
+    out.push_str("Jisr — full debug report\n");
+    out.push_str("============================================================\n");
+    out.push_str(&format!(
+        "generated: {}\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z")
+    ));
+    out.push_str(&format!("version: {}\n", env!("CARGO_PKG_VERSION")));
+    out.push_str(&format!("os: {} {}\n", info.os_name, info.os_version));
+    out.push_str(&format!(
+        "arch: {} | apple_silicon: {}\n",
+        info.arch, info.is_apple_silicon
+    ));
+    out.push_str(&format!(
+        "chip: {} | cores: {:?} | memory_mb: {:?}\n",
+        info.chip, info.cpu_cores, info.memory_mb
+    ));
+    out.push_str(&format!(
+        "gpu: {}\n",
+        info.gpus
+            .iter()
+            .map(|g| g.name.as_str())
+            .collect::<Vec<_>>()
+            .join(" / ")
+    ));
+    out.push_str(&format!("rosetta: {}\n", info.rosetta_installed));
+    out.push_str(&format!("engine: {:?}\n", info.engine_path));
+    out.push_str(&format!(
+        "graphics_layer: {:?} | graphics_mode: {}\n",
+        info.graphics_layer,
+        graphics::mode()
+    ));
+    out.push_str(&format!("data_dir: {}\n", data_dir().display()));
+    out.push_str(&format!(
+        "bottles_dir: {}\n",
+        bottle::bottles_dir().display()
+    ));
+    out.push_str(&format!("log_file: {:?}\n", debuglog::path()));
+
+    if let Some(wine) = bottle::wine_bin() {
+        let ver = Command::new(&wine)
+            .arg("--version")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        out.push_str(&format!("wine: {} ({})\n", wine.display(), ver));
+    } else {
+        out.push_str("wine: not installed\n");
+    }
+
+    let flags = std::fs::read_to_string(data_dir().join("cef-flags.txt")).unwrap_or_default();
+    if !flags.trim().is_empty() {
+        out.push_str(&format!("cef_flags_override: {}\n", flags.trim()));
+    }
+
+    if let Some(p) = debuglog::path() {
+        push_section(
+            &mut out,
+            "jisr-debug.log (last lines)",
+            &debuglog::tail_file(&p, 5_000, 1_500_000),
+        );
+        let rotated = p.with_file_name("jisr-debug.1.log");
+        push_section(
+            &mut out,
+            "jisr-debug.1.log (older, last lines)",
+            &debuglog::tail_file(&rotated, 1_500, 500_000),
+        );
+    }
+
+    // سجلات العمليات: ستيم والألعاب (كاملة في ملفاتها، وآخر جزء منها هنا)
+    let logs_dir = data_dir().join("logs");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&logs_dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_file()
+                        && p.extension().and_then(|x| x.to_str()) == Some("log")
+                        && !p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().starts_with("jisr-debug"))
+                            .unwrap_or(false)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+    files.reverse();
+    for p in files.into_iter().take(5) {
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        push_section(
+            &mut out,
+            &format!("{name} (last lines)"),
+            &debuglog::tail_file(&p, 1_200, 400_000),
+        );
+    }
+
+    // سجل غلاف CEF — أهم ملف لتشخيص واجهة ستيم
+    let dc = bottle::bottle_dir(bottle::MAIN_ID).join("drive_c");
+    for base in ["Program Files (x86)", "Program Files"] {
+        let cef_root = dc.join(base).join("Steam").join("bin").join("cef");
+        let Ok(rd) = std::fs::read_dir(&cef_root) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let shim_log = e.path().join("steamwebhelper_shim.log");
+            if shim_log.is_file() {
+                push_section(
+                    &mut out,
+                    &format!("{} (last lines)", shim_log.display()),
+                    &debuglog::tail_file(&shim_log, 400, 128_000),
+                );
+            }
+        }
+    }
+
+    // نحفظ نسخة على القرص + نُبقي آخر 5 تقارير فقط
+    let stamp = now_ms();
+    let saved = logs_dir.join(format!("jisr-report-{stamp}.txt"));
+    if let Err(e) = std::fs::write(&saved, &out) {
+        out.push_str(&format!("\n\n(report save failed: {e})\n"));
+    } else {
+        out.push_str(&format!("\n\nreport_file: {}\n", saved.display()));
+        if let Ok(rd) = std::fs::read_dir(&logs_dir) {
+            let mut reports: Vec<PathBuf> = rd
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().starts_with("jisr-report-"))
+                        .unwrap_or(false)
+                })
+                .collect();
+            reports.sort();
+            reports.reverse();
+            for old in reports.into_iter().skip(5) {
+                let _ = std::fs::remove_file(old);
+            }
+        }
+    }
+
+    out
+}
+
+/// تقرير جاهز للنسخ — يُبنى في الخلفية حتى لا تتجمّد الواجهة
+#[tauri::command]
+async fn export_debug_report(app: AppHandle) -> Result<String, String> {
+    let _t = debuglog::trace("log", "export_debug_report", "");
+    tauri::async_runtime::spawn_blocking(move || build_report(&app))
+        .await
+        .map_err(|e| format!("تعذّر تجهيز التقرير: {e}"))
+}
+
 // ============================================================
 //  التشغيل
 // ============================================================
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // أي انهيار (panic) يُكتب في السجل الدائم مع تتبّع كامل — أهم أداة تشخيص ميداني
+    std::panic::set_hook(Box::new(|info| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        debuglog::raw("error", "panic", &format!("{info}\n{bt}"));
+    }));
+
     tauri::Builder::default()
         // مهم: «النسخة الواحدة» لازم تُسجّل أول إضافة — نمنع نسختين تتخانق على
         // نفس القارورة أو تشغّل ستيم مرتين (وهو مصدر نافذتين/تعارض ملفات)
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            debuglog::raw(
+                "info",
+                "app",
+                "single-instance activation — focus main window",
+            );
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
                 let _ = w.unminimize();
@@ -477,6 +702,9 @@ pub fn run() {
             get_logs,
             clear_logs,
             log_line,
+            debug_log,
+            debug_log_path,
+            export_debug_report,
             download::download_catalog,
             download::download_start,
             download::download_cancel,
@@ -500,6 +728,60 @@ pub fn run() {
             graphics::graphics_set_mode
         ])
         .setup(|app| {
+            // السجل الدائم أول شيء — حتى أخطاء الإقلاع تنتسجّل
+            let log_path = debuglog::init(&data_dir().join("logs"), app.handle().clone());
+
+            let os_version = if cfg!(target_os = "macos") {
+                run_cmd("sw_vers", &["-productVersion"]).unwrap_or_default()
+            } else {
+                std::env::consts::OS.to_string()
+            };
+            debuglog::raw(
+                "info",
+                "startup",
+                &format!(
+                    "Jisr v{} | os={} | arch={} | data={}",
+                    env!("CARGO_PKG_VERSION"),
+                    os_version,
+                    std::env::consts::ARCH,
+                    data_dir().display()
+                ),
+            );
+            debuglog::raw(
+                "info",
+                "startup",
+                &format!(
+                    "log={} | rosetta={} | gstreamer={}",
+                    log_path.display(),
+                    std::path::Path::new("/Library/Apple/usr/libexec/oah").exists(),
+                    std::path::Path::new("/Library/Frameworks/GStreamer.framework").exists(),
+                ),
+            );
+            match bottle::wine_bin() {
+                Some(w) => {
+                    let ver = std::process::Command::new(&w)
+                        .arg("--version")
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or_default();
+                    debuglog::raw(
+                        "info",
+                        "startup",
+                        &format!("wine={} | version={}", w.display(), ver),
+                    );
+                }
+                None => debuglog::raw("warn", "startup", "wine: not installed"),
+            }
+            debuglog::raw(
+                "info",
+                "startup",
+                &format!(
+                    "graphics_mode={} | steam_installed={}",
+                    graphics::mode(),
+                    steam::steam_exe().is_some()
+                ),
+            );
+
             // نظافة: نمسح بقايا أي فك ضغط مات في جلسة سابقة
             engine::cleanup_staging();
             graphics::cleanup_staging();

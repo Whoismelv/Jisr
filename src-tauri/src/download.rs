@@ -1030,6 +1030,7 @@ pub(crate) fn ensure_graphics_layer(app: &AppHandle) {
 /// ابدأ تنزيل عنصر من الكتالوج (id مثل "wine-11.18")
 #[tauri::command]
 pub async fn download_start(app: AppHandle, id: String) -> Result<(), String> {
+    let _trace = crate::debuglog::trace("download", "download_start", format!("id={id}"));
     let asset = find_asset(&id).ok_or_else(|| "معرّف غير معروف".to_string())?;
 
     // الحارس الأول: الرابط HTTPS ومن نطاق مسموح — قبل أي اتصال
@@ -1043,6 +1044,7 @@ pub async fn download_start(app: AppHandle, id: String) -> Result<(), String> {
 /// ألغِ تنزيلاً/تركيباً — الجزء المنزّل والأرشيف يُحفظان (نستكمل أي وقت لاحق)
 #[tauri::command]
 pub fn download_cancel(state: State<'_, DownloadsState>, id: String) {
+    let _trace = crate::debuglog::trace("download", "download_cancel", format!("id={id}"));
     if let Ok(m) = state.0.lock() {
         if let Some(h) = m.get(&id) {
             h.cancel.store(true, Ordering::Relaxed);
