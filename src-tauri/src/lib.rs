@@ -95,6 +95,8 @@ pub mod log_keys {
     pub const STEAM_EXITED: &str = "log.steamExited";
     pub const STEAM_STOPPED: &str = "log.steamStopped";
     pub const STEAM_LAUNCH_FAILED: &str = "log.steamLaunchFailed";
+    pub const STEAM_UI_FIX: &str = "log.steamUiFix";
+    pub const STEAM_UI_FIX_FAILED: &str = "log.steamUiFixFailed";
 }
 
 const MAX_LOGS: usize = 800;

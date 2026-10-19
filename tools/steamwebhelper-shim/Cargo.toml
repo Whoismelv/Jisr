@@ -1,0 +1,17 @@
+[package]
+name = "steamwebhelper-shim"
+version = "0.1.0"
+edition = "2021"
+description = "Jisr CEF shim for Steam's steamwebhelper.exe under Wine on Apple Silicon"
+license = "MIT"
+
+[[bin]]
+name = "steamwebhelper"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

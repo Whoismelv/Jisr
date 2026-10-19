@@ -4,8 +4,15 @@
 //    ويُتحقق منها مرة ثانية قبل كل تشغيل (ثقة صفرية)
 //  • ننسخ المثبّت داخل القارورة (C:) قبل تشغيله — Wine ما يقدر
 //    يشغّل ملفات من نظام الماك مباشرة (وبلا أي ربط لملفات الماك)
-//  • التشغيل: steam.exe مع أعلام CEF الرسمية (-no-cef-sandbox + تعطيل GPU)
-//    — حل «الشاشة السوداء» المعتمد على CrossOver/Whisky (درس تجربة الماك #5)
+//  • واجهة ستيم (الشاشة السوداء — درس التجربة #5):
+//    CEF يطلب سياق GLES 3.0 لعملية GPU منفصلة، وWine على الماك يوصلها لسقف
+//    GLES 2.0 → نافذة سوداء. الحل المعتمد عند مجتمع Wine/ماك (Gcenx نفسه):
+//    غلاف صغير يستبدل `bin/cef/cef.win64/steamwebhelper.exe` ويشغّل الأصل
+//    (المحفوظ بجانبه باسم steamwebhelper_real.exe) مع
+//    `--in-process-gpu --use-angle=vulkan --ignore-gpu-blocklist`
+//    → الرسم داخل نفس العملية عبر ANGLE → Vulkan → MoltenVK → Metal.
+//    الغلاف مدمج بالظهر (tools/steamwebhelper-shim) ويُعاد تثبيته قبل كل تشغيل،
+//    لأن تحديث ستيم ممكن يرجّع الملف الأصلي.
 //  • على ويندوز (بيئة تطوير): أخطاء واضحة وآمنة فقط — نفس نمط الألعاب
 // ============================================================
 use std::path::{Path, PathBuf};
@@ -95,6 +102,81 @@ fn steam_exe() -> Option<(PathBuf, String)> {
         }
     }
     None
+}
+
+/// غلاف CEF المدمج (يُبنى من tools/steamwebhelper-shim → assets/steamwebhelper.exe)
+static CEF_SHIM: &[u8] = include_bytes!("../assets/steamwebhelper.exe");
+
+/// بصمة داخل الغلاف نفسه — نتعرف بها على أن الملف الحالي غلافنا لا الأصل
+const CEF_SHIM_MARKER: &[u8] = b"JISR_CEF_SHIM_V1";
+
+/// هل الملف الحالي هو غلاف Jisr؟ (البصمة داخل أول ميغابايت)
+fn is_cef_shim(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = vec![0u8; 1 << 20];
+    let n = f.read(&mut buf).unwrap_or(0);
+    buf[..n]
+        .windows(CEF_SHIM_MARKER.len())
+        .any(|w| w == CEF_SHIM_MARKER)
+}
+
+/// نضمن أن ستيم يستخدم غلافنا مع الأصل المحفوظ بجانبه.
+/// `Some(true)` = ثبّتنا/حدّثنا الآن، `Some(false)` = جاهز مسبقاً،
+/// `None` = تعذّر أو النسخة غير منطبقة (ما نمنع التشغيل أبداً).
+fn ensure_cef_shim(steam_dir: &Path) -> Option<bool> {
+    let cef = steam_dir.join("bin").join("cef").join("cef.win64");
+    let helper = cef.join("steamwebhelper.exe");
+    let real = cef.join("steamwebhelper_real.exe");
+    if !cef.is_dir() || !helper.is_file() {
+        return None; // نسخة ستيم مختلفة — ما نلمس شيء
+    }
+
+    // الأصل مفقود لكن الحالي غلافنا؟ نحاول استعادته من نسخة احتياطية
+    if is_cef_shim(&helper) {
+        if real.is_file() {
+            return Some(false);
+        }
+        let backup = crate::data_dir()
+            .join("steam-cef-backup")
+            .join("steamwebhelper.exe");
+        if backup.is_file() && std::fs::copy(&backup, &real).is_ok() {
+            return Some(false);
+        }
+        return None;
+    }
+
+    // الحالي أصلي (أو نسخة ستيم محدّثة) → نحفظه بجانبه ثم نضع الغلاف
+    if std::fs::copy(&helper, &real).is_err() {
+        return None;
+    }
+    // نسخة احتياطية دائمة (لاستعادة الأصل لو انمسح بالغلط)
+    let backup_dir = crate::data_dir().join("steam-cef-backup");
+    let backup = backup_dir.join("steamwebhelper.exe");
+    if !backup.is_file() && std::fs::create_dir_all(&backup_dir).is_ok() {
+        let _ = std::fs::copy(&helper, &backup);
+    }
+    std::fs::write(&helper, CEF_SHIM).ok()?;
+    Some(true)
+}
+
+/// ملف اختياري لتجربة فلاقين CEF بدون بناء جديد:
+/// `~/Library/Application Support/Jisr/cef-flags.txt` (أول سطر، بحدود آمنة)
+fn cef_flags_override() -> Option<String> {
+    let text = std::fs::read_to_string(crate::data_dir().join("cef-flags.txt")).ok()?;
+    let line = text.lines().next()?.trim().to_string();
+    if line.is_empty() || line.len() > 512 {
+        return None;
+    }
+    if !line
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_=., :".contains(c))
+    {
+        return None;
+    }
+    Some(line)
 }
 
 fn set_phase(state: &SteamState, phase: Phase) {
@@ -303,17 +385,27 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         return Err("ستيم مو مثبّت بعد — ثبّته أول".into());
     };
 
+    // إصلاح واجهة ستيم: نضمن غلاف CEF قبل كل تشغيل (تحديث ستيم ممكن يرجّع الأصل)
+    if let Some(dir) = mac_exe.parent() {
+        match ensure_cef_shim(dir) {
+            Some(true) => log(&app, "info", log_keys::STEAM_UI_FIX, json!({})),
+            Some(false) => {}
+            None => log(&app, "warn", log_keys::STEAM_UI_FIX_FAILED, json!({})),
+        }
+    }
+
     let (out, err) = stdio_to_log();
     let mut cmd = tokio::process::Command::new(&wine);
-    cmd.env("WINEPREFIX", bottle::bottle_dir(bottle::MAIN_ID))
-        .arg(&dos_exe)
+    cmd.env("WINEPREFIX", bottle::bottle_dir(bottle::MAIN_ID));
+    // تجاوز تشخيصي اختياري — الواجهة ما تكتبه، نقرأه لو الملف موجود
+    if let Some(flags) = cef_flags_override() {
+        cmd.env("JISR_CEF_FLAGS", flags);
+    }
+    cmd.arg(&dos_exe)
         // معيار ستيم على Wine: بند Chromium الداخلي ما يشتغل صح تحت Wine
         .arg("-no-cef-sandbox")
-        // درس التجربة #5: واجهة ستيم (CEF) ترسم عبر تسريع GPU، وWineD3D على
-        // الماك ما يقدّمه صح → نافذة سوداء. هذولا فلاقان رسميان من Valve
-        // (نفس حل مجتمع CrossOver/Whisky) يجبران الرسم البرمجي
-        .arg("-cef-disable-gpu")
-        .arg("-cef-disable-gpu-compositing")
+        // ما نخلي مدقق الملفات يرجّع steamwebhelper.exe الأصلي فوق غلافنا
+        .arg("-noverifyfiles")
         .stdin(Stdio::null())
         .stdout(out)
         .stderr(err);
