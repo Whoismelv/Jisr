@@ -139,7 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "== مخرجات البناء =="
-          find src-tauri/target -maxdepth 6 \( -name '*.dmg' -o -name '*.app' -o -name '*.tar.gz' \) -print
+          find src-tauri/target -maxdepth 6 \( -name '*.dmg' -o -name '*.app' -o -name '*.tar.gz' -o -name 'latest.json' \) -print
           DMG=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -type f -name '*.dmg' 2>/dev/null | head -n 1 || true)
           if [ -z "$DMG" ]; then
             echo "::warning::ما لقينا dmg في المسار المتوقع — نبحث في كل مجلد target"
@@ -151,11 +151,15 @@ jobs:
           cp "$DMG" dist/
           # حزمة التحديث الموقّعة + بيان latest.json (يقرأه التطبيق نفسه)
           APPTGZ=$(find src-tauri/target -type f -name '*.app.tar.gz' | head -n 1 || true)
-          if [ -n "$APPTGZ" ]; then cp "$APPTGZ" dist/; else echo "::warning::ما لقينا حزمة التحديث (.app.tar.gz)"; fi
-          if [ -f src-tauri/target/aarch64-apple-darwin/release/bundle/latest.json ]; then
-            cp src-tauri/target/aarch64-apple-darwin/release/bundle/latest.json dist/
+          if [ -n "$APPTGZ" ]; then cp "$APPTGZ" dist/; else echo "::error::ما لقينا حزمة التحديث (.app.tar.gz) — توقف النشر!"; exit 1; fi
+          MANIFEST=$(find src-tauri/target -type f -name 'latest.json' | head -n 1 || true)
+          if [ -n "$MANIFEST" ]; then
+            cp "$MANIFEST" dist/
+            echo "== بيان التحديث =="
+            head -c 400 dist/latest.json; echo
           else
-            echo "::warning::ما لقينا latest.json — التحديث التلقائي ما راح يشتغل"
+            echo "::error::ما لقينا latest.json — التحديث التلقائي ما راح يشتغل. توقف النشر!"
+            exit 1
           fi
           ls -la dist/
           echo "::notice::✔ جاهز للنشر: $(basename "$DMG") (${SIZE}MB)"
