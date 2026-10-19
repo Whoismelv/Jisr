@@ -348,6 +348,58 @@ pub(crate) fn cleanup_stale_steam_state(steam_dir: &Path) {
     }
 }
 
+/// فلاقين إضافية لعميل ستيم نفسه (وليس للـwebhelper) — طوارئ ميدانية
+/// بدون إعادة بناء: السطر الثاني في `cef-flags.txt` بصيغة:
+///   `steam:-cef-single-process`
+/// نمرّرها على قائمة بيضاء معروفة (بلا shell وبلا حقن) — أي شيء ثاني يُتجاهل.
+const STEAM_ARG_ALLOW: [&str; 6] = [
+    "-no-cef-sandbox",
+    "-cef-single-process",
+    "-noverifyfiles",
+    "-forcedesktopscaling",
+    "-skipinitialbootstrap",
+    "-norepairfiles",
+];
+
+/// يقرأ سطر `steam:` ويرجّع قائمة آمنة من وسائط ستيم
+fn parse_steam_args(line: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut expect_value = false;
+    for token in line.split_whitespace().take(24) {
+        if token.len() > 40 || !token.is_ascii() {
+            continue;
+        }
+        if expect_value {
+            expect_value = false;
+            // القيمة المسموحة بعد -forcedesktopscaling: رقم واحد فقط
+            if token.len() == 1 && token.chars().all(|c| c.is_ascii_digit()) {
+                out.push(token.to_string());
+            }
+            continue;
+        }
+        if STEAM_ARG_ALLOW.contains(&token) {
+            expect_value = token == "-forcedesktopscaling";
+            out.push(token.to_string());
+        }
+    }
+    out.truncate(8);
+    out
+}
+
+/// وسائط ستيم الإضافية (اختيارية) — تُقرأ من `~/Library/Application Support/Jisr/cef-flags.txt`
+fn steam_args_override() -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(crate::data_dir().join("cef-flags.txt")) else {
+        return Vec::new();
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("steam:") {
+            return parse_steam_args(rest);
+        }
+    }
+    Vec::new()
+}
+
 /// ملف اختياري لتجربة فلاقين CEF بدون بناء جديد:
 /// `~/Library/Application Support/Jisr/cef-flags.txt` (أول سطر، بحدود آمنة)
 fn cef_flags_override() -> Option<String> {
@@ -708,10 +760,13 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
             .arg("-noverifyfiles")
             // مقياس واجهة صحيح على شاشات Retina
             .arg("-forcedesktopscaling")
-            .arg("1")
-            .stdin(Stdio::null())
-            .stdout(out)
-            .stderr(err);
+            .arg("1");
+        // وسائط طوارئ اختيارية من الملف النصي (قائمة بيضاء فقط)
+        let extra = steam_args_override();
+        for a in &extra {
+            cmd.arg(a);
+        }
+        cmd.stdin(Stdio::null()).stdout(out).stderr(err);
         if let Some(dir) = mac_exe.parent() {
             cmd.current_dir(dir);
         }
@@ -720,10 +775,15 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
             "info",
             "steam",
             &format!(
-                "spawn steam wine={} exe={} prefix={} args=-no-cef-sandbox -noverifyfiles -forcedesktopscaling 1 graphics={}",
+                "spawn steam wine={} exe={} prefix={} args=-no-cef-sandbox -noverifyfiles -forcedesktopscaling 1{} graphics={}",
                 wine.display(),
                 dos_exe,
                 prefix.display(),
+                if extra.is_empty() {
+                    String::new()
+                } else {
+                    format!(" extra={extra:?}")
+                },
                 graphics::active_layer()
             ),
         );
@@ -913,6 +973,25 @@ mod tests {
             None
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn steam_args_whitelist_keeps_only_known_flags() {
+        assert_eq!(
+            parse_steam_args("-cef-single-process -no-cef-sandbox"),
+            vec![
+                "-cef-single-process".to_string(),
+                "-no-cef-sandbox".to_string()
+            ]
+        );
+        // أي شيء غير معروف يُتجاهل — ما فيه تمرير أوامر عشوائية
+        assert!(parse_steam_args("-rm -rf / ; whoami").is_empty());
+        // القيمة بعد -forcedesktopscaling: رقم واحد فقط
+        assert_eq!(
+            parse_steam_args("-forcedesktopscaling 2"),
+            vec!["-forcedesktopscaling".to_string(), "2".to_string()]
+        );
+        assert_eq!(parse_steam_args("-forcedesktopscaling abc").len(), 1);
     }
 
     #[test]
