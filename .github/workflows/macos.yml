@@ -55,6 +55,11 @@ jobs:
             ### التنزيل
             نزّل ملف **`.dmg`** من قسم Assets تحت 👇
 
+            ### قبل ما تبدأ (متطلبات — مرة وحدة)
+            1. **GStreamer** (متطلب محرّك Wine رسمياً — لك وكل المستخدمين، يحتاج كلمة سر الماك):
+               [gstreamer-1.0-1.28.5-universal.pkg](https://gstreamer.freedesktop.org/data/pkg/osx/1.28.5/gstreamer-1.0-1.28.5-universal.pkg)
+            2. **Rosetta 2:** الماك يطلبه تلقائياً عند أول تشغيل — اضغط تثبيت (أو نفّذ: `softwareupdate --install-rosetta --agree-to-license`)
+
             ### أول تشغيل (مهم)
             1. نزّل الـdmg وافتحه
             2. اسحب **jisr** إلى مجلد **Applications**
