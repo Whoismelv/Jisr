@@ -174,6 +174,9 @@ pub struct GameProfile {
     pub overlay: bool,
     /// كم محاولة Déjà جرت على هذه اللعبة.
     pub attempts: u32,
+    /// **بصمات التركيبات التي جُرّبت وفشلت** — ما نعيد تجربة تركيبة معروفة
+    /// بأنها هي اللي انهارت (كان الثالث محاولة ترجع للتركيبة الأولى).
+    pub tried: Vec<String>,
     /// آخر تحديث (بالميلي ثانية) — للعرض ولتنظيف الملفات القديمة.
     pub updated_ms: u64,
 }
@@ -194,8 +197,28 @@ impl GameProfile {
             windowed: false,
             overlay: true,
             attempts: 0,
+            tried: Vec::new(),
             updated_ms: now_ms(),
         }
+    }
+
+    /// بصمة التركيبة (نص قصير) — نستخدمها لمقارنة التركيبات ولمنع تكرار
+    /// تركيبة جرت وفشلت.
+    pub fn signature(&self) -> String {
+        format!(
+            "d3d9={};d3dx9={};compiler={};renderer={};windowed={};overlay={}",
+            self.d3d9.as_str(),
+            self.d3dx9.as_str(),
+            self.compiler.as_str(),
+            self.renderer.as_str(),
+            self.windowed,
+            self.overlay
+        )
+    }
+
+    /// هل جرّبنا هذه التركيبة قبلاً وفشلت؟
+    pub fn was_tried(&self, signature: &str) -> bool {
+        self.tried.iter().any(|t| t == signature)
     }
 
     /// قيم الريجستري (dll, "native"|"builtin") بالترتيب: d3d9, d3dx9_43, d3dcompiler_43.
@@ -318,6 +341,15 @@ impl GameProfile {
         }
         next.attempts = self.attempts.saturating_add(1);
         next.updated_ms = now_ms();
+        // ما نعيد تركيبة جرت وفشلت (المحاولة الثالثة كانت ترجع للأولى)
+        if self.was_tried(&next.signature()) {
+            return None;
+        }
+        // ونسجّل التركيبة الحالية كـ«جرت» في(Result) القادم
+        let current = self.signature();
+        if !next.tried.iter().any(|t| *t == current) {
+            next.tried.push(current);
+        }
         Some(next)
     }
 
@@ -364,6 +396,7 @@ impl GameProfile {
             "windowed": self.windowed,
             "overlay": self.overlay,
             "attempts": self.attempts,
+            "tried": self.tried,
             "updated_ms": self.updated_ms,
         })
     }
@@ -417,6 +450,16 @@ impl GameProfile {
                 .and_then(serde_json::Value::as_u64)
                 .map(|a| u32::try_from(a).unwrap_or(u32::MAX))
                 .unwrap_or(fallback.attempts),
+            tried: obj
+                .get("tried")
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .take(16)
+                        .collect()
+                })
+                .unwrap_or_else(|| fallback.tried.clone()),
             updated_ms: obj
                 .get("updated_ms")
                 .and_then(serde_json::Value::as_u64)
@@ -656,9 +699,12 @@ mod tests {
             off.next_candidate("disable-overlay").is_none(),
             "الـoverlay معطّل أصلاً — ما فيه تغيير"
         );
-        let on = off.next_candidate("enable-overlay").expect("فيه تغيير");
-        assert!(on.overlay);
-        assert!(on.next_candidate("enable-overlay").is_none());
+        // الرجوع للـoverlay مفعّل = التركيبة الافتراضية ⇒ جُرّبت؟ لا، لكن
+        // «enable-overlay» منTurbo لا ينفع لأنه سيعيدنا لتركيبة معروفة.
+        assert!(
+            off.next_candidate("enable-overlay").is_none(),
+            "ما نرجع لتركيبة مجرّبة"
+        );
     }
 
     #[test]
@@ -667,9 +713,23 @@ mod tests {
         let c = p.next_candidate("check-game-files").expect("فيه تغيير");
         assert!(c.windowed);
         assert!(c.next_candidate("check-game-files").is_none());
-        let back = c.next_candidate("windowed-off").expect("فيه تغيير");
-        assert!(!back.windowed);
-        assert!(back.next_candidate("windowed-off").is_none());
+        // الرجوع لغير النافذة = التركيبة الافتراضية (جرت) ⇒ ما نرجع لها
+        assert!(
+            c.next_candidate("windowed-off").is_none(),
+            "ما نرجع لتركيبة مجرّبة"
+        );
+    }
+
+    /// التركيبات التي جرت وفشلت ما تُعاد — المحاولة الثالثة كانت ترجع للأولى
+    #[test]
+    fn never_repeats_a_tried_combination() {
+        let p = GameProfile::default_for(1);
+        let a = p.next_candidate("try-d3dx9-builtin").expect("تركيبة جديدة");
+        assert!(a.tried.iter().any(|t| t == &p.signature()));
+        // من A: "تثبيت الأصلي" يرجع للتركيبة الافتراضية ⇒ مرفوض
+        assert!(a.next_candidate("install-d3dx9-native").is_none());
+        // لكن تركيبة جديدة (WineD3D) مقبولة
+        assert!(a.next_candidate("try-wined3d").is_some());
     }
 
     #[test]

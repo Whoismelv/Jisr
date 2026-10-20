@@ -429,6 +429,15 @@ pub fn parse_report(text: &str) -> Option<CrashReport> {
         if trimmed.is_empty() {
             continue;
         }
+        // 0) تقرير حقيقي = فيه قسم winedbg واحد على الأقل.
+        // (لولا هذا: برنامج يطبع "Unhandled exception:" في نصه ⇒ انهيار وهمي)
+        if trimmed.starts_with("Register dump:")
+            || trimmed.starts_with("Stack dump:")
+            || trimmed.starts_with("Backtrace:")
+            || trimmed.starts_with("Modules:")
+        {
+            recognized = true;
+        }
         // 1) سطر الاستثناء (أولوية: قبل أي قسم)
         if let Some(rest) = strip_prefix_ci(trimmed, "Unhandled exception:") {
             exception_line = Some(trimmed.to_string());

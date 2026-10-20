@@ -114,6 +114,14 @@ fn run_log_path() -> PathBuf {
     crate::data_dir().join("logs").join("steam-last-run.log")
 }
 
+/// مسار سجل تشغيل ستيم (نفس `run_log_path`، لكن علني لبرامج المراقبة).
+///
+/// **مهم:** أخطاء **اللعبة** تطلع هنا مو في `game-launch.log` — لأن اللعبة
+/// يطلقها عميل ستيم، فترث مقابض stdout/stderr الخاصة بستيم.
+pub(crate) fn steam_log_path() -> PathBuf {
+    run_log_path()
+}
+
 /// نوجّه كلام ستيم كامل لملف (بدل الأنابيب اللي تضيع عند الإيقاف اليدوي)
 fn stdio_to_log() -> (Stdio, Stdio) {
     let path = run_log_path();

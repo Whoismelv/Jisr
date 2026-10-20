@@ -24,6 +24,7 @@ import {
   getGraphicsMode,
   getAutoRetry,
   getCrashStates,
+  resetGameProfile,
   setAutoRetry,
   type CrashState,
   setGraphicsMode,
@@ -63,6 +64,7 @@ import type { Updates } from "./useUpdates";
 import { fmtPlayed, type Games } from "./useGames";
 import { STEAM_SETUP_ID, type Steam } from "./useSteam";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { listen } from "@tauri-apps/api/event";
 
 export type Page = "home" | "library" | "bottles" | "settings" | "logs";
 
@@ -533,6 +535,34 @@ export const LibraryPage = memo(function LibraryPage({
 // ============================================================
 //  مكتبة ستيم — ألعاب مثبّتة داخل القارورة (تُقرأ من appmanifest)
 // ============================================================
+/** ترجمة تصنيف الانهيار للإنجليزية (الرسالة الأصلية عربية) */
+function crashEn(className: string): string {
+  switch (className) {
+    case "d3dx-builtin":
+      return "Crash inside Wine's builtin D3DX (incomplete)";
+    case "d3dx-native":
+      return "Crash inside Microsoft's native D3DX compiler";
+    case "d3d9-builtin":
+      return "The game ran on Wine's builtin D3D (DXVK not active)";
+    case "d3d9-native":
+      return "Crash inside DXVK";
+    case "vulkan":
+      return "Crash inside the Vulkan layer";
+    case "wow64-thunk":
+      return "Crash in the WoW64 translation layer (Rosetta)";
+    case "missing-dll":
+      return "A Windows library is missing from the prefix";
+    case "overlay-hook":
+      return "The Steam overlay is hooking Direct3D";
+    case "game-itself":
+      return "The crash is inside the game itself";
+    case "retry-failed":
+      return "We could not relaunch the game automatically";
+    default:
+      return "Crash detected";
+  }
+}
+
 const SteamLibrary = memo(function SteamLibrary({
   games,
   loading,
@@ -548,10 +578,10 @@ const SteamLibrary = memo(function SteamLibrary({
   onPlay: (g: SteamGame) => void;
   onWindowed: (g: SteamGame) => void;
 }) {
-  const { t } = useI18n();
+  const { t, choice: lang } = useI18n();
   // حالات الانهيار (يصنّفها التطبيق من تقرير Wine) — نعرضها تحت كل لعبة
   const [crashes, setCrashes] = useState<Record<number, CrashState>>({});
-  useEffect(() => {
+  const refreshCrashes = useCallback(() => {
     getCrashStates()
       .then((list) =>
         setCrashes(
@@ -562,7 +592,15 @@ const SteamLibrary = memo(function SteamLibrary({
         ),
       )
       .catch(() => {});
-  }, [games]);
+  }, []);
+  useEffect(() => {
+    refreshCrashes();
+    // حدث من الخلفية: انهيار جديد ⇒ نحدّث القائمة فوراً
+    const unlisten = listen<number>("jisr-crash", () => refreshCrashes());
+    return () => {
+      unlisten.then((off) => off());
+    };
+  }, [refreshCrashes]);
   // رموز الموانع من الخلفية → نصوص مفهومة (بدون تخمين في الواجهة)
   const issueText = (code: string) => {
     switch (code) {
@@ -632,7 +670,23 @@ const SteamLibrary = memo(function SteamLibrary({
                   {/* انهيار مُصنَّف: السبب + الخطوة (يتكفّل به التطبيق تلقائياً) */}
                   {crashes[g.appid] && (
                     <span className="game-issue blocked">
-                      {crashes[g.appid].headline_ar} — {crashes[g.appid].next_ar}
+                      {lang === "en"
+                        ? `${crashEn(crashes[g.appid].class)} — ${crashes[g.appid].next_ar}`
+                        : `${crashes[g.appid].headline_ar} — ${crashes[g.appid].next_ar}`}
+                      {" · "}
+                      <button
+                        className="linkish"
+                        onClick={() =>
+                          resetGameProfile(g.appid)
+                            .then(() => {
+                              refreshCrashes();
+                              onRefresh();
+                            })
+                            .catch(() => {})
+                        }
+                      >
+                        {t("resetProfile")}
+                      </button>
                     </span>
                   )}
                   {/* خطة التشغيل التلقائي: أي طبقة تناسب اللعبة وأي موانع */}

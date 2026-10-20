@@ -127,13 +127,20 @@ pub(crate) fn apply_env(cmd: &mut tokio::process::Command, steam: bool) -> bool 
 /// ويعرّض WineHQ 60494: تطبيقات 32-بت تنهار عشوائياً في `wow64cpu` أثناء
 /// تهيئة محوّل GL. مع `renderer=vulkan` (wined3d → winevulkan → MoltenVK)
 /// اختفى الانهيار (0/60 فشل مقابل 27/86) والأداء صار ~4× أسرع.
-pub async fn ensure_vulkan_renderer(wine: &Path, prefix: &Path) -> bool {
-    let marker = prefix.join(".jisr-wined3d-vulkan.ok");
-    if marker.is_file() {
+/// يضبط محرك الرسم لـWineD3D في ريجستري القارورة (`renderer`).
+///
+/// **قيمة واحدة للكل:** `vulkan` (wined3d → winevulkan → MoltenVK → Metal)
+/// أو `gl` (OpenGL القديم من Apple). العلامة تخزّن **القيمة** ⇒ لو تغيّرت
+/// نعيد الكتابة (وإلا بقي `gl` عالقة للأبد).
+pub async fn ensure_renderer(wine: &Path, prefix: &Path, value: &str) -> bool {
+    let marker = prefix.join(".jisr-wined3d-renderer.ok");
+    let current = std::fs::read_to_string(&marker).unwrap_or_default();
+    if current.trim() == value {
         return true;
     }
     let mut cmd = tokio::process::Command::new(wine);
     cmd.env("WINEPREFIX", prefix)
+        .env("WINEMSYNC", "1")
         .arg("reg")
         .arg("add")
         .arg("HKCU\\Software\\Wine\\Direct3D")
@@ -142,7 +149,7 @@ pub async fn ensure_vulkan_renderer(wine: &Path, prefix: &Path) -> bool {
         .arg("/t")
         .arg("REG_SZ")
         .arg("/d")
-        .arg("vulkan")
+        .arg(value)
         .arg("/f")
         .stdin(std::process::Stdio::null());
     let ok = match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await {
@@ -150,7 +157,7 @@ pub async fn ensure_vulkan_renderer(wine: &Path, prefix: &Path) -> bool {
         _ => false,
     };
     if ok {
-        let _ = std::fs::write(&marker, b"ok\n");
+        let _ = std::fs::write(&marker, format!("{value}\n"));
     }
     ok
 }
@@ -195,12 +202,18 @@ impl LayerOverrides {
 /// يكتب تجاوزات الطبقات في **ريجستري القارورة** (تسري على كل العمليات الجديدة).
 /// native = تحميل الملفات الأصلية (DXVK / مايكروسوفت)، builtin = نسخة Wine.
 ///
+/// **مهم:** القيم العامة في `HKCU\Software\Wine\DllOverrides` تخصّ **كل** الألعاب.
+/// لتركيبة **خاصة بلعبة** نكتب نفس القيم في
+/// `HKCU\Software\Wine\AppDefaults\<exe>\DllOverrides` — وWine يقرأها **قبل**
+/// العامة (لكل DLL على حدة) ⇒ كل لعبة لها تركيبتها بدون ما تزعج البقية.
+///
 /// **تحقّق إلزامي:** بعد الكتابة نقرأ القيم من الريجستري — الكتابة اللي
 /// تفشل بصمت كانت سبب «DXVK ما انحمّل» (اللعبة سقطت على WineD3D وانهارت).
 pub async fn apply_registry_overrides(
     wine: &Path,
     prefix: &Path,
     ov: &LayerOverrides,
+    app_exe: Option<&str>,
 ) -> Result<(), String> {
     for (dll, value) in ov.entries() {
         let mut cmd = tokio::process::Command::new(wine);
@@ -232,31 +245,89 @@ pub async fn apply_registry_overrides(
     }
 
     // استثناء واجهة ستيم: d3d* تبقى builtin لعميل ستيم وواجهته
-    // (التجاوز العام يصيب كل عمليات القارورة — وCEF ما يحتاج DXVK)
-    for exe in [
-        "steam.exe",
-        "steamwebhelper.exe",
-        "steamwebhelper_real.exe",
-        "steamservice.exe",
-    ] {
-        for dll in ["d3d9", "d3d10core", "d3d11"] {
-            let mut cmd = tokio::process::Command::new(wine);
-            cmd.env("WINEPREFIX", prefix)
-                .env("WINEMSYNC", "1")
-                .arg("reg")
-                .arg("add")
-                .arg(format!(
-                    "HKCU\\Software\\Wine\\AppDefaults\\{exe}\\DllOverrides"
-                ))
-                .arg("/v")
-                .arg(dll)
-                .arg("/t")
-                .arg("REG_SZ")
-                .arg("/d")
-                .arg("builtin")
-                .arg("/f")
-                .stdin(std::process::Stdio::null());
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
+    // (التجاوز العام يصيب كل عمليات القارورة — وCEF ما يحتاج DXVK).
+    // **مرة واحدة** لكل قارورة (القيم ثابتة) — عشان ما نفتح ١٢ عملية Wine كل تشغيل.
+    let exceptions_marker = prefix.join(".jisr-steam-dll-exceptions.ok");
+    if !exceptions_marker.is_file() {
+        let mut failed = false;
+        for exe in [
+            "steam.exe",
+            "steamwebhelper.exe",
+            "steamwebhelper_real.exe",
+            "steamservice.exe",
+        ] {
+            for dll in ["d3d9", "d3d10core", "d3d11"] {
+                let mut cmd = tokio::process::Command::new(wine);
+                cmd.env("WINEPREFIX", prefix)
+                    .env("WINEMSYNC", "1")
+                    .arg("reg")
+                    .arg("add")
+                    .arg(format!(
+                        "HKCU\\Software\\Wine\\AppDefaults\\{exe}\\DllOverrides"
+                    ))
+                    .arg("/v")
+                    .arg(dll)
+                    .arg("/t")
+                    .arg("REG_SZ")
+                    .arg("/d")
+                    .arg("builtin")
+                    .arg("/f")
+                    .stdin(std::process::Stdio::null());
+                let ok =
+                    match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output())
+                        .await
+                    {
+                        Ok(Ok(o)) => o.status.success(),
+                        _ => false,
+                    };
+                if !ok {
+                    failed = true;
+                }
+            }
+        }
+        if failed {
+            return Err("تعذّر كتابة استثناءات ستيم في الريجستري".into());
+        }
+        let _ = std::fs::write(&exceptions_marker, b"ok\n");
+    }
+
+    // التركيبة **الخاصة بهذه اللعبة** — في AppDefaults لملفها هي.
+    // Wine يقرأها قبل العامة ⇒ كل لعبة لها تركيبتها والباقي ما يتأثر.
+    if let Some(exe) = app_exe {
+        let exe = exe.trim();
+        if !exe.is_empty() {
+            for (dll, value) in ov.entries() {
+                let mut cmd = tokio::process::Command::new(wine);
+                cmd.env("WINEPREFIX", prefix)
+                    .env("WINEMSYNC", "1")
+                    .arg("reg")
+                    .arg("add")
+                    .arg(format!(
+                        "HKCU\\Software\\Wine\\AppDefaults\\{exe}\\DllOverrides"
+                    ))
+                    .arg("/v")
+                    .arg(dll)
+                    .arg("/t")
+                    .arg("REG_SZ")
+                    .arg("/d")
+                    .arg(value)
+                    .arg("/f")
+                    .stdin(std::process::Stdio::null());
+                let out =
+                    match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output())
+                        .await
+                    {
+                        Ok(Ok(o)) => o,
+                        Ok(Err(e)) => return Err(format!("reg add (تركيبة اللعبة) فشل: {e}")),
+                        Err(_) => return Err("reg add (تركيبة اللعبة) تجاوز الوقت".into()),
+                    };
+                if !out.status.success() {
+                    return Err(format!(
+                        "reg add (تركيبة اللعبة) فشل: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ));
+                }
+            }
         }
     }
 
@@ -326,32 +397,39 @@ pub fn deploy_to_prefix(prefix: &Path) -> Result<(), String> {
 
 /// علامة جاهزية الطبقة **داخل قارورة محددة** + القيم المطبّقة وقت الكتابة.
 ///
-/// بدونها كنا نفتح 4 عمليات Wine (3 × reg add + فحص أمان) عند **كل** ضغطة
-/// تشغيل — بطء ملموس قبل انطلاق اللعبة. العلامة تُكتب فقط بعد نجاح النشر
-/// والريجستري معاً. ومحتواها يطابق القيم المطلوبة ⇒ نعيد الكتابة
-/// (لأن ملف تعريف اللعبة ممكن يكون تغيّر).
-fn prefix_marker(prefix: &Path) -> PathBuf {
-    prefix.join(format!(".jisr-layer-{ASSET_ID}.ok"))
+/// بدونها كنا نفتح عشرات عمليات Wine عند **كل** ضغطة تشغيل — بطء ملموس قبل
+/// انطلاق اللعبة. العلامة تُكتب بعد نجاح النشر والريجستري معاً، ومحتواها
+/// يطابق القيم المطلوبة ⇒ نعيد الكتابة فقط عند تغيّر التركيبة.
+fn prefix_marker(prefix: &Path, appid: u32) -> PathBuf {
+    prefix.join(format!(".jisr-layer-{ASSET_ID}-{appid}.ok"))
 }
 
-/// نص العلامة = القيم المطبّقة (بترتيب ثابت) — نقارنها مع المطلوبة
-fn marker_signature(ov: &LayerOverrides) -> String {
-    ov.entries()
+/// نص العلامة = القيم المطبّقة + ملف اللعبة (بترتيب ثابت)
+fn marker_signature(ov: &LayerOverrides, app_exe: Option<&str>) -> String {
+    let mut s: Vec<String> = ov
+        .entries()
         .iter()
         .map(|(d, v)| format!("{d}={v}"))
-        .collect::<Vec<_>>()
-        .join(";")
+        .collect();
+    s.push(format!("exe={}", app_exe.unwrap_or("-")));
+    s.join(";")
 }
 
 /// يضمن الطبقة داخل القارورة (نشر + تجاوزات) مرة واحدة فقط لكل تركيبة.
 /// `Ok(true)` = الطبقة جاهزة، `Ok(false)` = الوضع WineD3D (بلا طبقة)،
 /// `Err` = فيه فشل حقيقي (يُعرض للمستخدم).
-pub async fn ensure_layer(wine: &Path, prefix: &Path, ov: &LayerOverrides) -> Result<bool, String> {
+pub async fn ensure_layer(
+    wine: &Path,
+    prefix: &Path,
+    ov: &LayerOverrides,
+    appid: u32,
+    app_exe: Option<&str>,
+) -> Result<bool, String> {
     if !dxvk_enabled() {
         return Ok(false);
     }
-    let marker = prefix_marker(prefix);
-    let want = marker_signature(ov);
+    let marker = prefix_marker(prefix, appid);
+    let want = marker_signature(ov, app_exe);
     if marker.is_file() && is_installed() {
         let current = std::fs::read_to_string(&marker).unwrap_or_default();
         if current.trim() == want {
@@ -359,7 +437,7 @@ pub async fn ensure_layer(wine: &Path, prefix: &Path, ov: &LayerOverrides) -> Re
         }
     }
     let deployed = deploy_to_prefix(prefix).is_ok();
-    let reg = apply_registry_overrides(wine, prefix, ov).await;
+    let reg = apply_registry_overrides(wine, prefix, ov, app_exe).await;
     if deployed && reg.is_ok() {
         let _ = std::fs::write(&marker, format!("{want}\n"));
         return Ok(true);
@@ -374,9 +452,18 @@ pub async fn ensure_layer(wine: &Path, prefix: &Path, ov: &LayerOverrides) -> Re
     })
 }
 
-/// امسح علامة الجاهزية (بعد تغيير وضع الرسومات أو حذف الطبقة)
+/// امسح علامات الجاهزية (بعد تغيير وضع الرسومات أو حذف الطبقة).
+/// العلامة الآن **لكل لعبة** ⇒ نمسح كل ما يبدأ بـ`.jisr-layer-`.
 pub fn clear_prefix_marker(prefix: &Path) {
-    let _ = std::fs::remove_file(prefix_marker(prefix));
+    let Ok(rd) = std::fs::read_dir(prefix) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.starts_with(".jisr-layer-") {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// نفس النشر لكن بمجلد طبقة محدّد (للاختبار — بلا حالة مشتركة)

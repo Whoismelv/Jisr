@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{bottle, graphics, log, log_keys, pe, steam};
 
@@ -67,7 +67,8 @@ fn layer_availability() -> crate::auto::LayerAvailability {
     }
 }
 
-/// خطة اللعبة: الطبقات + الموانع + الخطوات
+/// خطة اللعبة: الطبقات + الموانع + الخطوات (بلا رقم لعبة — للاختبارات)
+#[allow(dead_code)]
 pub fn plan_for(probe: &GameProbe) -> GamePlan {
     plan_for_appid(probe, 0)
 }
@@ -824,80 +825,86 @@ pub fn profile_for(appid: u32) -> crate::combo::GameProfile {
 }
 
 /// يترجم ملف التعريف إلى قيم الريجستري (native/builtin لكل DLL)
+///
+/// **مطابقة الواقع:** ما نقول `native` إلا إذا كانت الملفات موجودة فعلاً،
+/// وإلا Wine يرجع للنسخة المدمجة بصمت ويبقى الملف «يكدب» على التطبيق.
 fn profile_overrides(profile: &crate::combo::GameProfile) -> graphics::LayerOverrides {
     use crate::combo::{Compiler, D3d9Layer, D3dx9Layer};
-    let dxvk_on = profile.d3d9 == D3d9Layer::Dxvk && graphics::is_installed();
+    let dxvk_ready = graphics::is_installed() && graphics::d3d9_available();
+    let d3dx_ready = crate::d3dx::is_installed();
+    let want_dxvk = profile.d3d9 == D3d9Layer::Dxvk;
+    let want_native_d3dx = profile.d3dx9 == D3dx9Layer::Native;
+    let want_native_compiler = profile.compiler == Compiler::Native;
     graphics::LayerOverrides {
-        d3d9: match profile.d3d9 {
-            D3d9Layer::Dxvk => "native",
-            D3d9Layer::WineD3D => "builtin",
+        d3d9: if want_dxvk && dxvk_ready {
+            "native"
+        } else {
+            "builtin"
         },
-        d3d10core: if dxvk_on { "native" } else { "builtin" },
-        d3d11: if dxvk_on { "native" } else { "builtin" },
-        d3dx9_43: match profile.d3dx9 {
-            D3dx9Layer::Native => "native",
-            D3dx9Layer::Builtin => "builtin",
+        d3d10core: if want_dxvk && dxvk_ready {
+            "native"
+        } else {
+            "builtin"
         },
-        d3dcompiler_43: match profile.compiler {
-            Compiler::Native => "native",
-            Compiler::Builtin => "builtin",
+        d3d11: if want_dxvk && dxvk_ready {
+            "native"
+        } else {
+            "builtin"
+        },
+        d3dx9_43: if want_native_d3dx && d3dx_ready {
+            "native"
+        } else {
+            "builtin"
+        },
+        d3dcompiler_43: if want_native_compiler && d3dx_ready {
+            "native"
+        } else {
+            "builtin"
         },
     }
 }
 
 /// يطبّق كل=settings ملف التعريف على القارورة:
-/// التجاوزات + محرك الرسم (vulkan/gl) + تعطيل الـoverlay عند الحاجة.
+/// التجاوزات (افتراضي عام + خاص بلعبة) + محرك الرسم + الـoverlay.
 async fn apply_profile(
     wine: &Path,
     prefix: &Path,
     profile: &crate::combo::GameProfile,
+    app_exe: Option<&str>,
 ) -> Result<(), String> {
     let ov = profile_overrides(profile);
-    graphics::apply_registry_overrides(wine, prefix, &ov).await?;
+    graphics::ensure_layer(wine, prefix, &ov, profile.appid, app_exe).await?;
 
     // محرك الرسم لـWineD3D: vulkan (عبر MoltenVK) أو gl (الأقدم)
-    match profile.renderer {
-        crate::combo::Renderer::Vulkan => {
-            let _ = graphics::ensure_vulkan_renderer(wine, prefix).await;
-        }
-        crate::combo::Renderer::Gl => {
-            let mut cmd = tokio::process::Command::new(wine);
-            cmd.env("WINEPREFIX", prefix)
-                .arg("reg")
-                .arg("add")
-                .arg("HKCU\\Software\\Wine\\Direct3D")
-                .arg("/v")
-                .arg("renderer")
-                .arg("/t")
-                .arg("REG_SZ")
-                .arg("/d")
-                .arg("gl")
-                .arg("/f")
-                .stdin(std::process::Stdio::null());
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
-        }
-    }
+    let renderer = match profile.renderer {
+        crate::combo::Renderer::Vulkan => "vulkan",
+        crate::combo::Renderer::Gl => "gl",
+    };
+    let _ = graphics::ensure_renderer(wine, prefix, renderer).await;
 
-    // Steam overlay: هوك على IDirect3DDevice9 — سبب معروف لانهيارات DX9
-    if !profile.overlay {
-        let mut cmd = tokio::process::Command::new(wine);
-        cmd.env("WINEPREFIX", prefix)
-            .arg("reg")
-            .arg("add")
-            .arg(format!(
-                "HKCU\\Software\\Valve\\Steam\\Apps\\{}",
-                profile.appid
-            ))
-            .arg("/v")
-            .arg("OverlayEnable")
-            .arg("/t")
-            .arg("REG_DWORD")
-            .arg("/d")
-            .arg("0")
-            .arg("/f")
-            .stdin(std::process::Stdio::null());
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
+    // Steam overlay: هوك على IDirect3DDevice9 — سبب معروف لانهيارات DX9.
+    // نكتب القيمة **دائماً** (مفعّل/معطّل) حتى ما يبقى معطّلاً للأبد.
+    if let Some(exe) = app_exe {
+        let _ = exe;
     }
+    let mut cmd = tokio::process::Command::new(wine);
+    cmd.env("WINEPREFIX", prefix)
+        .env("WINEMSYNC", "1")
+        .arg("reg")
+        .arg("add")
+        .arg(format!(
+            "HKCU\\Software\\Valve\\Steam\\Apps\\{}",
+            profile.appid
+        ))
+        .arg("/v")
+        .arg("OverlayEnable")
+        .arg("/t")
+        .arg("REG_DWORD")
+        .arg("/d")
+        .arg(if profile.overlay { "1" } else { "0" })
+        .arg("/f")
+        .stdin(std::process::Stdio::null());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
     Ok(())
 }
 
@@ -905,11 +912,24 @@ async fn apply_profile(
 fn extract_crash_report(text: &str) -> Option<String> {
     let idx = text.rfind("Unhandled exception:")?;
     let rest = &text[idx..];
+    // **كامل** = فيه سطر Backtrace. لو التقطناه وهو يكتب ⇒ جدول الوحدات
+    // ناقص ⇒ تصنيف خاطئ (D3DX المدمجة تبان «أصلية») ⇒ نبدّل اللعبة للتركيبة الغلط.
+    if !rest.contains("Backtrace:") {
+        return None;
+    }
     let end = rest
         .find("\nSystem information:")
         .map(|i| (i + 600).min(rest.len()))
         .unwrap_or_else(|| rest.len().min(24_000));
     Some(rest[..end].to_string())
+}
+
+/// يطبّع اسم وحدة/ملف للمقارنة: بلا مسار، بلا امتداد، أحرف صغيرة
+fn normalize_module_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let base = base.strip_suffix(".exe").unwrap_or(base);
+    let base = base.strip_suffix(".dll").unwrap_or(base);
+    base.to_ascii_lowercase()
 }
 
 /// يراقب مخرجات اللعبة ويكتشف تقرير الانهيار ليعالجها تلقائياً.
@@ -925,7 +945,9 @@ fn spawn_crash_watcher(
     game_exe: Option<String>,
 ) {
     tauri::async_runtime::spawn(async move {
-        let log = launch_log_path();
+        // **سجل ستيم** هو where تكتب أخطاء اللعبة: اللعبة يطلقها عميل ستيم
+        // فترث مقابض stdout/stderr الخاصة بستيم (وليس سجل إطلاق الأمر).
+        let log = steam::steam_log_path();
         // نبدأ من **نهاية** السجل الحالي: أي انهان قديم ما يخلّينا نعيد المحاولة
         let mut seen = std::fs::metadata(&log)
             .map(|m| m.len() as usize)
@@ -935,30 +957,31 @@ fn spawn_crash_watcher(
             let Ok(text) = std::fs::read_to_string(&log) else {
                 continue;
             };
+            // ستيم قُطع سجله عند إعادة التشغيل ⇒ نرجع للمؤشر صفر
+            if text.len() < seen {
+                seen = 0;
+            }
             if text.len() <= seen {
                 continue;
             }
             let fresh = &text[seen.min(text.len())..];
-            seen = text.len();
             let Some(report) = extract_crash_report(fresh) else {
+                // تقرير ناقص (يكتب) ⇒ ما نقدّم المؤشر، ننتظر الجولة الجاية
                 continue;
             };
+            seen = text.len();
             // السجل مشترك بين الألعاب ⇒ نتأكد إن الانهيار لِهذه اللعبة
             // (وإلا نطبّق حكم لعبة أخرى على هذه)
             if let Some(exe) = &game_exe {
-                let name = exe
-                    .rsplit(['/', '\\'])
-                    .next()
-                    .unwrap_or(exe)
-                    .to_ascii_lowercase();
+                // جدول Wine يكتب اسم الم��دول **بلا** امتداد ⇒ نطبّع الطرفين
+                let name = normalize_module_name(exe);
                 let parsed = crate::triage::parse_report(&report);
                 let mentions = parsed
                     .as_ref()
                     .map(|r| {
-                        r.modules.iter().any(|m| {
-                            m.name.to_ascii_lowercase() == name
-                                || m.name.to_ascii_lowercase() == format!("{name}.exe")
-                        })
+                        r.modules
+                            .iter()
+                            .any(|m| normalize_module_name(&m.name) == name)
                     })
                     .unwrap_or(false);
                 if !mentions {
@@ -997,6 +1020,23 @@ fn spawn_crash_watcher(
             );
             let _ = app.emit("jisr-crash", appid);
 
+            // إجراءات «الطبقة مو مثبّتة أصلاً» ⇒ نبدأ التنزيل بدل تبديل راية
+            match verdict.action.as_str() {
+                "install-d3dx9-native" if !crate::d3dx::is_installed() => {
+                    crate::debuglog::raw(
+                        "info",
+                        "steam",
+                        "D3DX9 الأصلي مو مثبّت — نبدأ تنزيل حزمة DirectX",
+                    );
+                    crate::download::ensure_d3dx9_layer(&app);
+                }
+                "enable-dxvk" if !graphics::is_installed() => {
+                    crate::debuglog::raw("info", "steam", "DXVK مو مثبّت — نبدأ تنزيله");
+                    crate::download::ensure_graphics_layer(&app);
+                }
+                _ => {}
+            }
+
             // إعادة محاولة تلقائية بتركيبة مختلفة (حد ٣ محاولات)
             if attempt < 2 {
                 if let Some(next) = profile.next_candidate(&verdict.action) {
@@ -1013,7 +1053,32 @@ fn spawn_crash_watcher(
                         );
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                         // استدعاء متكرر غير مباشر ⇒ نحتاج Box (الحجم لا ينتهي)
-                        let _ = Box::pin(launch_game(app.clone(), appid, next, attempt + 1)).await;
+                        match Box::pin(launch_game(app.clone(), appid, next, attempt + 1, true))
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(e) => {
+                                // فشل إعادة التشغيل ⇒ نخبر المستخدم (مو نبلع الخطأ)
+                                crate::debuglog::raw(
+                                    "warn",
+                                    "steam",
+                                    &format!("auto retry failed appid={appid}: {e}"),
+                                );
+                                write_crash_state(
+                                    appid,
+                                    &CrashState {
+                                        at_ms: crate::now_ms(),
+                                        appid,
+                                        class: "retry-failed".into(),
+                                        headline_ar: "ما قدرنا نعيد تشغيل اللعبة تلقائياً".into(),
+                                        next_ar: e,
+                                        action: verdict.action.clone(),
+                                        attempts: attempt as u32 + 1,
+                                    },
+                                );
+                                let _ = app.emit("jisr-crash", appid);
+                            }
+                        }
                     }
                 }
             }
@@ -1073,6 +1138,10 @@ pub fn steam_crash_states() -> Vec<CrashState> {
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
+            // ملفات .json فقط (نتجاهل ملفات .tmp المؤقتة)
+            if e.path().extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
             if let Ok(text) = std::fs::read_to_string(e.path()) {
                 if let Ok(state) = serde_json::from_str::<CrashState>(&text) {
                     out.push(state);
@@ -1104,7 +1173,7 @@ pub async fn steam_game_launch(
         return Err("جهّز القارورة الرئيسية أول".into());
     }
     let profile = profile_for(appid);
-    launch_game(app, appid, profile, 0).await
+    launch_game(app, appid, profile, 0, false).await
 }
 
 /// ينفّذ التشغيل بملف تعريف محدّد (ويستدعي نفسه عند إعادة المحاولة)
@@ -1113,7 +1182,15 @@ async fn launch_game(
     appid: u32,
     profile: crate::combo::GameProfile,
     attempt: u8,
+    is_retry: bool,
 ) -> Result<(), String> {
+    // فحص الجاهزية في **كل** إطلاق (مو بس الأول) — بعد إعادة تشغيل ستيم
+    // من طرف المستخدم قد يكون قد أُغلق ⇒ ما نرسل أمراً لعميل ميت.
+    if let Some(st) = app.try_state::<steam::SteamState>() {
+        if !steam::is_running(&st) {
+            return Err("ستيم مو شغّال — شغّله ثم أعد المحاولة".into());
+        }
+    }
     let Some((mac_exe, dos_exe)) = steam::steam_exe() else {
         return Err("ستيم مو مثبّت بعد".into());
     };
@@ -1143,19 +1220,19 @@ async fn launch_game(
     // **أولاً الملفات** (DXVK + D3DX9 الأصلي) — ثم **التجاوزات** حسب التعريف.
     let deployed = graphics::deploy_to_prefix(&prefix).is_ok();
     let d3dx_ok = crate::d3dx::deploy_files(&prefix).is_ok();
-    let profile_result = apply_profile(&wine, &prefix, &profile).await;
+    // اسم ملف اللعبة (بلا مسار) — نستخدمه لتركيبة خاصة بهذه اللعبة
+    let game_exe: Option<String> = probe
+        .as_ref()
+        .and_then(|(_, p)| p.exe.as_ref())
+        .map(|e| e.rsplit(['/', '\\']).next().unwrap_or(e).to_string());
+    let profile_result = apply_profile(&wine, &prefix, &profile, game_exe.as_deref()).await;
     let reg_ok = profile_result.is_ok();
     if let Err(e) = &profile_result {
         crate::debuglog::raw("warn", "steam", &format!("profile apply failed: {e}"));
     }
-    // وضع النافذة حسب التعريف (ألعاب DX9 القديمة تاخذ الشاشة كاملة)
-    if profile.windowed {
-        if let Some(dir) = install_dir(appid) {
-            if let Err(e) = patch_settings_windowed(&dir, true) {
-                crate::debuglog::raw("debug", "steam", &format!("windowed skipped: {e}"));
-            }
-        }
-    }
+    // ⚠️ لا نفرض وضع النافذة تلقائياً: يكتب في ملف اللعبة الحقيقي داخل
+    // مكتبة ستيم (خارج مجلد التطبيق) وما فيه رجوع تلقائي. يبقى يدوياً
+    // من زر «نافذة» في بطاقة اللعبة.
     // حزام أمان للعرض: يمنع الألعاب القديمة من تعتيم الشاشة أو احتكارها بالكامل
     let safety = bottle::ensure_mac_safety(&wine, &prefix).await;
 
@@ -1272,14 +1349,13 @@ async fn launch_game(
         log_keys::STEAM_GAME_LAUNCHING,
         json!({ "appid": appid }),
     );
-    // حالة انهيار سابقة؟ نمسحها — أي انهيار جديد يكتبها المراقب
-    clear_crash_state(appid);
+    // حالة انهيار سابقة؟ نمسحها **عند إطلاق المستخدم** فقط — لو مسحناها
+    // عند إعادة المحاولة الآلية، مايشوف المستخدم سبب إعادة التشغيل.
+    if !is_retry {
+        clear_crash_state(appid);
+    }
 
     // مراقب الانهيار: يقرأ تقرير winedbg ⇒ يصنّفه ⇒ يجرّب التركيبة التالية
-    let game_exe = probe
-        .as_ref()
-        .and_then(|(_, p)| p.exe.as_ref())
-        .map(|e| e.rsplit(['/', '\\']).next().unwrap_or(e).to_string());
     spawn_crash_watcher(app.clone(), appid, profile.clone(), attempt, game_exe);
 
     // ننتظر الأمر القصير بالخلفية — خطأ الخروج فقط يُسجَّل (بلا إزعاج)
@@ -1409,9 +1485,16 @@ mod tests {
         use crate::combo::{Compiler, D3d9Layer, D3dx9Layer, GameProfile, Renderer};
         let mut p = GameProfile::default_for(48010);
         let ov = profile_overrides(&p);
-        assert_eq!(ov.d3d9, "native");
-        assert_eq!(ov.d3dx9_43, "native");
-        assert_eq!(ov.d3dcompiler_43, "native");
+        // **مطابقة الواقع:** ما نقول native إلا لو الملف موجود فعلاً
+        // (على جهاز التطوير ما فيه DXVK ولا D3DX9 مثبّتين ⇒ builtin)
+        let dxvk_ready = graphics::is_installed() && graphics::d3d9_available();
+        let d3dx_ready = crate::d3dx::is_installed();
+        assert_eq!(ov.d3d9, if dxvk_ready { "native" } else { "builtin" });
+        assert_eq!(ov.d3dx9_43, if d3dx_ready { "native" } else { "builtin" });
+        assert_eq!(
+            ov.d3dcompiler_43,
+            if d3dx_ready { "native" } else { "builtin" }
+        );
 
         p.d3d9 = D3d9Layer::WineD3D;
         p.d3dx9 = D3dx9Layer::Builtin;
@@ -1422,6 +1505,9 @@ mod tests {
         assert_eq!(ov2.d3dcompiler_43, "builtin");
         // d3d10core/d3d11 يتبعان DXVK نفسه
         assert_eq!(ov2.d3d11, "builtin");
+        // والقيم تتطابق مع سجل Gimme (الفرق الوحيد d3d10core/d3d11 يتبعان DXVK)
+        let ov3 = profile_overrides(&GameProfile::default_for(48010));
+        assert_eq!(ov3.d3d9, ov.d3d9);
         let _ = p.renderer == Renderer::Vulkan;
     }
 

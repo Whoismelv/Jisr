@@ -938,6 +938,21 @@ html.is-macos[dir="rtl"] .toolbar {
   font-weight: 500;
 }
 
+/* رابط صغير داخل رسالة الانهيار (إعادة ضبط ملف التعريف) */
+.game-issue button.linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.game-issue button.linkish:hover {
+  opacity: 0.75;
+}
+
 .empty {
   display: flex;
   flex-direction: column;

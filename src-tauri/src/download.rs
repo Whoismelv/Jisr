@@ -1184,6 +1184,21 @@ pub(crate) fn ensure_graphics_layer(app: &AppHandle) {
     let _ = begin_download(app, asset);
 }
 
+/// D3DX9 الأصلي (حزمة DirectX) يُنزَّل تلقائياً لوDetectilu حدّث D3DX9
+/// (نفس منطق `ensure_graphics_layer`).
+pub(crate) fn ensure_d3dx9_layer(app: &AppHandle) {
+    if crate::d3dx::is_installed() {
+        return;
+    }
+    let Some(asset) = find_asset(crate::d3dx::ASSET_ID) else {
+        return;
+    };
+    if !url_allowed(asset.url) {
+        return;
+    }
+    let _ = begin_download(app, asset);
+}
+
 /// ابدأ تنزيل عنصر من الكتالوج (id مثل "wine-11.18")
 #[tauri::command]
 pub async fn download_start(app: AppHandle, id: String) -> Result<(), String> {

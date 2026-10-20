@@ -550,6 +550,7 @@ async fn run_wineboot(id: &str) -> Result<(), String> {
             &wine,
             &prefix,
             &crate::graphics::LayerOverrides::dxvk_default(),
+            None,
         )
         .await
         {

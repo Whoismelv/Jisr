@@ -297,18 +297,6 @@ pub async fn deploy_to_prefix(wine: &Path, prefix: &Path) -> Result<(), String> 
     Ok(())
 }
 
-/// يضمن D3DX9 داخل القارورة إن كان منزّلاً. `Ok(false)` = مو منزّل (تخطّي).
-pub async fn ensure_layer(wine: &Path, prefix: &Path) -> Result<bool, String> {
-    if !is_installed() {
-        return Ok(false);
-    }
-    if marker_path(prefix).is_file() && deployed_in(prefix) {
-        return Ok(true);
-    }
-    deploy_to_prefix(wine, prefix).await?;
-    Ok(true)
-}
-
 /// حالة الطبقة للواجهة
 #[derive(Serialize)]
 pub struct D3dxStatus {
