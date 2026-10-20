@@ -8,9 +8,9 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::{bottle, graphics, log, log_keys, pe, steam};
 
@@ -45,6 +45,10 @@ pub struct GamePlan {
     pub actions: Vec<String>,
     /// نقدر نشغّلها؟
     pub launchable: bool,
+    /// التركيبة الفعلية المستخدمة (من ملف التعريف)
+    pub profile_ar: String,
+    /// كم محاولة تلقائية جرت على هذه اللعبة
+    pub profile_attempts: u32,
 }
 
 /// حالة الطبقات المتاحة على هذا الجهاز (لحساب الخطة)
@@ -65,12 +69,18 @@ fn layer_availability() -> crate::auto::LayerAvailability {
 
 /// خطة اللعبة: الطبقات + الموانع + الخطوات
 pub fn plan_for(probe: &GameProbe) -> GamePlan {
+    plan_for_appid(probe, 0)
+}
+
+/// خطة اللعبة + التركيبة الفعلية (ملف التعريف) — نعطيها رقم اللعبة
+pub fn plan_for_appid(probe: &GameProbe, appid: u32) -> GamePlan {
     let facts = crate::auto::GameFacts {
         probe: probe.clone(),
         needs_d3dx9: probe.needs_d3dx9,
         needs_d3dcompiler: probe.needs_d3dcompiler,
     };
     let plan = crate::auto::plan_with_facts(&facts, &layer_availability(), &graphics::mode());
+    let profile = profile_for(appid);
     GamePlan {
         layers: plan.layers.iter().map(|l| l.as_str().to_string()).collect(),
         layer_labels: plan
@@ -86,6 +96,8 @@ pub fn plan_for(probe: &GameProbe) -> GamePlan {
         notes: plan.notes.clone(),
         actions: plan.actions.iter().map(|a| a.kind().to_string()).collect(),
         launchable: plan.is_launchable(),
+        profile_ar: profile.describe_ar(),
+        profile_attempts: profile.attempts,
     }
 }
 
@@ -467,7 +479,25 @@ pub async fn steam_game_windowed(
     }
     let dir = install_dir(appid)
         .ok_or_else(|| "ما لقيت مجلد اللعبة — تأكد إنها منزّلة بالكامل".to_string())?;
-    let file = find_file_ci(&dir, "settings.txt").ok_or_else(|| {
+    let file = patch_settings_windowed(&dir, enabled)?;
+
+    log(
+        &app,
+        "info",
+        log_keys::STEAM_GAME_WINDOWED,
+        json!({ "appid": appid, "enabled": enabled, "file": file.display().to_string() }),
+    );
+
+    Ok(WindowedResult {
+        applied: true,
+        file: Some(file.display().to_string()),
+    })
+}
+
+/// يفعّل/يعطّل وضع النافذة في `settings.txt` داخل مجلد اللعبة (مع نسخة احتياطية).
+/// مستخدم من الأمر ومن **ملف التعريف** (لعبة تُشغّل دائماً في نافذة).
+fn patch_settings_windowed(dir: &Path, enabled: bool) -> Result<PathBuf, String> {
+    let file = find_file_ci(dir, "settings.txt").ok_or_else(|| {
         "هذي اللعبة ما فيها ملف settings.txt — فعّل وضع النافذة من إعدادات اللعبة نفسها".to_string()
     })?;
 
@@ -508,18 +538,7 @@ pub async fn steam_game_windowed(
         patched.into_bytes()
     };
     std::fs::write(&file, out).map_err(|e| format!("تعذّر حفظ إعدادات اللعبة: {e}"))?;
-
-    log(
-        &app,
-        "info",
-        log_keys::STEAM_GAME_WINDOWED,
-        json!({ "appid": appid, "enabled": enabled, "file": file.display().to_string() }),
-    );
-
-    Ok(WindowedResult {
-        applied: true,
-        file: Some(file.display().to_string()),
-    })
+    Ok(file)
 }
 
 /// مجلد لعبة مثبّتة (من المانيفست + تأكيد وجوده)
@@ -765,7 +784,7 @@ fn scan() -> Vec<SteamGame> {
             }
 
             let probe = probe_game_dir(&dir);
-            let plan = plan_for(&probe);
+            let plan = plan_for_appid(&probe, appid);
             games.insert(
                 appid,
                 SteamGame {
@@ -799,6 +818,271 @@ pub async fn steam_games_list() -> Result<Vec<SteamGame>, String> {
         .map_err(|e| format!("تعذّر قراءة مكتبة ستيم: {e}"))
 }
 
+/// ملف تعريف اللعبة (التركيبة التي نجحت معها) — من `combo`، وإلا الافتراضي
+pub fn profile_for(appid: u32) -> crate::combo::GameProfile {
+    crate::combo::load(appid).unwrap_or_else(|| crate::combo::GameProfile::default_for(appid))
+}
+
+/// يترجم ملف التعريف إلى قيم الريجستري (native/builtin لكل DLL)
+fn profile_overrides(profile: &crate::combo::GameProfile) -> graphics::LayerOverrides {
+    use crate::combo::{Compiler, D3d9Layer, D3dx9Layer};
+    let dxvk_on = profile.d3d9 == D3d9Layer::Dxvk && graphics::is_installed();
+    graphics::LayerOverrides {
+        d3d9: match profile.d3d9 {
+            D3d9Layer::Dxvk => "native",
+            D3d9Layer::WineD3D => "builtin",
+        },
+        d3d10core: if dxvk_on { "native" } else { "builtin" },
+        d3d11: if dxvk_on { "native" } else { "builtin" },
+        d3dx9_43: match profile.d3dx9 {
+            D3dx9Layer::Native => "native",
+            D3dx9Layer::Builtin => "builtin",
+        },
+        d3dcompiler_43: match profile.compiler {
+            Compiler::Native => "native",
+            Compiler::Builtin => "builtin",
+        },
+    }
+}
+
+/// يطبّق كل=settings ملف التعريف على القارورة:
+/// التجاوزات + محرك الرسم (vulkan/gl) + تعطيل الـoverlay عند الحاجة.
+async fn apply_profile(
+    wine: &Path,
+    prefix: &Path,
+    profile: &crate::combo::GameProfile,
+) -> Result<(), String> {
+    let ov = profile_overrides(profile);
+    graphics::apply_registry_overrides(wine, prefix, &ov).await?;
+
+    // محرك الرسم لـWineD3D: vulkan (عبر MoltenVK) أو gl (الأقدم)
+    match profile.renderer {
+        crate::combo::Renderer::Vulkan => {
+            let _ = graphics::ensure_vulkan_renderer(wine, prefix).await;
+        }
+        crate::combo::Renderer::Gl => {
+            let mut cmd = tokio::process::Command::new(wine);
+            cmd.env("WINEPREFIX", prefix)
+                .arg("reg")
+                .arg("add")
+                .arg("HKCU\\Software\\Wine\\Direct3D")
+                .arg("/v")
+                .arg("renderer")
+                .arg("/t")
+                .arg("REG_SZ")
+                .arg("/d")
+                .arg("gl")
+                .arg("/f")
+                .stdin(std::process::Stdio::null());
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
+        }
+    }
+
+    // Steam overlay: هوك على IDirect3DDevice9 — سبب معروف لانهيارات DX9
+    if !profile.overlay {
+        let mut cmd = tokio::process::Command::new(wine);
+        cmd.env("WINEPREFIX", prefix)
+            .arg("reg")
+            .arg("add")
+            .arg(format!(
+                "HKCU\\Software\\Valve\\Steam\\Apps\\{}",
+                profile.appid
+            ))
+            .arg("/v")
+            .arg("OverlayEnable")
+            .arg("/t")
+            .arg("REG_DWORD")
+            .arg("/d")
+            .arg("0")
+            .arg("/f")
+            .stdin(std::process::Stdio::null());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
+    }
+    Ok(())
+}
+
+/// يستخرج تقرير انهيار Wine (نص winedbg) من مخرجات اللعبة
+fn extract_crash_report(text: &str) -> Option<String> {
+    let idx = text.rfind("Unhandled exception:")?;
+    let rest = &text[idx..];
+    let end = rest
+        .find("\nSystem information:")
+        .map(|i| (i + 600).min(rest.len()))
+        .unwrap_or_else(|| rest.len().min(24_000));
+    Some(rest[..end].to_string())
+}
+
+/// يراقب مخرجات اللعبة ويكتشف تقرير الانهيار ليعالجها تلقائياً.
+///
+/// **آلية الحلقة المغلقة:** نقرأ تقرير winedbg ⇒ نصنّفه ⇒ نختار التركيبة
+/// التالية ⇒ نعيد التشغيل. هذا اللي يخلّي «الزر يشتغل» بدل ما نخسر وقت
+/// المستخدم في كل دورة يدوية.
+fn spawn_crash_watcher(
+    app: AppHandle,
+    appid: u32,
+    profile: crate::combo::GameProfile,
+    attempt: u8,
+    game_exe: Option<String>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let log = launch_log_path();
+        // نبدأ من **نهاية** السجل الحالي: أي انهان قديم ما يخلّينا نعيد المحاولة
+        let mut seen = std::fs::metadata(&log)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        for _ in 0..120 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let Ok(text) = std::fs::read_to_string(&log) else {
+                continue;
+            };
+            if text.len() <= seen {
+                continue;
+            }
+            let fresh = &text[seen.min(text.len())..];
+            seen = text.len();
+            let Some(report) = extract_crash_report(fresh) else {
+                continue;
+            };
+            // السجل مشترك بين الألعاب ⇒ نتأكد إن الانهيار لِهذه اللعبة
+            // (وإلا نطبّق حكم لعبة أخرى على هذه)
+            if let Some(exe) = &game_exe {
+                let name = exe
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(exe)
+                    .to_ascii_lowercase();
+                let parsed = crate::triage::parse_report(&report);
+                let mentions = parsed
+                    .as_ref()
+                    .map(|r| {
+                        r.modules.iter().any(|m| {
+                            m.name.to_ascii_lowercase() == name
+                                || m.name.to_ascii_lowercase() == format!("{name}.exe")
+                        })
+                    })
+                    .unwrap_or(false);
+                if !mentions {
+                    crate::debuglog::raw(
+                        "debug",
+                        "steam",
+                        &format!("crash report ignored appid={appid} (not {name})"),
+                    );
+                    continue;
+                }
+            }
+            let Some(verdict) = crate::triage::triage(&report) else {
+                continue;
+            };
+            crate::debuglog::raw(
+                "warn",
+                "steam",
+                &format!(
+                    "crash verdict appid={appid} class={} action={} module={:?}",
+                    crate::triage::class_as_str(verdict.class),
+                    verdict.action,
+                    verdict.crashed_module
+                ),
+            );
+            write_crash_state(
+                appid,
+                &CrashState {
+                    at_ms: crate::now_ms(),
+                    appid,
+                    class: crate::triage::class_as_str(verdict.class).to_string(),
+                    headline_ar: verdict.headline_ar.clone(),
+                    next_ar: verdict.next_ar.clone(),
+                    action: verdict.action.clone(),
+                    attempts: attempt as u32 + 1,
+                },
+            );
+            let _ = app.emit("jisr-crash", appid);
+
+            // إعادة محاولة تلقائية بتركيبة مختلفة (حد ٣ محاولات)
+            if attempt < 2 {
+                if let Some(next) = profile.next_candidate(&verdict.action) {
+                    if auto_retry_enabled() {
+                        let _ = crate::combo::save(&next);
+                        crate::debuglog::raw(
+                            "info",
+                            "steam",
+                            &format!(
+                                "auto retry appid={appid} attempt={} profile={}",
+                                attempt + 1,
+                                next.describe_ar()
+                            ),
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        // استدعاء متكرر غير مباشر ⇒ نحتاج Box (الحجم لا ينتهي)
+                        let _ = Box::pin(launch_game(app.clone(), appid, next, attempt + 1)).await;
+                    }
+                }
+            }
+            return;
+        }
+    });
+}
+
+/// هل نعيد المحاولة تلقائياً بعد الانهيار؟ (إعداد — افتراضياً نعم)
+pub fn auto_retry_enabled() -> bool {
+    match std::fs::read_to_string(crate::data_dir().join("auto-retry.txt")) {
+        Ok(t) => !t.trim().eq_ignore_ascii_case("off") && !t.trim().eq_ignore_ascii_case("0"),
+        Err(_) => true,
+    }
+}
+
+/// تفعيل/تعطيل إعادة المحاولة التلقائية
+#[tauri::command]
+pub fn steam_auto_retry(enabled: bool) -> Result<bool, String> {
+    let path = crate::data_dir().join("auto-retry.txt");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("تعذّر تجهيز مجلد الإعدادات: {e}"))?;
+    }
+    std::fs::write(&path, if enabled { "on\n" } else { "off\n" })
+        .map_err(|e| format!("تعذّر حفظ الإعداد: {e}"))?;
+    Ok(enabled)
+}
+
+/// حالة إعادة المحاولة التلقائية
+#[tauri::command]
+pub fn steam_auto_retry_status() -> bool {
+    auto_retry_enabled()
+}
+
+/// ملف التعريف الحالي للعبة (للواجهة)
+#[tauri::command]
+pub fn steam_game_profile(appid: u32) -> serde_json::Value {
+    profile_for(appid).to_json()
+}
+
+/// تصفير ملف تعريف اللعبة (رجوع للافتراضي)
+#[tauri::command]
+pub fn steam_game_profile_reset(appid: u32) -> Result<(), String> {
+    crate::combo::clear(appid).map_err(|e| format!("تعذّر تصفير الملف: {e}"))
+}
+
+/// آخر انهيار مُصنَّف للعبة
+#[tauri::command]
+pub fn steam_crash_state(appid: u32) -> Option<CrashState> {
+    read_crash_state(appid)
+}
+
+/// كل حالات الانهيار المحفوظة (لعرضها على كل الألعاب مرة واحدة)
+#[tauri::command]
+pub fn steam_crash_states() -> Vec<CrashState> {
+    let dir = crate::data_dir().join("crashes");
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            if let Ok(text) = std::fs::read_to_string(e.path()) {
+                if let Ok(state) = serde_json::from_str::<CrashState>(&text) {
+                    out.push(state);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// تشغيل لعبة عبر Steam (Steam لازم يكون شغّالاً — أمر قصير ثم يخرج)
 #[tauri::command]
 pub async fn steam_game_launch(
@@ -819,6 +1103,17 @@ pub async fn steam_game_launch(
     if !bottle::bottle_ready(bottle::MAIN_ID) {
         return Err("جهّز القارورة الرئيسية أول".into());
     }
+    let profile = profile_for(appid);
+    launch_game(app, appid, profile, 0).await
+}
+
+/// ينفّذ التشغيل بملف تعريف محدّد (ويستدعي نفسه عند إعادة المحاولة)
+async fn launch_game(
+    app: AppHandle,
+    appid: u32,
+    profile: crate::combo::GameProfile,
+    attempt: u8,
+) -> Result<(), String> {
     let Some((mac_exe, dos_exe)) = steam::steam_exe() else {
         return Err("ستيم مو مثبّت بعد".into());
     };
@@ -844,20 +1139,23 @@ pub async fn steam_game_launch(
             ),
         );
     }
-    // الطبقة: نشر + تجاوزات ريجستري — مرة واحدة لكل قارورة (بعلامة جاهزية).
-    // بدون العلامة كنا نفتح 4 عمليات Wine قبل كل تشغيل (بطء ملموس).
-    let layer = graphics::ensure_layer(&wine, &prefix).await;
-    let deployed = layer.is_ok();
-    let reg_ok = layer.is_ok();
-    if let Err(e) = &layer {
-        crate::debuglog::raw("warn", "steam", &format!("layer ensure failed: {e}"));
+    // ملف التعريف: لكل لعبة تركيبتها (DXVK/D3DX9/المترجم/محرك الرسم/الـoverlay).
+    // **أولاً الملفات** (DXVK + D3DX9 الأصلي) — ثم **التجاوزات** حسب التعريف.
+    let deployed = graphics::deploy_to_prefix(&prefix).is_ok();
+    let d3dx_ok = crate::d3dx::deploy_files(&prefix).is_ok();
+    let profile_result = apply_profile(&wine, &prefix, &profile).await;
+    let reg_ok = profile_result.is_ok();
+    if let Err(e) = &profile_result {
+        crate::debuglog::raw("warn", "steam", &format!("profile apply failed: {e}"));
     }
-    // D3DX9 الأصلي (لو منزّل): يصلح انهيار d3dx9_43/d3dcompiler_43 في ألعاب DX9
-    let d3dx_ok = crate::d3dx::ensure_layer(&wine, &prefix)
-        .await
-        .unwrap_or(false);
-    // WineD3D عبر Vulkan (وليس OpenGL القديم): يمنع انهيار wow64cpu في 32-بت
-    let vulkan_renderer = graphics::ensure_vulkan_renderer(&wine, &prefix).await;
+    // وضع النافذة حسب التعريف (ألعاب DX9 القديمة تاخذ الشاشة كاملة)
+    if profile.windowed {
+        if let Some(dir) = install_dir(appid) {
+            if let Err(e) = patch_settings_windowed(&dir, true) {
+                crate::debuglog::raw("debug", "steam", &format!("windowed skipped: {e}"));
+            }
+        }
+    }
     // حزام أمان للعرض: يمنع الألعاب القديمة من تعتيم الشاشة أو احتكارها بالكامل
     let safety = bottle::ensure_mac_safety(&wine, &prefix).await;
 
@@ -870,7 +1168,8 @@ pub async fn steam_game_launch(
         "info",
         "steam",
         &format!(
-            "layer state: dxvk_deployed={deployed} registry_overrides={reg_ok} d3dx9={d3dx_ok} vulkan_renderer={vulkan_renderer} mac_safety={safety} d3d9_64={d3d9_64} d3d9_32={d3d9_32} vulkan_32={vulkan_32}"
+            "layer state: dxvk_deployed={deployed} registry_overrides={reg_ok} d3dx9={d3dx_ok} profile={} mac_safety={safety} d3d9_64={d3d9_64} d3d9_32={d3d9_32} vulkan_32={vulkan_32}",
+            profile.describe_ar()
         ),
     );
     if let Some((dir, p)) = &probe {
@@ -973,6 +1272,15 @@ pub async fn steam_game_launch(
         log_keys::STEAM_GAME_LAUNCHING,
         json!({ "appid": appid }),
     );
+    // حالة انهيار سابقة؟ نمسحها — أي انهيار جديد يكتبها المراقب
+    clear_crash_state(appid);
+
+    // مراقب الانهيار: يقرأ تقرير winedbg ⇒ يصنّفه ⇒ يجرّب التركيبة التالية
+    let game_exe = probe
+        .as_ref()
+        .and_then(|(_, p)| p.exe.as_ref())
+        .map(|e| e.rsplit(['/', '\\']).next().unwrap_or(e).to_string());
+    spawn_crash_watcher(app.clone(), appid, profile.clone(), attempt, game_exe);
 
     // ننتظر الأمر القصير بالخلفية — خطأ الخروج فقط يُسجَّل (بلا إزعاج)
     let app2 = app.clone();
@@ -998,6 +1306,58 @@ pub async fn steam_game_launch(
     });
 
     Ok(())
+}
+
+/// حالة آخر انهيار مُصنَّف (نعرضها في بطاقة اللعبة)
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct CrashState {
+    /// متى صار الانهيار
+    pub at_ms: u64,
+    /// رقم اللعبة
+    pub appid: u32,
+    /// تصنيف السبب (d3dx_builtin, d3dx_native, d3d9_builtin, vulkan, wow64, missing_dll, overlay, game)
+    pub class: String,
+    /// جملة عربية مختصرة
+    pub headline_ar: String,
+    /// الخطوة التالية بالعربي
+    pub next_ar: String,
+    /// رمز الإجراء (نستعمله لاختيار التركيبة التالية)
+    pub action: String,
+    /// كم محاولة تلقائية جرت
+    pub attempts: u32,
+}
+
+/// ملف حالة الانهيار (لكل لعبة) — نخزّنه كـJSON بسيط
+fn crash_state_path(appid: u32) -> PathBuf {
+    crate::data_dir()
+        .join("crashes")
+        .join(format!("{appid}.json"))
+}
+
+/// اكتب حالة الانهيار (لعرضها في الواجهة)
+pub fn write_crash_state(appid: u32, state: &CrashState) {
+    let path = crash_state_path(appid);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let Ok(json) = serde_json::to_string(state) else {
+        return;
+    };
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, json).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+/// اقرأ حالة الانهيار (None = ما صار انهيار مسجّل)
+pub fn read_crash_state(appid: u32) -> Option<CrashState> {
+    let text = std::fs::read_to_string(crash_state_path(appid)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// امسح حالة الانهيار (بعد ما نجح التشغيل)
+pub fn clear_crash_state(appid: u32) {
+    let _ = std::fs::remove_file(crash_state_path(appid));
 }
 
 /// ملف مخرجات تشغيل اللعبة — كلام ستيم/اللعبة الذي يمرّ عبر نفس المقابض.
@@ -1042,6 +1402,67 @@ fn launch_tail() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ملف التعريف يترجم لقيم الريجستري بشكل صحيح
+    #[test]
+    fn profile_maps_to_registry_overrides() {
+        use crate::combo::{Compiler, D3d9Layer, D3dx9Layer, GameProfile, Renderer};
+        let mut p = GameProfile::default_for(48010);
+        let ov = profile_overrides(&p);
+        assert_eq!(ov.d3d9, "native");
+        assert_eq!(ov.d3dx9_43, "native");
+        assert_eq!(ov.d3dcompiler_43, "native");
+
+        p.d3d9 = D3d9Layer::WineD3D;
+        p.d3dx9 = D3dx9Layer::Builtin;
+        p.compiler = Compiler::Builtin;
+        let ov2 = profile_overrides(&p);
+        assert_eq!(ov2.d3d9, "builtin");
+        assert_eq!(ov2.d3dx9_43, "builtin");
+        assert_eq!(ov2.d3dcompiler_43, "builtin");
+        // d3d10core/d3d11 يتبعان DXVK نفسه
+        assert_eq!(ov2.d3d11, "builtin");
+        let _ = p.renderer == Renderer::Vulkan;
+    }
+
+    /// نستخرج تقرير الانهيار من مخرجات مختلطة (فيها كلام ستيم قبل التقرير)
+    #[test]
+    fn extracts_crash_report_from_noisy_output() {
+        let text = "0188:fixme:foo something\n\
+                    Unhandled exception: page fault on read access to 0x00000000 in wow64 32-bit code (0x1).\n\
+                    Backtrace:\n\
+                    =>0 0x1 in d3dcompiler_43 (+0x1) (0x2)\n\
+                    System information:\n\
+                    Wine build: wine-11.18\n";
+        let report = extract_crash_report(text).expect("لازم نلقى التقرير");
+        assert!(report.starts_with("Unhandled exception:"));
+        assert!(report.contains("d3dcompiler_43"));
+
+        // ما فيه انهيار ⇒ None (ومو panic)
+        assert!(extract_crash_report("0188:fixme:foo something\n").is_none());
+    }
+
+    /// الحلقة المغلقة: انهيار D3DX9 الأصلي ⇒ نجرّب نسخة Wine المدمجة
+    #[test]
+    fn crash_verdict_drives_next_candidate() {
+        let profile = crate::combo::GameProfile::default_for(48010);
+        let report = "Unhandled exception: page fault on read access to 0x0 in wow64 32-bit code (0x1).\n\
+                      Backtrace:\n\
+                      =>0 0x1 in d3dcompiler_43 (+0x1) (0x2)\n\
+                      Modules:\n\
+                      PE  1000-2000  --none--  d3dcompiler_43\n\
+                      PE  3000-4000  --none--  d3dx9_43\n\
+                      System information:\n\
+                      Wine build: wine-11.18\n";
+        let verdict = crate::triage::triage(report).expect("لازم نصنّف");
+        assert_eq!(verdict.action, "try-d3dx9-builtin");
+        let next = profile
+            .next_candidate(&verdict.action)
+            .expect("لازم تكون هناك تركيبة تالية");
+        assert_eq!(next.d3dx9, crate::combo::D3dx9Layer::Builtin);
+        assert_eq!(next.compiler, crate::combo::Compiler::Builtin);
+        assert_eq!(next.attempts, profile.attempts + 1);
+    }
 
     #[test]
     fn parses_vdf_pairs_and_escaped_paths() {

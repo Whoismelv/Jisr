@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 mod auto;
 mod bottle;
+mod combo;
 mod d3dx;
 mod debuglog;
 mod download;
@@ -21,6 +22,7 @@ mod graphics;
 mod pe;
 mod steam;
 mod steam_library;
+mod triage;
 
 #[cfg(test)]
 mod sim_env;
@@ -1035,6 +1037,12 @@ pub fn run() {
             steam_library::steam_games_list,
             steam_library::steam_game_launch,
             steam_library::steam_game_windowed,
+            steam_library::steam_game_profile,
+            steam_library::steam_game_profile_reset,
+            steam_library::steam_crash_state,
+            steam_library::steam_crash_states,
+            steam_library::steam_auto_retry,
+            steam_library::steam_auto_retry_status,
             graphics::graphics_mode,
             graphics::graphics_set_mode,
             d3dx::d3dx_status

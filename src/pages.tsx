@@ -22,6 +22,10 @@ import {
   debugLogPath,
   exportDebugReport,
   getGraphicsMode,
+  getAutoRetry,
+  getCrashStates,
+  setAutoRetry,
+  type CrashState,
   setGraphicsMode,
   d3dxStatus,
   cefShimDisable,
@@ -545,6 +549,20 @@ const SteamLibrary = memo(function SteamLibrary({
   onWindowed: (g: SteamGame) => void;
 }) {
   const { t } = useI18n();
+  // حالات الانهيار (يصنّفها التطبيق من تقرير Wine) — نعرضها تحت كل لعبة
+  const [crashes, setCrashes] = useState<Record<number, CrashState>>({});
+  useEffect(() => {
+    getCrashStates()
+      .then((list) =>
+        setCrashes(
+          Object.fromEntries(list.map((c) => [c.appid, c])) as Record<
+            number,
+            CrashState
+          >,
+        ),
+      )
+      .catch(() => {});
+  }, [games]);
   // رموز الموانع من الخلفية → نصوص مفهومة (بدون تخمين في الواجهة)
   const issueText = (code: string) => {
     switch (code) {
@@ -611,10 +629,20 @@ const SteamLibrary = memo(function SteamLibrary({
                       {issues.map((code) => issueText(code)).join(" · ")}
                     </span>
                   )}
+                  {/* انهيار مُصنَّف: السبب + الخطوة (يتكفّل به التطبيق تلقائياً) */}
+                  {crashes[g.appid] && (
+                    <span className="game-issue blocked">
+                      {crashes[g.appid].headline_ar} — {crashes[g.appid].next_ar}
+                    </span>
+                  )}
                   {/* خطة التشغيل التلقائي: أي طبقة تناسب اللعبة وأي موانع */}
                   {g.plan && g.plan.layer_labels.length > 0 && (
                     <span className="muted small">
                       {t("autoPlan")}: {g.plan.layer_labels.join(" · ")}
+                      {g.plan.profile_ar ? ` — ${g.plan.profile_ar}` : ""}
+                      {g.plan.profile_attempts > 0
+                        ? ` · ${t("autoAttempts", { n: g.plan.profile_attempts })}`
+                        : ""}
                     </span>
                   )}
                   {g.plan && g.plan.blockers.length > 0 && (
@@ -677,6 +705,13 @@ const SteamCard = memo(function SteamCard({
   const p = dl.items[STEAM_SETUP_ID];
   const du = isActive(p);
   const running = !!s?.running;
+  // إعادة المحاولة التلقائية بعد الانهيار
+  const [autoRetry, setAutoRetryState] = useState(true);
+  useEffect(() => {
+    getAutoRetry()
+      .then(setAutoRetryState)
+      .catch(() => {});
+  }, []);
   // الألوان تشرح الحالة: أخضر=جاهز/شغّال · أزرق=جاري عمل · كهرماني=يحتاج ضغطة منك · رمادي=ما بدأنا
   const dotCls = !s
     ? "off"
@@ -758,6 +793,24 @@ const SteamCard = memo(function SteamCard({
           <p className="muted small">
             {t("steamUiScale", { n: s?.desktop_scale ?? 1 })}
           </p>
+          {/* إعادة المحاولة التلقائية: عند انهيار اللعبة نغيّر التركيبة بأنفسنا */}
+          <Row label={t("autoRetryLabel")} hint={t("autoRetryHint")}>
+            <Segmented
+              id="autoretry"
+              value={autoRetry ? "on" : "off"}
+              onChange={(v) => {
+                const on = v === "on";
+                setAutoRetryState(on);
+                setAutoRetry(on)
+                  .then(() => notify(t("saved")))
+                  .catch((err) => notify(String(err)));
+              }}
+              options={[
+                { value: "on", label: t("shimOn") },
+                { value: "off", label: t("shimOff") },
+              ]}
+            />
+          </Row>
           {s?.last_launch &&
             (() => {
               const l = s.last_launch;

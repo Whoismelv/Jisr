@@ -546,7 +546,13 @@ async fn run_wineboot(id: &str) -> Result<(), String> {
     if let Err(e) = crate::graphics::deploy_to_prefix(&prefix) {
         crate::debuglog::write("debug", "bottle", &format!("dxvk deploy skipped: {e}"));
     } else if let Some(wine) = wine_bin() {
-        match crate::graphics::apply_registry_overrides(&wine, &prefix).await {
+        match crate::graphics::apply_registry_overrides(
+            &wine,
+            &prefix,
+            &crate::graphics::LayerOverrides::dxvk_default(),
+        )
+        .await
+        {
             Ok(()) => {
                 crate::debuglog::write("debug", "bottle", "dxvk registry overrides (native): ok")
             }

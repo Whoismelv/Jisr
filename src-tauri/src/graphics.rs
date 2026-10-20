@@ -155,13 +155,54 @@ pub async fn ensure_vulkan_renderer(wine: &Path, prefix: &Path) -> bool {
     ok
 }
 
-/// يكتب تجاوزات DXVK في **ريجستري القارورة** (تسري على كل العمليات الجديدة).
-/// native = تحميل ملفات DXVK الأصلية (وليس wined3d الداخلي).
+/// قيم التجاوزات لكل DLL — حسب **ملف تعريف اللعبة** (combo::GameProfile).
 ///
-/// **تحقّق إلزامي:** بعد الكتابة نقرأ القيمة من الريجستري — الكتابة اللي
+/// كل لعبة لها التركيبة التي نجحت معها: بعضها DXVK مو WineD3D، وبعضها D3DX9
+/// الأصلي مو المدمج… والقيم هنا تترجم ذلك إلى ريجستري القارورة.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayerOverrides {
+    pub d3d9: &'static str,
+    pub d3d10core: &'static str,
+    pub d3d11: &'static str,
+    pub d3dx9_43: &'static str,
+    pub d3dcompiler_43: &'static str,
+}
+
+impl LayerOverrides {
+    /// الافتراضي: DXVK لكل DirectX + D3DX9/المترجم الأصليان من مايكروسوفت
+    pub fn dxvk_default() -> Self {
+        Self {
+            d3d9: "native",
+            d3d10core: "native",
+            d3d11: "native",
+            d3dx9_43: "native",
+            d3dcompiler_43: "native",
+        }
+    }
+
+    /// كل القيم (dll, value) بالترتيب الثابت
+    pub fn entries(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("d3d9", self.d3d9),
+            ("d3d10core", self.d3d10core),
+            ("d3d11", self.d3d11),
+            ("d3dx9_43", self.d3dx9_43),
+            ("d3dcompiler_43", self.d3dcompiler_43),
+        ]
+    }
+}
+
+/// يكتب تجاوزات الطبقات في **ريجستري القارورة** (تسري على كل العمليات الجديدة).
+/// native = تحميل الملفات الأصلية (DXVK / مايكروسوفت)، builtin = نسخة Wine.
+///
+/// **تحقّق إلزامي:** بعد الكتابة نقرأ القيم من الريجستري — الكتابة اللي
 /// تفشل بصمت كانت سبب «DXVK ما انحمّل» (اللعبة سقطت على WineD3D وانهارت).
-pub async fn apply_registry_overrides(wine: &Path, prefix: &Path) -> Result<(), String> {
-    for dll in ["d3d9", "d3d10core", "d3d11"] {
+pub async fn apply_registry_overrides(
+    wine: &Path,
+    prefix: &Path,
+    ov: &LayerOverrides,
+) -> Result<(), String> {
+    for (dll, value) in ov.entries() {
         let mut cmd = tokio::process::Command::new(wine);
         cmd.env("WINEPREFIX", prefix)
             .env("WINEMSYNC", "1")
@@ -173,7 +214,7 @@ pub async fn apply_registry_overrides(wine: &Path, prefix: &Path) -> Result<(), 
             .arg("/t")
             .arg("REG_SZ")
             .arg("/d")
-            .arg("native")
+            .arg(value)
             .arg("/f")
             .stdin(std::process::Stdio::null());
         let out = match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await
@@ -231,8 +272,8 @@ pub async fn apply_registry_overrides(wine: &Path, prefix: &Path) -> Result<(), 
         _ => return Err("تعذّر التحقق من تجاوزات DXVK".into()),
     };
     let text = String::from_utf8_lossy(&out.stdout);
-    for dll in ["d3d9", "d3d10core", "d3d11"] {
-        if !registry_value_is(&text, dll, "native") {
+    for (dll, value) in ov.entries() {
+        if !registry_value_is(&text, dll, value) {
             return Err(format!("تجاوز {dll} ما انكتب في الريجستري"));
         }
     }
@@ -283,29 +324,44 @@ pub fn deploy_to_prefix(prefix: &Path) -> Result<(), String> {
     deploy_layer_to_prefix(&install_dir(), prefix)
 }
 
-/// علامة جاهزية الطبقة **داخل قارورة محددة**.
+/// علامة جاهزية الطبقة **داخل قارورة محددة** + القيم المطبّقة وقت الكتابة.
 ///
 /// بدونها كنا نفتح 4 عمليات Wine (3 × reg add + فحص أمان) عند **كل** ضغطة
 /// تشغيل — بطء ملموس قبل انطلاق اللعبة. العلامة تُكتب فقط بعد نجاح النشر
-/// والريجستري معاً، وتُمسح عند تغيير وضع الرسومات.
+/// والريجستري معاً. ومحتواها يطابق القيم المطلوبة ⇒ نعيد الكتابة
+/// (لأن ملف تعريف اللعبة ممكن يكون تغيّر).
 fn prefix_marker(prefix: &Path) -> PathBuf {
     prefix.join(format!(".jisr-layer-{ASSET_ID}.ok"))
 }
 
-/// يضمن الطبقة داخل القارورة (نشر + تجاوزات) مرة واحدة فقط.
+/// نص العلامة = القيم المطبّقة (بترتيب ثابت) — نقارنها مع المطلوبة
+fn marker_signature(ov: &LayerOverrides) -> String {
+    ov.entries()
+        .iter()
+        .map(|(d, v)| format!("{d}={v}"))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+/// يضمن الطبقة داخل القارورة (نشر + تجاوزات) مرة واحدة فقط لكل تركيبة.
 /// `Ok(true)` = الطبقة جاهزة، `Ok(false)` = الوضع WineD3D (بلا طبقة)،
 /// `Err` = فيه فشل حقيقي (يُعرض للمستخدم).
-pub async fn ensure_layer(wine: &Path, prefix: &Path) -> Result<bool, String> {
+pub async fn ensure_layer(wine: &Path, prefix: &Path, ov: &LayerOverrides) -> Result<bool, String> {
     if !dxvk_enabled() {
         return Ok(false);
     }
-    if prefix_marker(prefix).is_file() && is_installed() {
-        return Ok(true);
+    let marker = prefix_marker(prefix);
+    let want = marker_signature(ov);
+    if marker.is_file() && is_installed() {
+        let current = std::fs::read_to_string(&marker).unwrap_or_default();
+        if current.trim() == want {
+            return Ok(true);
+        }
     }
     let deployed = deploy_to_prefix(prefix).is_ok();
-    let reg = apply_registry_overrides(wine, prefix).await;
+    let reg = apply_registry_overrides(wine, prefix, ov).await;
     if deployed && reg.is_ok() {
-        let _ = std::fs::write(prefix_marker(prefix), b"ok\n");
+        let _ = std::fs::write(&marker, format!("{want}\n"));
         return Ok(true);
     }
     Err(if !deployed {

@@ -263,8 +263,11 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// ينشر DLL داخل القارورة ثم يكتب التجاوزات (مرة واحدة — بعلامة جاهزية)
-pub async fn deploy_to_prefix(wine: &Path, prefix: &Path) -> Result<(), String> {
+/// ينشر ملفات D3DX9 داخل القارورة (system32 / syswow64) — **بلا ريجستري**.
+///
+/// لماذا منفصلة عن التجاوزات؟ لأن **ملف تعريف اللعبة** هو اللي يقرر
+/// native/builtin — فلو كتبنا هنا native دائماً لكانت الطبقة تتخطّى قرار الملف.
+pub fn deploy_files(prefix: &Path) -> Result<(), String> {
     if !is_installed() {
         return Err("ملفات D3DX9 مو مثبّتة بعد".into());
     }
@@ -283,6 +286,12 @@ pub async fn deploy_to_prefix(wine: &Path, prefix: &Path) -> Result<(), String> 
             std::fs::copy(&src, &dst).map_err(|e| format!("تعذّر نشر {file}: {e}"))?;
         }
     }
+    Ok(())
+}
+
+/// ينشر DLL داخل القارورة ثم يكتب التجاوزات (مرة واحدة — بعلامة جاهزية)
+pub async fn deploy_to_prefix(wine: &Path, prefix: &Path) -> Result<(), String> {
+    deploy_files(prefix)?;
     apply_registry_overrides(wine, prefix).await?;
     let _ = std::fs::write(marker_path(prefix), b"ok\n");
     Ok(())

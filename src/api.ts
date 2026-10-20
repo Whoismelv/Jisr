@@ -270,6 +270,9 @@ export type GamePlan = {
   notes: string[];
   actions: string[];
   launchable: boolean;
+  /** التركيبة الفعلية (ملف التعريف) */
+  profile_ar: string;
+  profile_attempts: number;
 };
 
 /** لعبة ستيم مثبّتة داخل القارورة (نقرأها محلياً من appmanifest) */
@@ -311,6 +314,38 @@ export const setGraphicsMode = (mode: GraphicsMode) =>
 export type CefMode = "software" | "single" | "gpu";
 export const getCefMode = () => call<CefMode>("cef_mode");
 export const setCefMode = (mode: CefMode) => call<CefMode>("cef_set_mode", { mode });
+
+/** ملف تعريف اللعبة: التركيبة التي نجحت معها (طبقات + محرك رسم + overlay) */
+export type GameProfile = {
+  appid: number;
+  d3d9: "Dxvk" | "WineD3D";
+  d3dx9: "Native" | "Builtin";
+  compiler: "Native" | "Builtin";
+  renderer: "Vulkan" | "Gl";
+  windowed: boolean;
+  overlay: boolean;
+  attempts: number;
+  updated_ms: number;
+};
+export const getGameProfile = (appid: number) =>
+  call<GameProfile>("steam_game_profile", { appid });
+export const resetGameProfile = (appid: number) =>
+  call<void>("steam_game_profile_reset", { appid });
+
+/** انهيار مُصنَّف (يحدده التطبيق تلقائياً من تقرير Wine) */
+export type CrashState = {
+  at_ms: number;
+  appid: number;
+  class: string;
+  headline_ar: string;
+  next_ar: string;
+  action: string;
+  attempts: number;
+};
+export const getCrashStates = () => call<CrashState[]>("steam_crash_states");
+export const getAutoRetry = () => call<boolean>("steam_auto_retry_status");
+export const setAutoRetry = (enabled: boolean) =>
+  call<boolean>("steam_auto_retry", { enabled });
 
 /** المحرّك المستخدم حالياً (11.18 أو البديل 11.6.1 لواجهة ستيم) */
 export const getEngineChoice = () => call<string>("engine_choice");

@@ -131,8 +131,12 @@ const ar = {
   dxvkLayer: "طبقة DXVK",
   layersSection: "الطبقات (تسريع الألعاب)",
   autoPlan: "الطبقة المناسبة",
+  autoAttempts: "محاولات: {n}",
   autoNeedsDxvk: "تحتاج تثبيت طبقة DXVK قبل التشغيل",
   autoNeedsD3dx: "تحتاج تثبيت D3DX9 الأصلي (من صفحة الإعدادات)",
+  autoRetryLabel: "إصلاح تلقائي بعد الانهيار",
+  autoRetryHint:
+    "إذا اللعبة انهارت، نقرأ تقرير Wine ونصنّفه ونجرّب طبقة مختلفة تلقائياً (حد ٣ محاولات) بدل ما تتعب.",
   layerInstalled: "مثبّتة وجاهزة ✓",
   dxvkMissingHint:
     "مو مثبّتة — بدونها تشتغل الألعاب على WineD3D البطيء وقد تنهار. التنزيل 5 MB.",
@@ -431,8 +435,12 @@ const en: Record<TKey, string> = {
   dxvkLayer: "DXVK layer",
   layersSection: "Layers (game acceleration)",
   autoPlan: "Right layer",
+  autoAttempts: "attempts: {n}",
   autoNeedsDxvk: "Needs the DXVK layer installed before playing",
   autoNeedsD3dx: "Needs native D3DX9 (install it from Settings)",
+  autoRetryLabel: "Auto-repair after a crash",
+  autoRetryHint:
+    "If a game crashes, we read the Wine report, classify it and try a different layer automatically (up to 3 attempts).",
   layerInstalled: "Installed and ready ✓",
   dxvkMissingHint:
     "Not installed — without it games fall back to slow WineD3D and may crash. 5 MB download.",
