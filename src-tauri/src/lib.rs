@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
 mod bottle;
+mod d3dx;
 mod debuglog;
 mod download;
 mod engine;
@@ -1021,7 +1022,8 @@ pub fn run() {
             steam_library::steam_game_launch,
             steam_library::steam_game_windowed,
             graphics::graphics_mode,
-            graphics::graphics_set_mode
+            graphics::graphics_set_mode,
+            d3dx::d3dx_status
         ])
         .setup(|app| {
             // السجل الدائم أول شيء — حتى أخطاء الإقلاع تنتسجّل

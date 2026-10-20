@@ -770,11 +770,18 @@ pub async fn steam_game_launch(
             ),
         );
     }
-    // نشر طبقة DXVK داخل القارورة (لازم قبل التشغيل: بدونها Wine يتجاهل DXVK)
-    let deployed = graphics::deploy_to_prefix(&prefix).is_ok();
-    // تجاوزات native في الريجستري — تسري على كل العمليات الجديدة
-    // (حتى لو ستيم شغّال من قبل نشر الطبقة)
-    let reg_ok = graphics::apply_registry_overrides(&wine, &prefix).await;
+    // الطبقة: نشر + تجاوزات ريجستري — مرة واحدة لكل قارورة (بعلامة جاهزية).
+    // بدون العلامة كنا نفتح 4 عمليات Wine قبل كل تشغيل (بطء ملموس).
+    let layer = graphics::ensure_layer(&wine, &prefix).await;
+    let deployed = layer.is_ok();
+    let reg_ok = layer.is_ok();
+    if let Err(e) = &layer {
+        crate::debuglog::raw("warn", "steam", &format!("layer ensure failed: {e}"));
+    }
+    // D3DX9 الأصلي (لو منزّل): يصلح انهيار d3dx9_43/d3dcompiler_43 في ألعاب DX9
+    let d3dx_ok = crate::d3dx::ensure_layer(&wine, &prefix)
+        .await
+        .unwrap_or(false);
     // حزام أمان للعرض: يمنع الألعاب القديمة من تعتيم الشاشة أو احتكارها بالكامل
     let safety = bottle::ensure_mac_safety(&wine, &prefix).await;
 
@@ -787,7 +794,7 @@ pub async fn steam_game_launch(
         "info",
         "steam",
         &format!(
-            "layer state: dxvk_deployed={deployed} registry_overrides={reg_ok} mac_safety={safety} d3d9_64={d3d9_64} d3d9_32={d3d9_32} vulkan_32={vulkan_32}"
+            "layer state: dxvk_deployed={deployed} registry_overrides={reg_ok} d3dx9={d3dx_ok} mac_safety={safety} d3d9_64={d3d9_64} d3d9_32={d3d9_32} vulkan_32={vulkan_32}"
         ),
     );
     if let Some((dir, p)) = &probe {

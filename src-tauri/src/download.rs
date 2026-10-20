@@ -28,6 +28,8 @@ const ALLOWED_HOSTS: &[&str] = &[
     "github-releases.githubusercontent.com",
     "codeload.github.com",
     "cdn.akamai.steamstatic.com",
+    // حزمة DirectX الرسمية من مايكروسوفت (D3DX9) — بصمتها مثبّتة في الكتالوج
+    "download.microsoft.com",
 ];
 
 /// سقف الحجم — حماية من رد ضخم غير منطقي (2GB)
@@ -94,6 +96,20 @@ pub fn catalog() -> Vec<Asset> {
             url: "https://github.com/Whoismelv/Jisr/releases/download/dxvk-d3d9-1.10.3/dxvk-macos-d3d9-1.10.3.tar.gz",
             sha256: "b99a3865a995a60fc0af7b58bc703be3c3e41e755ad1afcd8240637e8c6f3b9c",
             size: 5_043_067,
+        },
+        // D3DX9 الأصلي من مايكروسوفت — ألعاب DirectX 9 القديمة (LIMBO وأمثالها)
+        // تنهار في نسخة Wine المدمجة من d3dx9_43/d3dcompiler_43:
+        // ucrtbase → wined3d → d3dcompiler_43 → d3dx9_43 → اللعبة.
+        // ننزّل الحزمة الرسمية (بصمة مثبّتة) ونستخرج منها DLLs موثّقة البصمة.
+        // ⚠️ لا نعيد توزيع أي ملف من مايكروسوفت — التنزيل يصير عند المستخدم.
+        Asset {
+            id: crate::d3dx::ASSET_ID,
+            name: "DirectX 9 (D3DX9)",
+            version: "Jun2010",
+            kind: "d3dx9",
+            url: "https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe",
+            sha256: "053f76dcbb28802e23341b6a787e3b0791c0fa5c8d4d011b1044172dbf89c73b",
+            size: 100_275_120,
         },
         // مثبّت ستيم الرسمي من Valve.
         // ⚠️ البصمة مربوطة بملف اليوم — Valve يحدّث الملف دورياً؛ لو تغيّر،
@@ -319,6 +335,10 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
                     }
                     "graphics" => {
                         install_graphics(&app, &asset, Arc::clone(&cancel)).await;
+                        return;
+                    }
+                    "d3dx9" => {
+                        install_d3dx9(&app, &asset, &final_path).await;
                         return;
                     }
                     _ => {}
@@ -664,6 +684,10 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
             install_graphics(&app, &asset, Arc::clone(&cancel)).await;
             return;
         }
+        "d3dx9" => {
+            install_d3dx9(&app, &asset, &final_path).await;
+            return;
+        }
         _ => {}
     }
 
@@ -965,6 +989,62 @@ async fn install_graphics(app: &AppHandle, asset: &Asset, cancel: Arc<AtomicBool
             fail(app, asset, log_keys::GRAPHICS_FAILED, "install", msg);
         }
     }
+}
+
+// ============================================================
+//  تركيب D3DX9: فك CAB داخلي (بلا أدوات) → تحقق بصمة كل DLL → نشر
+// ============================================================
+async fn install_d3dx9(app: &AppHandle, asset: &Asset, file: &Path) {
+    let id = asset.id;
+    publish(
+        app,
+        Progress {
+            ..Progress::p(id, "extracting")
+        },
+    );
+
+    let src = file.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || crate::d3dx::extract_from_redist(&src))
+        .await
+        .unwrap_or_else(|e| Err(format!("خطأ غير متوقع في خيط فك D3DX9: {e}")));
+
+    let written = match result {
+        Ok(n) => n,
+        Err(msg) => {
+            fail(app, asset, log_keys::GRAPHICS_FAILED, "install", msg);
+            return;
+        }
+    };
+
+    // نشر فوري في القارورة الرئيسية لو جاهزة (وإلا يصير عند تشغيل اللعبة)
+    let mut deployed = false;
+    if crate::bottle::bottle_ready(crate::bottle::MAIN_ID) {
+        if let Some(wine) = crate::bottle::wine_bin() {
+            let prefix = crate::bottle::bottle_dir(crate::bottle::MAIN_ID);
+            deployed = crate::d3dx::deploy_to_prefix(&wine, &prefix).await.is_ok();
+        }
+    }
+
+    let size = tokio::fs::metadata(file)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(asset.size);
+    publish(
+        app,
+        Progress {
+            received: size,
+            total: size,
+            files: written as u64,
+            ..Progress::p(id, "done")
+        },
+    );
+    log(
+        app,
+        "info",
+        log_keys::GRAPHICS_READY,
+        json!({ "name": asset.name, "files": written, "deployed": deployed }),
+    );
+    set_running(app, id, false);
 }
 
 // ============================================================

@@ -15,7 +15,9 @@ import {
 /** معرّف محرك Wine في الكتالوج الرسمي */
 export const ENGINE_ID = "wine-11.18";
 /** معرّف طبقة DXVK (تنزيل تلقائي بعد المحرك) */
-export const GRAPHICS_ID = "dxvk-macos-1.10.3";
+export const GRAPHICS_ID = "dxvk-macos-d3d9-1.10.3";
+/** معرّف D3DX9 الأصلي من مايكروسوفت (إصلاح ألعاب DirectX 9) */
+export const D3DX9_ID = "d3dx9-jun2010";
 
 export type Downloads = {
   items: Record<string, DownloadProgress>;

@@ -52,6 +52,7 @@ pub fn is_installed() -> bool {
 /// DXVK فيه دعم **DirectX 9** (d3d9.dll)؟ بدونه، ألعاب D3D9 تسقط على
 /// WineD3D ⇒ ترجمة GLSL ⇒ مُصرّف GLSL من Apple يرفضها
 /// (`Pixel shader error … E5000: syntax error`) ⇒ شاشة سوداء.
+#[allow(dead_code)] // يستهلكها تقرير التشخيص لاحقاً
 pub fn d3d9_available() -> bool {
     let d = install_dir();
     ["x86_64-windows", "i386-windows"]
@@ -107,7 +108,9 @@ pub(crate) fn apply_env(cmd: &mut tokio::process::Command, steam: bool) -> bool 
     if !dxvk_enabled() {
         return false;
     }
-    let mut overrides = String::from("winemenubuilder.exe=d");
+    // تجاوزات d3d* **هنا** ضرورية: اللعبة تُطلقها عملية ستيم الشغّالة، فترث
+    // بيئتها. بدونها يعتمد التحميل على ريجستري القارورة فقط (وهو ما يفشل أحياناً).
+    let mut overrides = String::from("winemenubuilder.exe=d;d3d9=n;d3d10core=n;d3d11=n");
     if steam {
         overrides.push_str(";steamservice=d");
     }
@@ -165,6 +168,43 @@ pub fn deployed() -> bool {
 /// ننسخ ما اختلف فقط، ومع نسخة احتياطية من الأصل (`.jisr-bak`) لعرض الاسترجاع.
 pub fn deploy_to_prefix(prefix: &Path) -> Result<(), String> {
     deploy_layer_to_prefix(&install_dir(), prefix)
+}
+
+/// علامة جاهزية الطبقة **داخل قارورة محددة**.
+///
+/// بدونها كنا نفتح 4 عمليات Wine (3 × reg add + فحص أمان) عند **كل** ضغطة
+/// تشغيل — بطء ملموس قبل انطلاق اللعبة. العلامة تُكتب فقط بعد نجاح النشر
+/// والريجستري معاً، وتُمسح عند تغيير وضع الرسومات.
+fn prefix_marker(prefix: &Path) -> PathBuf {
+    prefix.join(format!(".jisr-layer-{ASSET_ID}.ok"))
+}
+
+/// يضمن الطبقة داخل القارورة (نشر + تجاوزات) مرة واحدة فقط.
+/// `Ok(true)` = الطبقة جاهزة، `Ok(false)` = الوضع WineD3D (بلا طبقة)،
+/// `Err` = فيه فشل حقيقي (يُعرض للمستخدم).
+pub async fn ensure_layer(wine: &Path, prefix: &Path) -> Result<bool, String> {
+    if !dxvk_enabled() {
+        return Ok(false);
+    }
+    if prefix_marker(prefix).is_file() && is_installed() {
+        return Ok(true);
+    }
+    let deployed = deploy_to_prefix(prefix).is_ok();
+    let reg = apply_registry_overrides(wine, prefix).await;
+    if deployed && reg {
+        let _ = std::fs::write(prefix_marker(prefix), b"ok\n");
+        return Ok(true);
+    }
+    Err(if !deployed {
+        "تعذّر نشر ملفات DXVK داخل القارورة".into()
+    } else {
+        "تعذّر كتابة تجاوزات DXVK في ريجستري القارورة".into()
+    })
+}
+
+/// امسح علامة الجاهزية (بعد تغيير وضع الرسومات أو حذف الطبقة)
+pub fn clear_prefix_marker(prefix: &Path) {
+    let _ = std::fs::remove_file(prefix_marker(prefix));
 }
 
 /// نفس النشر لكن بمجلد طبقة محدّد (للاختبار — بلا حالة مشتركة)
@@ -320,6 +360,9 @@ pub fn graphics_set_mode(mode: String) -> Result<(), String> {
         let _ = std::fs::remove_file(&path);
         std::fs::rename(&tmp, &path).map_err(|e| format!("تعذّر إتمام حفظ وضع الرسومات: {e}"))?;
     }
+    // الوضع تغيّر ⇒ نعيد النشر والتجاوزات في التشغيل القادم
+    let prefix = crate::bottle::bottle_dir(crate::bottle::MAIN_ID);
+    clear_prefix_marker(&prefix);
     Ok(())
 }
 

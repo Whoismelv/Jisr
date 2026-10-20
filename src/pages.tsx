@@ -23,11 +23,13 @@ import {
   exportDebugReport,
   getGraphicsMode,
   setGraphicsMode,
+  d3dxStatus,
   steamGameLaunch,
   steamGameWindowed,
   steamGamesList,
   steamUiGpu,
   type Bottle,
+  type D3dxStatus,
   type DownloadProgress,
   type Game,
   type GraphicsMode,
@@ -36,7 +38,9 @@ import {
   type SystemInfo,
 } from "./api";
 import {
+  D3DX9_ID,
   ENGINE_ID,
+  GRAPHICS_ID,
   engineButtonState,
   fmtBytes,
   fmtSpeed,
@@ -1023,7 +1027,16 @@ export const SettingsPage = memo(function SettingsPage({
   const engineDl = dl.items[ENGINE_ID];
   const engineBtn = engineButtonState(engineDl, !!sys?.engine_installed);
 
-  
+  // حالة الطبقات: DXVK + D3DX9 (نسخة مايكروسوفت)
+  const gfxDl = dl.items[GRAPHICS_ID];
+  const d3dxDl = dl.items[D3DX9_ID];
+  const [d3dx, setD3dx] = useState<D3dxStatus | null>(null);
+  useEffect(() => {
+    d3dxStatus()
+      .then(setD3dx)
+      .catch(() => {});
+  }, [d3dxDl?.phase, sys?.graphics_layer]);
+
   return (
     <div className="stack narrow">
       {/* المظهر */}
@@ -1107,6 +1120,38 @@ export const SettingsPage = memo(function SettingsPage({
               { value: "wined3d", label: "WineD3D" },
             ]}
           />
+        </Row>
+        {/* DXVK: الطبقة اللي تحوّل DirectX إلى Vulkan — بدونها الألعاب تسقط
+            على WineD3D وترفض شيدرات Apple ⇒ شاشة سوداء/انهيار */}
+        <Row
+          label={t("dxvkLayer")}
+          hint={sys?.graphics_layer ? t("layerInstalled") : t("dxvkMissingHint")}
+        >
+          {sys?.graphics_layer ? (
+            <span className="value">{sys.graphics_layer}</span>
+          ) : isActive(gfxDl) ? (
+            <span className="value muted">{t("installing")}</span>
+          ) : (
+            <Button variant="tinted" onClick={() => dl.start(GRAPHICS_ID)}>
+              {t("install")}
+            </Button>
+          )}
+        </Row>
+        {/* D3DX9 الأصلي: يصلح انهيار d3dx9_43/d3dcompiler_43 في ألعاب DX9 */}
+        <Row label={t("d3dxLayer")} hint={t("d3dxHint")}>
+          {d3dx?.installed ? (
+            <span className="value">{t("ready")}</span>
+          ) : isActive(d3dxDl) ? (
+            <span className="value muted">
+              {d3dxDl?.phase === "downloading" && (d3dxDl.total ?? 0) > 0
+                ? `${t("installing")} ${Math.round(((d3dxDl.received ?? 0) / (d3dxDl.total || 1)) * 100)}%`
+                : t("installing")}
+            </span>
+          ) : (
+            <Button variant="tinted" onClick={() => dl.start(D3DX9_ID)}>
+              {t("install")}
+            </Button>
+          )}
         </Row>
       </Card>
 

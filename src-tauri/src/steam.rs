@@ -17,9 +17,9 @@
 // ============================================================
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::json;
@@ -147,20 +147,31 @@ pub(crate) fn steam_exe() -> Option<(PathBuf, String)> {
 static CEF_SHIM: &[u8] = include_bytes!("../assets/steamwebhelper.exe");
 
 /// بصمة داخل الغلاف نفسه — نتعرف بها على أن الملف الحالي غلافنا لا الأصل.
-/// نقبل V1 (نسخ قديمة منشورة) وV2 (الدور: المتصفح فقط) حتى نستبدلها بأمان.
-const CEF_SHIM_MARKERS: [&[u8]; 2] = [b"JISR_CEF_SHIM_V1", b"JISR_CEF_SHIM_V2"];
+/// نقبل النسخ القديمة (V1/V2 منشورة) وV3 الحالي حتى نستبدلها بأمان.
+const CEF_SHIM_MARKERS: [&[u8]; 3] = [
+    b"JISR_CEF_SHIM_V1",
+    b"JISR_CEF_SHIM_V2",
+    b"JISR_CEF_SHIM_V3",
+];
 
 /// هل الملف الحالي هو غلاف Jisr؟ (البصمة داخل أول ميغابايت)
 pub(crate) fn is_cef_shim(path: &Path) -> bool {
     use std::io::Read;
-    let Ok(mut f) = std::fs::File::open(path) else {
+    let Ok(f) = std::fs::File::open(path) else {
         return false;
     };
-    let mut buf = vec![0u8; 1 << 20];
-    let n = f.read(&mut buf).unwrap_or(0);
+    let mut buf = Vec::new();
+    if f.take(1 << 20).read_to_end(&mut buf).is_err() {
+        return false;
+    }
     CEF_SHIM_MARKERS
         .iter()
-        .any(|m| buf[..n].windows(m.len()).any(|w| w == *m))
+        .any(|m| buf.windows(m.len()).any(|w| w == *m))
+}
+
+/// هل الغلاف المثبّت هو **نفس** النسخة المدمجة؟ (نتيجة: ترقية V1/V2 → V3)
+fn shim_is_current(path: &Path) -> bool {
+    std::fs::read(path).map(|b| b == CEF_SHIM).unwrap_or(false)
 }
 
 /// هل الملف نسخة أصلية سليمة من Valve؟ (حجم غلاف CEF الحقيقي أكبر من ميغابايت)
@@ -223,23 +234,42 @@ fn ensure_shim_in(dir: &Path, backup_dir: &Path) -> Option<bool> {
     }
 
     if is_cef_shim(&helper) {
-        // الغلاف مثبّت — نتأكد أن الأصل بجانبه سليم (حجم Valve لا حجم غلاف)
-        if looks_like_real_helper(&real) {
-            crate::debuglog::raw("debug", "cef", &format!("shim ready: {}", dir.display()));
-            return Some(false);
+        // الغلاف مثبّت — نتأكد أولاً أن الأصل بجانبه سليم (حجم Valve لا حجم غلاف)
+        if !looks_like_real_helper(&real) {
+            let restored = restore_cef_backup(&real, backup_dir);
+            crate::debuglog::raw(
+                if restored { "info" } else { "error" },
+                "cef",
+                &format!(
+                    "restore real helper in {}: {}",
+                    dir.display(),
+                    if restored { "ok" } else { "FAILED (no backup)" }
+                ),
+            );
+            if !restored {
+                return None;
+            }
         }
-        // الأصل مفقود/تالف/غلاف بالغلط → نستعيده من النسخة الاحتياطية
-        let restored = restore_cef_backup(&real, backup_dir);
-        crate::debuglog::raw(
-            if restored { "info" } else { "error" },
-            "cef",
-            &format!(
-                "restore real helper in {}: {}",
-                dir.display(),
-                if restored { "ok" } else { "FAILED (no backup)" }
-            ),
-        );
-        return restored.then_some(false);
+        // ترقية الغلاف: نسخة قديمة (V1/V2) ما تطبّق منطق الأدوار ولا Job Object
+        if !shim_is_current(&helper) {
+            let upgraded = write_atomic(&helper, CEF_SHIM).is_ok();
+            crate::debuglog::raw(
+                if upgraded { "info" } else { "error" },
+                "cef",
+                &format!(
+                    "upgrade shim in {}: {}",
+                    dir.display(),
+                    if upgraded {
+                        "ok (old version replaced)"
+                    } else {
+                        "FAILED"
+                    }
+                ),
+            );
+            return upgraded.then_some(true);
+        }
+        crate::debuglog::raw("debug", "cef", &format!("shim ready: {}", dir.display()));
+        return Some(false);
     }
 
     // الملف الحالي أصلي (أو نسخة ستيم محدّثة) → نحفظه بجانبه ثم نضع الغلاف
@@ -358,6 +388,33 @@ fn rename_stale_items(base: &Path, stamp: u64, renamed: &mut Vec<String>) {
     }
 }
 
+/// علامة «ستيم اشتغل وما تأكدنا إنه خرج نظيف» — نكتبها عند كل تشغيل ناجح،
+/// ونمسحها فقط عند خروج بكود 0. التنظيف يصير **فقط** لو العلامة موجودة.
+fn dirty_flag() -> PathBuf {
+    crate::data_dir().join("steam-dirty.flag")
+}
+
+/// تنظيف بقايا الكاش **بعد خروج غير نظيف فقط**.
+/// إعادة تسمية `htmlcache` عند كل تشغيل كانت تمسح كاش CEF (أول رسم بطيء)
+/// وتترك مجلدات `.jisr-bak-*` تنمو بلا حد.
+pub(crate) fn cleanup_after_unclean_exit(steam_dir: &Path) {
+    if !dirty_flag().is_file() {
+        return;
+    }
+    cleanup_stale_steam_state(steam_dir);
+    let _ = std::fs::remove_file(dirty_flag());
+}
+
+/// ستيم انطلق — حتى نشوف خروجه النظيف تعتبر الجلسة «وسخة»
+pub(crate) fn mark_dirty() {
+    let _ = std::fs::write(dirty_flag(), b"1\n");
+}
+
+/// خرج بكود 0 — ما فيه بقايا تحتاج تنظيف
+pub(crate) fn mark_clean() {
+    let _ = std::fs::remove_file(dirty_flag());
+}
+
 /// تنظيف بقايا الكاش والأقفال القديمة — سبب معروف موثّق لمشكلة
 /// «ستيم يفتح بدون نافذة» (htmlcache/Singleton* عالقة من جلسة سابقة).
 /// قواعد الأمان:
@@ -472,20 +529,28 @@ pub(crate) fn steam_args_override() -> Vec<String> {
 }
 
 /// ملف اختياري لتجربة فلاقين CEF بدون بناء جديد:
-/// `~/Library/Application Support/Jisr/cef-flags.txt` (أول سطر، بحدود آمنة)
+/// `~/Library/Application Support/Jisr/cef-flags.txt` — أول سطر يبدأ بـ`--`
+/// (سطر `steam:` ممنوع هنا — له معالجة مستقلة).
 pub(crate) fn cef_flags_override() -> Option<String> {
     let text = std::fs::read_to_string(crate::data_dir().join("cef-flags.txt")).ok()?;
-    let line = text.lines().next()?.trim().to_string();
-    if line.is_empty() || line.len() > 512 {
-        return None;
+    for line in text.lines() {
+        let line = line.trim();
+        // تجاهل التعليقات وسطر وسائط ستيم — كان يمرّر `steam:...` كفلاق CEF
+        if line.is_empty() || line.starts_with('#') || line.starts_with("steam:") {
+            continue;
+        }
+        if !line.starts_with("--") || line.len() > 512 {
+            continue;
+        }
+        if !line
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_=., :".contains(c))
+        {
+            continue;
+        }
+        return Some(line.to_string());
     }
-    if !line
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "-_=., :".contains(c))
-    {
-        return None;
-    }
-    Some(line)
+    None
 }
 
 /// هل الشاشة Retina (2x)؟
@@ -500,33 +565,74 @@ pub(crate) fn retina_display() -> bool {
     if let Some(v) = display_scale_override() {
         return v >= 2;
     }
-    // الأدق: مقياس الشاشة الحقيقي من AppKit
-    if let Ok(out) = std::process::Command::new("osascript")
-        .arg("-l")
-        .arg("JavaScript")
-        .arg("-e")
-        .arg("ObjC.import('AppKit'); $.NSScreen.mainScreen.backingScaleFactor.js")
-        .output()
-    {
-        if let Ok(text) = String::from_utf8(out.stdout) {
-            if let Ok(v) = text.trim().parse::<f64>() {
-                if v >= 1.5 {
-                    return true;
-                }
-                if v > 0.0 {
-                    return false;
-                }
+    // كاش قصير (دقيقتان): نمنع تشغيل osascript/system_profiler عند كل فحص
+    // حالة — الفحص كان يكلّف 1–3 ثوانٍ داخل أمر متزامن.
+    static CACHE: OnceLock<Mutex<Option<(bool, Instant)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(lock) = cache.lock() {
+        if let Some((value, at)) = *lock {
+            if at.elapsed() < Duration::from_secs(120) {
+                return value;
             }
         }
     }
-    // احتياط: وصف الشاشة
-    let out = std::process::Command::new("system_profiler")
-        .arg("SPDisplaysDataType")
+    let value = retina_from_appkit()
+        .or_else(retina_from_profiler)
+        .unwrap_or(false);
+    if let Ok(mut lock) = cache.lock() {
+        *lock = Some((value, Instant::now()));
+    }
+    value
+}
+
+/// الأدق: مقياس الشاشة الحقيقي من AppKit عبر JXA.
+/// ملاحظة: `backingScaleFactor` رقم JS عادي — `.js` كانت ترجّع `undefined`
+/// فكل نداء يسقط على `system_profiler` (بطيء) ويخطئ على الشاشات المتعددة.
+fn retina_from_appkit() -> Option<bool> {
+    let out = std::process::Command::new("osascript")
+        .arg("-l")
+        .arg("JavaScript")
+        .arg("-e")
+        .arg("ObjC.import('AppKit'); $.NSScreen.mainScreen.backingScaleFactor")
         .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
-        .unwrap_or_default();
-    out.contains("retina")
+        .ok()?;
+    let text = String::from_utf8(out.stdout).ok()?;
+    let value: f64 = text.trim().parse().ok()?;
+    if value <= 0.0 {
+        return None;
+    }
+    Some(value >= 1.5)
+}
+
+/// احتياط: نقارن دقة العرض الفعلية بدقة الواجهة (Retina = ضعف تقريباً)
+fn retina_from_profiler() -> Option<bool> {
+    let out = std::process::Command::new("system_profiler")
+        .args(["SPDisplaysDataType", "-detailLevel", "mini"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let first_number = |s: &str| -> Option<u32> {
+        s.split(|c: char| !c.is_ascii_digit())
+            .find(|t| !t.is_empty())
+            .and_then(|t| t.parse().ok())
+    };
+    let mut resolution = None;
+    let mut ui = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Resolution:") {
+            resolution = first_number(rest);
+        } else if let Some(rest) = line.strip_prefix("UI Looks like:") {
+            ui = first_number(rest);
+        }
+        if resolution.is_some() && ui.is_some() {
+            break;
+        }
+    }
+    match (resolution, ui) {
+        (Some(r), Some(u)) if u > 0 => Some(r as f64 / u as f64 >= 1.5),
+        _ => None,
+    }
 }
 
 /// تجاوز يدوي لمقياس الواجهة: `~/Library/Application Support/Jisr/display-scale.txt`
@@ -612,12 +718,37 @@ pub async fn steam_status(state: State<'_, SteamState>) -> Result<SteamStatus, S
         installed: exe.is_some(),
         steam_exe: exe.map(|(_, win)| win),
         installing: phase == Phase::Installing,
-        running: phase == Phase::Running,
+        // الحقيقة من العمليات نفسها: بعد إعادة تشغيل جسر تبقى المرحلة Idle
+        // بينما ستيم شغّال — وهذا كان يخلي الزر يقول «تشغيل» واللعبة ترفض.
+        running: phase == Phase::Running || matches!(steam_pids(), Some(v) if !v.is_empty()),
         bottle_ready: bottle::bottle_ready(bottle::MAIN_ID),
         ui_gpu: cef_flags_override().is_some(),
         desktop_scale: if retina_display() { 2 } else { 1 },
         last_launch: read_launch_state(),
     })
+}
+
+/// يكتب/يحذف سطر فلاقين CEF مع **الحفاظ** على سطر `steam:` والتعليقات.
+/// (الحذف القديم كان يمسح الملف كامل ⇒ يضيع سطر وسائط ستيم للمستخدم)
+fn write_cef_flags(path: &Path, cef: Option<&str>) -> std::io::Result<()> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut out = String::new();
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("steam:") || trimmed.starts_with('#') {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if let Some(flags) = cef {
+        out.push_str(flags);
+        out.push('\n');
+    }
+    if out.trim().is_empty() {
+        let _ = std::fs::remove_file(path);
+        return Ok(());
+    }
+    std::fs::write(path, out)
 }
 
 /// تبديل رسم واجهة ستيم:
@@ -632,13 +763,14 @@ pub fn steam_ui_gpu(enabled: bool) -> Result<bool, String> {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("تعذّر تجهيز مجلد الإعدادات: {e}"))?;
         }
-        std::fs::write(
+        write_cef_flags(
             &path,
-            "--in-process-gpu --use-angle=vulkan --ignore-gpu-blocklist\n",
+            Some("--in-process-gpu --use-angle=vulkan --ignore-gpu-blocklist"),
         )
         .map_err(|e| format!("تعذّر حفظ إعدادات الرسم: {e}"))?;
     } else {
-        let _ = std::fs::remove_file(&path);
+        // نحذف سطر CEF فقط — سطر `steam:` وتعليقات المستخدم تبقى
+        write_cef_flags(&path, None).map_err(|e| format!("تعذّر حفظ إعدادات الرسم: {e}"))?;
     }
     crate::debuglog::raw(
         "info",
@@ -864,22 +996,28 @@ pub async fn steam_install(app: AppHandle, state: State<'_, SteamState>) -> Resu
     Ok(())
 }
 
-/// عمليات steam.exe الشغّالة الآن (لو فيه ستيم من جلسة سابقة)
-fn steam_pids() -> Vec<u32> {
-    let Ok(out) = std::process::Command::new("pgrep")
+/// عمليات steam.exe الشغّالة الآن.
+/// `None` = **ما قدرنا نتحقق** (pgrep مفقود/فشل) — وهذا مو نفس «ما فيه ستيم»:
+/// الخلط بينهم كان يخلي جسر يفتح نسخة ستيم ثانية (نافذة مكررة).
+fn steam_pids() -> Option<Vec<u32>> {
+    let out = std::process::Command::new("pgrep")
         .arg("-f")
         .arg("steam.exe")
         .output()
-    else {
-        return Vec::new();
-    };
-    if !out.status.success() {
-        return Vec::new();
+        .ok()?;
+    // pgrep: كود 1 = ما فيه مطابقة (حالة طبيعية، مو خطأ)
+    if out.status.code() == Some(1) {
+        return Some(Vec::new());
     }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.trim().parse::<u32>().ok())
-        .collect()
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse::<u32>().ok())
+            .collect(),
+    )
 }
 
 /// شغّل ستيم داخل القارورة الرئيسية
@@ -912,29 +1050,45 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
 
     // ستيم شغّال أصلاً (من جلسة سابقة أو نافذة تانية)؟ نتبنّاه بدل ما نفتح
     // نسخة ثانية — وهذا كان سبب «نافذتين ستيم» لما التطبيق ينسى الحالة.
-    if !steam_pids().is_empty() {
-        set_phase(&state, Phase::Running);
-        state.stopped.store(false, Ordering::Relaxed);
-        emit(&app);
-        crate::debuglog::raw(
-            "info",
-            "steam",
-            "steam already running — adopting instead of spawning",
-        );
-        let app2 = app.clone();
-        tauri::async_runtime::spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-                if steam_pids().is_empty() {
-                    if let Some(st) = app2.try_state::<SteamState>() {
-                        set_phase(&st, Phase::Idle);
-                    }
-                    emit(&app2);
-                    break;
-                }
+    match steam_pids() {
+        Some(pids) if !pids.is_empty() => {
+            set_phase(&state, Phase::Running);
+            state.stopped.store(false, Ordering::Relaxed);
+            emit(&app);
+            crate::debuglog::raw(
+                "info",
+                "steam",
+                &format!(
+                    "steam already running ({} pids) — adopting instead of spawning",
+                    pids.len()
+                ),
+            );
+            // مهم: نطبّق إصلاحات الواجهة (ترقية الغلاف) حتى لو ستيم شغّال
+            // من جلسة سابقة — وإلا يبقى على غلاف قديم للأبد.
+            if let Some(dir) = mac_exe.parent() {
+                prepare_steam_ui(&app, dir);
             }
-        });
-        return Ok(());
+            let app2 = app.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                    if matches!(steam_pids(), Some(v) if v.is_empty()) {
+                        if let Some(st) = app2.try_state::<SteamState>() {
+                            set_phase(&st, Phase::Idle);
+                        }
+                        emit(&app2);
+                        break;
+                    }
+                }
+            });
+            return Ok(());
+        }
+        None => {
+            return Err(
+                "ما قدرنا نتحقق من حالة ستيم (pgrep) — أعد المحاولة بدل فتح نسخة ثانية".into(),
+            );
+        }
+        _ => {}
     }
 
     // قفل التشغيل: نتحقق أولاً، ثم نثبّت الغلاف/الإعدادات ونشغّل — بلا await
@@ -947,12 +1101,14 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         // إصلاح واجهة ستيم: نضمن غلاف CEF قبل كل تشغيل (تحديث ستيم يرجع الأصل)
         // + إصلاح تنزيلات ستيم (HTTP/2) — ملف رسمي داخل مجلد ستيم
         if let Some(dir) = mac_exe.parent() {
-            // بقايا الكاش والأقفال القديمة — سبب موثّق لـ«ستيم يفتح بدون نافذة»
-            cleanup_stale_steam_state(dir);
+            // بقايا الكاش والأقفال — **فقط** لو الخروج السابق ما كان نظيفاً
+            cleanup_after_unclean_exit(dir);
             prepare_steam_ui(&app, dir);
         }
 
         let (out, err) = stdio_to_log();
+        // نحسب المقياس مرة واحدة (كل نداء قد يشغّل osascript/profiler)
+        let scaling = desktop_scaling();
         let mut cmd = tokio::process::Command::new(&wine);
         cmd.env("WINEPREFIX", &prefix);
         bottle::apply_wine_env(&mut cmd, true);
@@ -969,7 +1125,7 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
             .arg("-noverifyfiles")
             // مقياس واجهة صحيح: 2x على شاشات Retina (sharp) و1x على غيرها
             .arg("-forcedesktopscaling")
-            .arg(desktop_scaling());
+            .arg(scaling);
         // وسائط طوارئ اختيارية من الملف النصي (قائمة بيضاء فقط)
         let extra = steam_args_override();
         for a in &extra {
@@ -988,7 +1144,7 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
                 wine.display(),
                 dos_exe,
                 prefix.display(),
-                desktop_scaling(),
+                scaling,
                 if extra.is_empty() {
                     String::new()
                 } else {
@@ -1009,6 +1165,7 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
             msg
         })?;
         *ph = Phase::Running;
+        mark_dirty();
         child
     };
 
@@ -1023,6 +1180,10 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         let played = crate::now_ms().saturating_sub(started);
         let code = res.as_ref().ok().and_then(|o| o.status.code());
         let stderr_tail = log_tail(3);
+        // خروج نظيف؟ نمسح علامة «الوسخ» حتى ما نمسح كاش CEF بلا داعي
+        if code == Some(0) {
+            mark_clean();
+        }
 
         crate::debuglog::raw(
             "info",
@@ -1079,11 +1240,12 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
 
 /// أوقف ستيم (أو التثبيت الجاري) — نكيل جلسة القارورة بأمان (wineserver -k)
 #[tauri::command]
-pub async fn steam_stop(state: State<'_, SteamState>) -> Result<(), String> {
+pub async fn steam_stop(app: AppHandle, state: State<'_, SteamState>) -> Result<(), String> {
     let _trace = crate::debuglog::trace("steam", "steam_stop", "");
     {
         let ph = state.phase.lock().map_err(|_| "خطأ داخلي".to_string())?;
-        if *ph == Phase::Idle {
+        // بعد إعادة تشغيل جسر تكون المرحلة Idle وستيم شغّال — لازم نقدر نوقفه
+        if *ph == Phase::Idle && !matches!(steam_pids(), Some(v) if !v.is_empty()) {
             return Err("ستيم مو شغّال".into());
         }
     }
@@ -1102,6 +1264,8 @@ pub async fn steam_stop(state: State<'_, SteamState>) -> Result<(), String> {
             }
         }
     }
+    set_phase(&state, Phase::Idle);
+    emit(&app);
     Ok(())
 }
 
@@ -1146,6 +1310,29 @@ mod tests {
         assert!(is_cef_shim(&cef.join("steamwebhelper.exe")));
         assert!(looks_like_real_helper(&cef.join("steamwebhelper_real.exe")));
         assert!(looks_like_real_helper(&backup.join("steamwebhelper.exe")));
+        assert_eq!(ensure_cef_shim(&steam, &backup), Some(false));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// حارس الترقية (درس 0.1.20): مستخدم عنده غلاف V1 قديم **لازم** يُستبدل،
+    /// وإلا يظل يطبّق single-process على كل عملية ⇒ نافذة شبح + شاشة سوداء.
+    #[test]
+    fn upgrades_old_shim_to_current_version() {
+        let root = temp_root("upgrade");
+        let cef = cef_dir(&root);
+        let backup = root.join("backup");
+        let steam = root.join("Steam");
+
+        // غلاف قديم (V1) + الأصل السليم بجانبه (حالة مستخدم حقيقي بعد ترقية)
+        let mut old = vec![0x41u8; 218_624];
+        old[..16].copy_from_slice(b"JISR_CEF_SHIM_V1");
+        fs::write(cef.join("steamwebhelper.exe"), &old).unwrap();
+        fake_valve(&cef.join("steamwebhelper_real.exe"));
+
+        assert_eq!(ensure_cef_shim(&steam, &backup), Some(true));
+        assert_eq!(fs::read(cef.join("steamwebhelper.exe")).unwrap(), CEF_SHIM);
+        // التشغيل التالي: ما نعيد الكتابة بلا داعي
         assert_eq!(ensure_cef_shim(&steam, &backup), Some(false));
 
         let _ = fs::remove_dir_all(root);
@@ -1274,7 +1461,7 @@ mod tests {
         h.update(CEF_SHIM);
         let got = format!("{:x}", h.finalize());
         assert_eq!(
-            got, "437203bad808f4038c2cb8425dafd99471b8b12f3a3d8425eb6e4417e5925b59",
+            got, "34e1d0b297c1dfa1686a86492bb77fa813c401fd2e9ee50c57d2123886eafe4d",
             "تغيّر غلاف CEF — أعد بناءه من tools/steamwebhelper-shim ثم حدّث البصمة هنا"
         );
     }

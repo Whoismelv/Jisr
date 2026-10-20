@@ -287,3 +287,7 @@ export const getGraphicsMode = () => call<GraphicsMode>("graphics_mode");
 /** يغيّر طبقة الرسومات ويُطبّقها على التشغيل التالي */
 export const setGraphicsMode = (mode: GraphicsMode) =>
   call<void>("graphics_set_mode", { mode });
+
+/** حالة D3DX9 الأصلي (نسخة مايكروسوفت) — إصلاح ألعاب DirectX 9 */
+export type D3dxStatus = { installed: boolean; deployed: boolean };
+export const d3dxStatus = () => call<D3dxStatus>("d3dx_status");
