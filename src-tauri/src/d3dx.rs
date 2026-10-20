@@ -337,12 +337,15 @@ pub fn deploy_files(prefix: &Path) -> Result<(), String> {
             if file.eq_ignore_ascii_case("d3dcompiler_43.dll") {
                 let bytes = if arch == "x86" { SHIM_X86 } else { SHIM_X64 };
                 if ensure_guard_file(&dst_dir, bytes).is_err() {
-                    // ما فيه أصل نحفظه ⇒ ننشر نسخة مايكروسوفت العادية (بلا حماية)
-                    guard_ok = false;
+                    // أول تشغيل: ما فيه أصل بعد ⇒ ننشر نسخة مايكروسوفت،
+                    // ثم نثبّت الحارس فوقها فوراً (مهم: الحماية من أول تشغيل)
                     let src = install_dir().join(arch).join(file);
                     let dst = dst_dir.join(file);
                     if src.is_file() && !same_file(&src, &dst) {
                         let _ = std::fs::copy(&src, &dst);
+                    }
+                    if ensure_guard_file(&dst_dir, bytes).is_err() {
+                        guard_ok = false;
                     }
                 }
                 continue;
@@ -356,11 +359,7 @@ pub fn deploy_files(prefix: &Path) -> Result<(), String> {
         }
     }
     if guard_ok {
-        let _ = std::fs::write(
-            guard_marker(prefix),
-            b"1
-",
-        );
+        let _ = std::fs::write(guard_marker(prefix), b"1\n");
     }
     Ok(())
 }
