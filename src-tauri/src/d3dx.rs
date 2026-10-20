@@ -263,21 +263,90 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// علامة «الحماية مفعّلة» داخل القارورة — **تعيش بعد إعادة التشغيل**،
+/// و`deploy_files` يحترمها فلا يكتب المترجم الأصلي فوق غلافنا.
+///
+/// **درس ميداني:** بدون هذه العلامة كان `deploy_files()` (يعمل قبل كل تشغيل)
+/// ينسخ `D3DCompiler_43.dll` فوق الغلاف ⇒ الحماية تُلغى في نفس اللحظة
+/// واللعبة ترجع تنهار (والواجهة تقول «غير مفعّلة» بصدق).
+fn guard_marker(prefix: &Path) -> PathBuf {
+    prefix.join(".jisr-d3dx-guard.ok")
+}
+
+/// هل الحماية مفعّلة لهذه القارورة؟
+///
+/// صارت **دائمة**: `deploy_files` يثبّتها قبل كل تشغيل، والعلامة تُكتب
+/// تلقائياً. ما فيه مفتاح يطفيها — لأن إطفاءها يرجّع انهيار `pTarget=NULL`.
+pub fn guard_enabled(prefix: &Path) -> bool {
+    guard_marker(prefix).is_file() || shim_installed(prefix)
+}
+
+/// يضمن أن `d3dcompiler_43.dll` في المجلد المعطى هو **غلافنا**،
+/// ويحفظ الأصل بجانبه (`d3dcompiler_43_ms.dll`) مرة واحدة.
+fn ensure_guard_file(dir: &Path, bytes: &[u8]) -> Result<(), String> {
+    let target = dir.join("d3dcompiler_43.dll");
+    let real = dir.join("d3dcompiler_43_ms.dll");
+    if is_shim(&target) {
+        return Ok(());
+    }
+    // نحفظ الأصل: الملف نفسه، أو النسخة ذات الأحرف الكبيرة (D3DCompiler_43.dll)
+    if !real.is_file() {
+        let candidates = [target.clone(), dir.join("D3DCompiler_43.dll")];
+        for src in candidates.iter().filter(|p| p.is_file()) {
+            if !is_shim(src) {
+                std::fs::copy(src, &real)
+                    .map_err(|e| format!("تعذّر حفظ نسخة المترجم الأصلية: {e}"))?;
+                break;
+            }
+        }
+    }
+    if !real.is_file() {
+        return Err("ما لقينا المترجم الأصلي — ثبّت D3DX9 أولاً".into());
+    }
+    let tmp = dir.join("d3dcompiler_43.dll.jisr-tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| format!("تعذّر كتابة الغلاف: {e}"))?;
+    let _ = std::fs::remove_file(&target);
+    std::fs::rename(&tmp, &target).map_err(|e| format!("تعذّر تثبيت الغلاف: {e}"))?;
+    // تحقّق: لو الملف ما انكتب (أو ما فيه البصمة) نفشل بصوت عالٍ
+    if !is_shim(&target) {
+        return Err("فشل التحقّق: الغلاف ما انكتب (صلاحيات؟)".into());
+    }
+    Ok(())
+}
+
 /// ينشر ملفات D3DX9 داخل القارورة (system32 / syswow64) — **بلا ريجستري**.
 ///
 /// لماذا منفصلة عن التجاوزات؟ لأن **ملف تعريف اللعبة** هو اللي يقرر
 /// native/builtin — فلو كتبنا هنا native دائماً لكانت الطبقة تتخطّى قرار الملف.
+///
+/// **الحماية دائمة:** `D3DCompiler_43.dll` ما يُنسخ الأصلي أبداً — نكتب
+/// غلافنا الحارس بدلاً منه قبل كل تشغيل (إصلاح ذاتي). لو ما لقينا الأصل
+/// (قارورة ناقصة) نكمل النشر العادي بدل ما نفشل التشغيل كله.
 pub fn deploy_files(prefix: &Path) -> Result<(), String> {
     if !is_installed() {
         return Err("ملفات D3DX9 مو مثبّتة بعد".into());
     }
     let win = prefix.join("drive_c").join("windows");
+    let mut guard_ok = true;
     for (arch, sys_dir) in [("x86", "syswow64"), ("x64", "system32")] {
         let dst_dir = win.join(sys_dir);
         if !dst_dir.is_dir() {
             return Err("القارورة مو جاهزة — نكمل النشر لاحقاً".into());
         }
         for (_, file, _, _) in TARGETS.iter().filter(|(a, _, _, _)| *a == arch) {
+            if file.eq_ignore_ascii_case("d3dcompiler_43.dll") {
+                let bytes = if arch == "x86" { SHIM_X86 } else { SHIM_X64 };
+                if ensure_guard_file(&dst_dir, bytes).is_err() {
+                    // ما فيه أصل نحفظه ⇒ ننشر نسخة مايكروسوفت العادية (بلا حماية)
+                    guard_ok = false;
+                    let src = install_dir().join(arch).join(file);
+                    let dst = dst_dir.join(file);
+                    if src.is_file() && !same_file(&src, &dst) {
+                        let _ = std::fs::copy(&src, &dst);
+                    }
+                }
+                continue;
+            }
             let src = install_dir().join(arch).join(file);
             let dst = dst_dir.join(file);
             if same_file(&src, &dst) {
@@ -285,6 +354,13 @@ pub fn deploy_files(prefix: &Path) -> Result<(), String> {
             }
             std::fs::copy(&src, &dst).map_err(|e| format!("تعذّر نشر {file}: {e}"))?;
         }
+    }
+    if guard_ok {
+        let _ = std::fs::write(
+            guard_marker(prefix),
+            b"1
+",
+        );
     }
     Ok(())
 }
@@ -314,7 +390,16 @@ const SHIM_X64: &[u8] = include_bytes!("../assets/d3dcompiler_43_x64.dll");
 /// بصمة داخل الغلاف — نعرف بها أنه غلافنا (لا نلمس الأصلي)
 const SHIM_MARKER: &[u8] = b"JISR_D3DX_SHIM_V1";
 
-/// مسار سجل التشخيص
+/// مسار سجل التشخيص **داخل القارورة** (الغلاف عملية ويندوز: المسار لازم
+/// يكون `C:\...` وإلا الكتابة تفشل بصمت وتبقى الواجهة بلا سجل).
+pub fn shim_log_path_in(prefix: &Path) -> PathBuf {
+    prefix.join("drive_c").join("jisr-d3dx-shim.log")
+}
+
+/// المسار اللي نمرّره للعبة (ويندوز)
+pub const SHIM_LOG_WIN_PATH: &str = r"C:\jisr-d3dx-shim.log";
+
+/// مسار السجل المحلي (للتوثيق/التصدير)
 pub fn shim_log_path() -> PathBuf {
     crate::data_dir().join("logs").join("d3dx-shim.log")
 }
@@ -338,36 +423,16 @@ pub fn shim_installed(prefix: &Path) -> bool {
 /// الأصل **لا يُحذف** ⇒ الرجوع سهل (نرجّعه مكانه).
 pub async fn install_shim(wine: &Path, prefix: &Path) -> Result<(), String> {
     let win = prefix.join("drive_c").join("windows");
-    for (arch, sys_dir, bytes) in [("x86", "syswow64", SHIM_X86), ("x64", "system32", SHIM_X64)] {
+    for (sys_dir, bytes) in [("syswow64", SHIM_X86), ("system32", SHIM_X64)] {
         let dir = win.join(sys_dir);
         if !dir.is_dir() {
             return Err("القارورة مو جاهزة".into());
         }
-        let target = dir.join("d3dcompiler_43.dll");
-        let real = dir.join("d3dcompiler_43_ms.dll");
-        if !is_shim(&target) {
-            // نحفظ الأصل مرة واحدة (لو موجود) ثم ننشر غلافنا
-            if target.is_file() && !real.is_file() {
-                std::fs::copy(&target, &real)
-                    .map_err(|e| format!("تعذّر حفظ نسخة المترجم الأصلية: {e}"))?;
-            }
-            if !real.is_file() {
-                return Err(format!(
-                    "ما لقينا المترجم الأصلي في {sys_dir} — ثبّت D3DX9 أولاً"
-                ));
-            }
-            let tmp = dir.join("d3dcompiler_43.dll.jisr-tmp");
-            std::fs::write(&tmp, bytes).map_err(|e| format!("تعذّر كتابة الغلاف: {e}"))?;
-            let _ = std::fs::remove_file(&target);
-            std::fs::rename(&tmp, &target).map_err(|e| format!("تعذّر تثبيت الغلاف: {e}"))?;
-            // تحقّق: لو الملف ما انكتب (أو ما فيه البصمة) نفشل بصوت عالٍ
-            // بدل ما نقول «تم» واللعبة تشتغل على النسخة الأصلية.
-            if !is_shim(&target) {
-                return Err(format!("فشل التحقّق: الغلاف ما انكتب في {sys_dir} (صلاحيات؟)"));
-            }
-        }
-        let _ = arch;
+        ensure_guard_file(&dir, bytes)?;
     }
+    // علامة دائمة: بعدها `deploy_files` ما يكتب الأصل فوق الغلاف أبداً
+    std::fs::write(guard_marker(prefix), b"1\n")
+        .map_err(|e| format!("تعذّر حفظ علامة الحماية: {e}"))?;
 
     // التحويل لـnative (الغلاف أصلاً —原件) ونكتب مسار السجل للعبة
     let mut cmd = tokio::process::Command::new(wine);
@@ -401,6 +466,8 @@ pub fn remove_shim(prefix: &Path) -> Result<(), String> {
                 .map_err(|e| format!("تعذّر استرجاع المترجم الأصلي: {e}"))?;
         }
     }
+    // نلغي العلامة ⇒ `deploy_files` يرجع يكتب الأصل بشكل طبيعي
+    let _ = std::fs::remove_file(guard_marker(prefix));
     Ok(())
 }
 
@@ -434,7 +501,13 @@ pub fn d3dx_shim_remove() -> Result<bool, String> {
 #[tauri::command]
 pub fn d3dx_shim_status() -> serde_json::Value {
     let prefix = crate::bottle::bottle_dir(crate::bottle::MAIN_ID);
-    let log = shim_log_path();
+    let log = shim_log_path_in(&prefix);
+    // سقف 1 MiB: لا نترك سجل الغلاف يكبر بلا حد
+    if let Ok(md) = std::fs::metadata(&log) {
+        if md.len() > 1_048_576 {
+            let _ = std::fs::remove_file(&log);
+        }
+    }
     let tail = std::fs::read_to_string(&log)
         .map(|s| {
             s.lines()
@@ -448,6 +521,9 @@ pub fn d3dx_shim_status() -> serde_json::Value {
         })
         .unwrap_or_default();
     serde_json::json!({
+        // enabled = المستخدم فعّلها (علامة دائمة) — هذا اللي تعرضه الواجهة
+        "enabled": guard_enabled(&prefix),
+        // installed = الملف الحالي هو غلافنا فعلاً (قد يُعاد تركيبه قبل التشغيل)
         "installed": shim_installed(&prefix),
         "log": log.display().to_string(),
         "tail": tail,

@@ -1278,8 +1278,8 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         }
         // غلاف تشخيص D3DX (إن كان مثبّتاً) ⇒ يسجّل كل استدعاء للمترجم.
         // اللعبة ترث بيئة عميل ستيم ⇒ reaches the game's own process.
-        if crate::d3dx::shim_installed(&prefix) {
-            cmd.env("JISR_D3DX_LOG", crate::d3dx::shim_log_path());
+        if crate::d3dx::guard_enabled(&prefix) {
+            cmd.env("JISR_D3DX_LOG", crate::d3dx::SHIM_LOG_WIN_PATH);
         }
         cmd.arg(&dos_exe)
             // معيار ستيم على Wine: بند Chromium الداخلي ما يشتغل صح تحت Wine

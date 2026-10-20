@@ -1052,51 +1052,45 @@ fn spawn_crash_watcher(
                 _ => {}
             }
 
-            // إعادة محاولة تلقائية بتركيبة مختلفة (حد ٣ محاولات)
-            if attempt < 2 {
-                if let Some(next) = profile.next_candidate(&verdict.action) {
-                    if auto_retry_enabled() {
-                        let _ = crate::combo::save(&next);
-                        crate::debuglog::raw(
-                            "info",
-                            "steam",
-                            &format!(
-                                "auto retry appid={appid} attempt={} profile={}",
-                                attempt + 1,
-                                next.describe_ar()
-                            ),
-                        );
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                        // استدعاء متكرر غير مباشر ⇒ نحتاج Box (الحجم لا ينتهي)
-                        match Box::pin(launch_game(app.clone(), appid, next, attempt + 1, true))
-                            .await
-                        {
-                            Ok(()) => {}
-                            Err(e) => {
-                                // فشل إعادة التشغيل ⇒ نخبر المستخدم (مو نبلع الخطأ)
+            // **الإصلاح الجذري لانهيار المترجم الأصلي**: الجذر المُثبت معملياً
+            // هو `pTarget = NULL` (اللعبة تاخذه من D3DXGetPixelShaderProfile
+            // التي ترجع NULL تحت Wine). نفعّل الغلاف الحارس **تلقائياً**
+            // ونعيد التشغيل بنفس التركيبة (native) — بدون ما نغيّر المترجم.
+            // العلامة الدائمة تمنع التكرار: المرة الجاية نكمل لتركيبة أخرى.
+            if verdict.action == "try-builtin-compiler" {
+                let prefix = crate::bottle::bottle_dir(crate::bottle::MAIN_ID);
+                if !crate::d3dx::guard_enabled(&prefix) {
+                    if let Some(wine) = crate::bottle::wine_bin() {
+                        match crate::d3dx::install_shim(&wine, &prefix).await {
+                            Ok(()) => {
                                 crate::debuglog::raw(
-                                    "warn",
+                                    "info",
                                     "steam",
-                                    &format!("auto retry failed appid={appid}: {e}"),
+                                    "d3dx guard auto-enabled (null target repair)",
                                 );
-                                write_crash_state(
-                                    appid,
-                                    &CrashState {
-                                        at_ms: crate::now_ms(),
+                                if attempt < 2 {
+                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                    let _ = Box::pin(launch_game(
+                                        app.clone(),
                                         appid,
-                                        class: "retry-failed".into(),
-                                        headline_ar: "ما قدرنا نعيد تشغيل اللعبة تلقائياً".into(),
-                                        next_ar: e,
-                                        action: verdict.action.clone(),
-                                        attempts: attempt as u32 + 1,
-                                    },
-                                );
-                                let _ = app.emit("jisr-crash", appid);
+                                        profile.clone(),
+                                        attempt + 1,
+                                        true,
+                                    ))
+                                    .await;
+                                    return;
+                                }
                             }
+                            Err(e) => crate::debuglog::raw(
+                                "warn",
+                                "steam",
+                                &format!("d3dx guard install failed: {e}"),
+                            ),
                         }
                     }
                 }
             }
+
             return;
         }
     });
@@ -1290,6 +1284,11 @@ async fn launch_game(
     cmd.env("WINEPREFIX", &prefix);
     bottle::apply_wine_env(&mut cmd, true);
     graphics::apply_env(&mut cmd, true);
+    // سجل الحارس يُكتب داخل القارورة (`C:\...`) — العملية ويندوز، فما ينفع
+    // مسار ماك هنا (كان السجل يطلع فاضي دائماً).
+    if crate::d3dx::guard_enabled(&prefix) {
+        cmd.env("JISR_D3DX_LOG", crate::d3dx::SHIM_LOG_WIN_PATH);
+    }
     let (out, err) = launch_stdio(appid);
     cmd.arg(&dos_exe)
         .arg("-applaunch")

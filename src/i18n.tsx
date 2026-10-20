@@ -124,7 +124,10 @@ const ar = {
   themeSystem: "النظام",
   language: "اللغة",
   languageSystem: "لغة النظام",
-  graphicsLayer: "طبقة الرسومات",
+  graphicsLayer: "المحرّك الرسومي",
+  stackFixed: "DXVK + Vulkan + D3DX9 أصلي",
+  stackFixedHint:
+    "تركيبة واحدة حديثة تُختار تلقائياً لكل لعبة — ما فيه شيء تبدّله ولا تجارب.",
   gfxAuto: "تلقائي (موصى به)",
   gfxHint:
     "DXVK يسرّع DirectX 10/11. لو ظهرت مشاكل في لعبة، بدّله إلى WineD3D. التغيير يحتاج إعادة تشغيل ستيم.",
@@ -160,10 +163,10 @@ const ar = {
   engineChoiceSaved: "بدّلنا نسخة المحرك — أعد تشغيل ستيم لتطبيقها.",
   d3dxShimLabel: "حماية مترجم D3DX",
   d3dxShimHint:
-    "Fixes old DX9 game crashes: wraps the shader compiler and stops the null-input jump (pTarget=NULL) — the exact LIMBO crash, proven in a lab. The original is kept; revert with one click.",
-  d3dxShimInstall: "فعّل الحماية",
-  d3dxShimRemove: "أوقف الحماية",
-  d3dxShimOn: "مفعّلة — آخر الاستدعاءات",
+    "تشتغل تلقائياً قبل كل تشغيل: تعترض مدخل الشيدر الفارغ (pTarget=NULL) اللي ينهار فيه مترجم مايكروسوفت — نفس انهيار LIMBO المُثبت معملياً. الأصل محفوظ دائماً.",
+  d3dxShimInstall: "إعادة تثبيت",
+  d3dxShimRemove: "استرجاع الأصل",
+  d3dxShimOn: "مفعّلة دائماً — آخر الاستدعاءات",
   externalEngine: "محرّك خارجي (Whisky)",
   externalEngineHint:
     "محرّك Whisky (نسل CodeWeavers) فيه رقعة تُظهر واجهة ستيم عبر Metal + DXMT. نزّله بنفسك ونستخدمه كما هو — ما نوزّع أي ملف.",
@@ -442,7 +445,10 @@ const en: Record<TKey, string> = {
   themeSystem: "System",
   language: "Language",
   languageSystem: "System language",
-  graphicsLayer: "Graphics layer",
+  graphicsLayer: "Graphics engine",
+  stackFixed: "DXVK + Vulkan + native D3DX9",
+  stackFixedHint:
+    "One modern stack, chosen automatically for every game — nothing to switch or experiment with.",
   gfxAuto: "Auto (recommended)",
   gfxHint:
     "DXVK speeds up DirectX 10/11. If a game misbehaves, switch to WineD3D. Changing it requires restarting Steam.",
@@ -478,10 +484,10 @@ const en: Record<TKey, string> = {
   engineChoiceSaved: "Engine version changed — restart Steam to apply it.",
   d3dxShimLabel: "D3DX compiler guard",
   d3dxShimHint:
-    "Fixes old DX9 game crashes: wraps the shader compiler and stops the null-input jump (pTarget=NULL) — the exact LIMBO crash, proven in a lab. The original is kept; revert with one click.",
-  d3dxShimInstall: "Enable guard",
-  d3dxShimRemove: "Disable guard",
-  d3dxShimOn: "Enabled — recent calls",
+    "Runs before every launch: intercepts the null shader target (pTarget=NULL) that crashes Microsoft's compiler — the exact LIMBO crash, proven in a lab. The original is always kept.",
+  d3dxShimInstall: "Reinstall",
+  d3dxShimRemove: "Restore original",
+  d3dxShimOn: "Always on — recent calls",
   externalEngine: "External engine (Whisky)",
   externalEngineHint:
     "Whisky's engine (CodeWeavers lineage) carries the winemac patch that renders Steam's UI through Metal, plus DXMT. Install it yourself — we redistribute nothing.",

@@ -858,7 +858,7 @@ fn classify_graphics(
             class: FaultClass::D3dxNative,
             crashed_module: crashed,
             headline_ar: format!("الانهيار داخل {name} — نسخة مايكروسوفت الأصلية"),
-            next_ar: "المترجم الأصلي ينهار على مدخل فارغ (pTarget=NULL مُثبت معملياً) — فعّل «حماية مترجم D3DX» في الإعدادات (زر واحد) وإلا نبدّل المترجم لنسخة Wine"
+            next_ar: "المترجم الأصلي ينهار على مدخل فارغ (pTarget=NULL مُثبت معملياً) — حماية المترجم تُثبَّت تلقائياً قبل كل تشغيل؛ أعد المحاولة الآن، وإذا تكرر انسخ السجل من الإعدادات"
                 .to_string(),
             action: "try-builtin-compiler".to_string(),
             evidence: ev,

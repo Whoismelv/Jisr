@@ -182,11 +182,11 @@ pub struct GameProfile {
 }
 
 impl GameProfile {
-    /// الافتراضي المعقول: DXVK + D3DX9 الأصلي + مترجم أصلي + Vulkan،
-    /// بلا نافذة مفروضة، والـoverlay مفعّل.
+    /// **التركيبة الحديثة الواحدة** (بلا مقايضة):
+    /// DXVK + D3DX9 الأصلي + مترجم أصلي (مع الحارس الدائم) + Vulkan.
     ///
-    /// هذا هو التركيب الذي ينجح في أغلب ألعاب DX9 على macOS، ونبدأ منه
-    /// ثم نعدّل حسب نتيجة الانهيار (انظر `next_candidate`).
+    /// الـoverlay مقفول: هوكل `IDirect3DDevice9::CreateDevice` يسبب
+    /// انهيارات DX9، والمستخدم قافله أصلاً.
     pub fn default_for(appid: u32) -> Self {
         GameProfile {
             appid,
@@ -195,7 +195,7 @@ impl GameProfile {
             compiler: Compiler::Native,
             renderer: Renderer::Vulkan,
             windowed: false,
-            overlay: true,
+            overlay: false,
             attempts: 0,
             tried: Vec::new(),
             updated_ms: now_ms(),
@@ -620,7 +620,7 @@ mod tests {
         assert_eq!(p.compiler, Compiler::Native);
         assert_eq!(p.renderer, Renderer::Vulkan);
         assert!(!p.windowed);
-        assert!(p.overlay);
+        assert!(!p.overlay);
         assert_eq!(p.attempts, 0);
         assert!(p.updated_ms > 0, "الوقت لازم يكون مضبوط");
     }
@@ -726,19 +726,16 @@ mod tests {
     #[test]
     fn overlay_tokens_toggle_the_hook() {
         let p = GameProfile::default_for(1);
-        assert!(p.overlay, "الـoverlay مفعّل افتراضياً");
-        let off = p.next_candidate("disable-overlay").expect("فيه تغيير");
-        assert!(!off.overlay);
+        assert!(!p.overlay, "الـoverlay مقفول افتراضياً (هوكل D3D9)");
+        let on = p.next_candidate("enable-overlay").expect("فيه تغيير");
+        assert!(on.overlay);
         assert!(
-            off.next_candidate("disable-overlay").is_none(),
-            "الـoverlay معطّل أصلاً — ما فيه تغيير"
+            on.next_candidate("enable-overlay").is_none(),
+            "الـoverlay مفعّل أصلاً — ما فيه تغيير"
         );
-        // الرجوع للـoverlay مفعّل = التركيبة الافتراضية ⇒ جُرّبت؟ لا، لكن
-        // «enable-overlay» منTurbo لا ينفع لأنه سيعيدنا لتركيبة معروفة.
-        assert!(
-            off.next_candidate("enable-overlay").is_none(),
-            "ما نرجع لتركيبة مجرّبة"
-        );
+        // الرجوع للـoverlay مقفول = التركيبة الافتراضية (جُرّبت) ⇒ ممنوع
+        let off = on.next_candidate("disable-overlay");
+        assert!(off.is_none(), "الرجوع لتركيبة جُرّبت ممنوع");
     }
 
     #[test]

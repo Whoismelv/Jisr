@@ -21,13 +21,8 @@ import * as Icon from "./Icons";
 import {
   debugLogPath,
   exportDebugReport,
-  getGraphicsMode,
-  getAutoRetry,
   getCrashStates,
-  resetGameProfile,
-  setAutoRetry,
   type CrashState,
-  setGraphicsMode,
   d3dxStatus,
   cefShimDisable,
   cefShimEnable,
@@ -36,8 +31,6 @@ import {
   setEngineChoice,
   detectExternalEngines,
   getD3dxShimStatus,
-  installD3dxShim,
-  removeD3dxShim,
   type D3dxShimStatus,
   externalEngineStatus,
   setExternalEngine,
@@ -51,7 +44,6 @@ import {
   type D3dxStatus,
   type DownloadProgress,
   type Game,
-  type GraphicsMode,
   type LogEntry,
   type SteamGame,
   type SystemInfo,
@@ -681,32 +673,9 @@ const SteamLibrary = memo(function SteamLibrary({
                       {lang === "en"
                         ? `${crashEn(crashes[g.appid].class)} — ${crashes[g.appid].next_ar}`
                         : `${crashes[g.appid].headline_ar} — ${crashes[g.appid].next_ar}`}
-                      {" · "}
-                      <button
-                        className="linkish"
-                        onClick={() =>
-                          resetGameProfile(g.appid)
-                            .then(() => {
-                              refreshCrashes();
-                              onRefresh();
-                            })
-                            .catch(() => {})
-                        }
-                      >
-                        {t("resetProfile")}
-                      </button>
                     </span>
                   )}
-                  {/* خطة التشغيل التلقائي: أي طبقة تناسب اللعبة وأي موانع */}
-                  {g.plan && g.plan.layer_labels.length > 0 && (
-                    <span className="muted small">
-                      {t("autoPlan")}: {g.plan.layer_labels.join(" · ")}
-                      {g.plan.profile_ar ? ` — ${g.plan.profile_ar}` : ""}
-                      {g.plan.profile_attempts > 0
-                        ? ` · ${t("autoAttempts", { n: g.plan.profile_attempts })}`
-                        : ""}
-                    </span>
-                  )}
+                  {/* موانع حقيقية فقط (DX12/anti-cheat) — بلا لغة تركيبات */}
                   {g.plan && g.plan.blockers.length > 0 && (
                     <span className="game-issue blocked">
                       {g.plan.blockers.join(" · ")}
@@ -768,12 +737,6 @@ const SteamCard = memo(function SteamCard({
   const du = isActive(p);
   const running = !!s?.running;
   // إعادة المحاولة التلقائية بعد الانهيار
-  const [autoRetry, setAutoRetryState] = useState(true);
-  useEffect(() => {
-    getAutoRetry()
-      .then(setAutoRetryState)
-      .catch(() => {});
-  }, []);
   // الألوان تشرح الحالة: أخضر=جاهز/شغّال · أزرق=جاري عمل · كهرماني=يحتاج ضغطة منك · رمادي=ما بدأنا
   const dotCls = !s
     ? "off"
@@ -855,24 +818,6 @@ const SteamCard = memo(function SteamCard({
           <p className="muted small">
             {t("steamUiScale", { n: s?.desktop_scale ?? 1 })}
           </p>
-          {/* إعادة المحاولة التلقائية: عند انهيار اللعبة نغيّر التركيبة بأنفسنا */}
-          <Row label={t("autoRetryLabel")} hint={t("autoRetryHint")}>
-            <Segmented
-              id="autoretry"
-              value={autoRetry ? "on" : "off"}
-              onChange={(v) => {
-                const on = v === "on";
-                setAutoRetryState(on);
-                setAutoRetry(on)
-                  .then(() => notify(t("saved")))
-                  .catch((err) => notify(String(err)));
-              }}
-              options={[
-                { value: "on", label: t("shimOn") },
-                { value: "off", label: t("shimOff") },
-              ]}
-            />
-          </Row>
           {s?.last_launch &&
             (() => {
               const l = s.last_launch;
@@ -1213,16 +1158,6 @@ export const SettingsPage = memo(function SettingsPage({
   const { t, choice: langChoice, setChoice: setLangChoice } = useI18n();
   const { theme, setTheme } = useTheme();
   // وضع الرسومات الحقيقي (يُحفظ في الخلفية ويُطبَّق على التشغيل التالي)
-  const [gfx, setGfxState] = useState<GraphicsMode>("auto");
-  useEffect(() => {
-    getGraphicsMode()
-      .then(setGfxState)
-      .catch(() => {});
-  }, []);
-  const setGfx = useCallback((mode: GraphicsMode) => {
-    setGfxState(mode);
-    setGraphicsMode(mode).catch(() => {});
-  }, []);
 
   // app version shown in the updates card
   const [appVer, setAppVer] = useState<string | null>(null);
@@ -1386,42 +1321,11 @@ export const SettingsPage = memo(function SettingsPage({
             {t("install")} 11.6.1
           </Button>
         )}
-        {/* غلاف تشخيص D3DX: مِجهر + مِطرقة لمترجم الشيدرات */}
+        {/* الحماية دائماً مفعّلة — تُثبَّت قبل كل تشغيل، بلا مفتاح */}
         <Row label={t("d3dxShimLabel")} hint={t("d3dxShimHint")}>
-          {shimStatus?.installed ? (
-            <span className="value muted">
-              {t("d3dxShimOn")}
-              <Button
-                variant="plain"
-                onClick={() => {
-                  removeD3dxShim()
-                    .then(() => {
-                      setShimStatus(null);
-                      notify(t("saved"));
-                    })
-                    .catch((e) => notify(String(e)));
-                }}
-              >
-                {t("d3dxShimRemove")}
-              </Button>
-            </span>
-          ) : (
-            <Button
-              variant="tinted"
-              onClick={() => {
-                installD3dxShim()
-                  .then(() => {
-                    setShimStatus({ installed: true, log: "", tail: "" });
-                    notify(t("d3dxShimOn"));
-                  })
-                  .catch((e) => notify(String(e)));
-              }}
-            >
-              {t("d3dxShimInstall")}
-            </Button>
-          )}
+          <span className="value muted">{t("d3dxShimOn")}</span>
         </Row>
-        {shimStatus?.installed && shimStatus.tail ? (
+        {shimStatus?.enabled && shimStatus.tail ? (
           <div className="d3dx-log">
             <pre className="d3dx-log-text">{shimStatus.tail}</pre>
             <Button
@@ -1476,17 +1380,8 @@ export const SettingsPage = memo(function SettingsPage({
             <span className="value muted">{t("externalEngineNone")}</span>
           )}
         </Row>
-        <Row label={t("graphicsLayer")} hint={t("gfxHint")}>
-          <Segmented
-            id="gfx"
-            value={gfx}
-            onChange={setGfx}
-            options={[
-              { value: "auto", label: t("gfxAuto") },
-              { value: "dxvk", label: "DXVK" },
-              { value: "wined3d", label: "WineD3D" },
-            ]}
-          />
+        <Row label={t("graphicsLayer")} hint={t("stackFixedHint")}>
+          <span className="value">{t("stackFixed")}</span>
         </Row>
         {/* DXVK: الطبقة اللي تحوّل DirectX إلى Vulkan — بدونها الألعاب تسقط
             على WineD3D وترفض شيدرات Apple ⇒ شاشة سوداء/انهيار */}

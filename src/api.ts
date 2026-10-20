@@ -361,6 +361,9 @@ export const clearExternalEngine = () => call<void>("engine_clear_external");
 
 /** غلاف تشخيص مترجم الـHLSL (D3DX shim) */
 export type D3dxShimStatus = {
+  /** المستخدم فعّل الحماية (علامة دائمة داخل القارورة) */
+  enabled: boolean;
+  /** الملف الحالي هو غلافنا فعلاً */
   installed: boolean;
   log: string;
   tail: string;
