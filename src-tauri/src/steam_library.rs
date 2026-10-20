@@ -480,6 +480,34 @@ fn game_dir(appid: u32) -> Option<PathBuf> {
     None
 }
 
+/// هل الملف التنفيذي للمحرك فيه دعم Vulkan للـ32-بت؟
+/// بدونه: DXVK 32-بت ما يقدر يحمّل `vulkan-1.dll` ⇒ Wine يرجع لـWineD3D
+/// (ترجمة GLSL) ⇒ نفس خطأ الـpixel shader.
+fn engine_has_i386_vulkan(wine: &Path) -> bool {
+    let Some(root) = wine.parent().and_then(Path::parent) else {
+        return false;
+    };
+    ["lib/wine", "lib64/wine", "lib/wine64"].iter().any(|dir| {
+        root.join(dir)
+            .join("i386-windows")
+            .join("vulkan-1.dll")
+            .is_file()
+    })
+}
+
+/// اسم اللعبة الرسمي من المانيفست (للرسائل)
+fn game_name(appid: u32) -> Option<String> {
+    for apps in library_roots() {
+        let manifest = apps.join(format!("appmanifest_{appid}.acf"));
+        if let Some(text) = read_limited(&manifest) {
+            if let Some((_, name, _, _)) = parse_manifest(&text) {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
 /// ملفات مساعدة ما نحسبها «اللعبة» (مثبّتات/أدوات كراش)
 const SKIP_EXE: [&str; 12] = [
     "unins",
@@ -728,20 +756,17 @@ pub async fn steam_game_launch(
     bottle::sync_ca_bundle(&prefix);
     // فحص اللعبة قبل التشغيل: نسجّل DirectX والمعمارية والموانع المعروفة
     // (هذا اللي يخلّينا نعرف السبب بدل التخمين)
-    if let Some(dir) = game_dir(appid) {
-        let probe = probe_game_dir(&dir);
+    let probe = game_dir(appid).map(|dir| (dir.clone(), probe_game_dir(&dir)));
+    if let Some((_, p)) = &probe {
         crate::debuglog::raw(
             "info",
             "steam",
             &format!(
                 "game_probe appid={appid} dx={} x64={} issues={:?} exe={}",
-                probe.dx.as_deref().unwrap_or("?"),
-                probe
-                    .is_64
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "?".into()),
-                probe.issues,
-                probe.exe.as_deref().unwrap_or("?")
+                p.dx.as_deref().unwrap_or("?"),
+                p.is_64.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
+                p.issues,
+                p.exe.as_deref().unwrap_or("?")
             ),
         );
     }
@@ -752,13 +777,36 @@ pub async fn steam_game_launch(
     let reg_ok = graphics::apply_registry_overrides(&wine, &prefix).await;
     // حزام أمان للعرض: يمنع الألعاب القديمة من تعتيم الشاشة أو احتكارها بالكامل
     let safety = bottle::ensure_mac_safety(&wine, &prefix).await;
+
+    // حقائق الطبقة — نعرضها في الواجهة عشان المستخدم يعرف بدون سجل
+    let win = prefix.join("drive_c").join("windows");
+    let d3d9_64 = win.join("system32").join("d3d9.dll").is_file();
+    let d3d9_32 = win.join("syswow64").join("d3d9.dll").is_file();
+    let vulkan_32 = engine_has_i386_vulkan(&wine);
     crate::debuglog::raw(
         "info",
         "steam",
         &format!(
-            "layer state: dxvk_deployed={deployed} registry_overrides={reg_ok} mac_safety={safety}"
+            "layer state: dxvk_deployed={deployed} registry_overrides={reg_ok} mac_safety={safety} d3d9_64={d3d9_64} d3d9_32={d3d9_32} vulkan_32={vulkan_32}"
         ),
     );
+    if let Some((dir, p)) = &probe {
+        steam::write_launch_state(&steam::LaunchState {
+            at_ms: crate::now_ms(),
+            game: game_name(appid).unwrap_or_else(|| {
+                dir.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            }),
+            dx: p.dx.clone().unwrap_or_else(|| "?".into()),
+            is_64: p.is_64.unwrap_or(true),
+            dxvk_deployed: deployed,
+            registry_ok: reg_ok,
+            d3d9_64,
+            d3d9_32,
+            vulkan_32,
+        });
+    }
     if let Some(dir) = mac_exe.parent() {
         steam::prepare_steam_ui(&app, dir);
     }

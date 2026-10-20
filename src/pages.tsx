@@ -663,6 +663,33 @@ const SteamCard = memo(function SteamCard({
           <p className="muted small">
             {t("steamUiScale", { n: s?.desktop_scale ?? 1 })}
           </p>
+          {s?.last_launch &&
+            (() => {
+              const l = s.last_launch;
+              const dllOk = l.is_64 ? l.d3d9_64 : l.d3d9_32;
+              const ok = l.dxvk_deployed && l.registry_ok && dllOk && (l.is_64 || l.vulkan_32);
+              const msg = !l.dxvk_deployed
+                ? t("layerNoDeploy")
+                : !l.registry_ok
+                  ? t("layerNoRegistry")
+                  : !dllOk
+                    ? t("layerNoDll")
+                    : !l.is_64 && !l.vulkan_32
+                      ? t("layerNoVulkan32")
+                      : t("layerOk");
+              return (
+                <p className="muted small">
+                  {t("lastLaunch", {
+                    game: l.game,
+                    dx: l.dx.toUpperCase(),
+                    arch: l.is_64 ? "64" : "32",
+                  })}{" "}
+                  <span className={"game-issue" + (ok ? "" : " blocked")}>
+                    {msg}
+                  </span>
+                </p>
+              );
+            })()}
         </>
       ) : s.installing ? (
         <div className="row-actions">

@@ -197,6 +197,19 @@ export const gameStop = (id: string) => call<void>("game_stop", { id });
 // ============================================================
 //  ستيم (المسار الرسمي)
 // ============================================================
+/** حقائق آخر تشغيل لعبة: هل الطبقة انتشرت فعلاً؟ */
+export type LastLaunch = {
+  at_ms: number;
+  game: string;
+  dx: string;
+  is_64: boolean;
+  dxvk_deployed: boolean;
+  registry_ok: boolean;
+  d3d9_64: boolean;
+  d3d9_32: boolean;
+  vulkan_32: boolean;
+};
+
 export type SteamStatus = {
   /** مثبّت ستيم الرسمي منزّل ومحفوظ؟ */
   installer_ready: boolean;
@@ -211,6 +224,8 @@ export type SteamStatus = {
   ui_gpu: boolean;
   /** معامل تحجيم الواجهة: 2 على شاشات Retina */
   desktop_scale: number;
+  /** آخر لعبة شغّلناها وحالة الطبقة وقتها */
+  last_launch: LastLaunch | null;
 };
 
 /** حالة ستيم الكاملة */

@@ -51,6 +51,39 @@ pub struct SteamState {
     stopped: AtomicBool, // إيقاف بطلب المستخدم (نميّزه عن الفشل الحقيقي)
 }
 
+/// حالة آخر تشغيل لعبة — نعرضها في الواجهة بدل ما يفتح المستخدم السجل
+#[derive(Serialize, serde::Deserialize, Clone, Default)]
+pub struct LaunchState {
+    pub at_ms: u64,
+    pub game: String,
+    pub dx: String,
+    pub is_64: bool,
+    /// هل ملفات DXVK انتشرت داخل القارورة؟
+    pub dxvk_deployed: bool,
+    /// هل تجاوزات الريجستري (native) انكتبت؟
+    pub registry_ok: bool,
+    /// d3d9.dll موجود في system32 (64-بت)؟
+    pub d3d9_64: bool,
+    /// d3d9.dll موجود في syswow64 (32-بت)؟
+    pub d3d9_32: bool,
+    /// vulkan-1.dll للـ32-بت موجود في المحرك؟ (بدونه DXVK 32-بت ما يحمّل)
+    pub vulkan_32: bool,
+}
+
+fn launch_state_path() -> std::path::PathBuf {
+    crate::data_dir().join("last-launch.json")
+}
+
+pub(crate) fn write_launch_state(state: &LaunchState) {
+    if let Ok(text) = serde_json::to_string(state) {
+        let _ = std::fs::write(launch_state_path(), text);
+    }
+}
+
+fn read_launch_state() -> Option<LaunchState> {
+    serde_json::from_str(&std::fs::read_to_string(launch_state_path()).ok()?).ok()
+}
+
 #[derive(Serialize, Clone)]
 pub struct SteamStatus {
     pub installer_ready: bool,
@@ -63,6 +96,8 @@ pub struct SteamStatus {
     pub ui_gpu: bool,
     /// معامل تحجيم الواجهة: 2 على شاشات Retina (حاد) و1 على غيرها
     pub desktop_scale: u8,
+    /// آخر لعبة شغّلناها: هل الطبقة انتشرت فعلاً؟
+    pub last_launch: Option<LaunchState>,
 }
 
 /// ملف المثبّت المنزّل على الماك (تحققنا من بصمته وقت التنزيل — ونعيد التحقق قبله)
@@ -452,30 +487,70 @@ pub(crate) fn cef_flags_override() -> Option<String> {
     Some(line)
 }
 
-/// هل الشاشة Retina (2x)؟ — نكتشفها مرة واحدة ونخزّن النتيجة.
+/// هل الشاشة Retina (2x)؟
 ///
 /// السبب: واجهة ستيم (CEF) داخل Wine ترسم بدقة 1x مهما كانت الشاشة ⇒
 /// **تظهر ضبابية** على شاشات Retina. الحل: `-forcedesktopscaling 2` (يعني 2x).
+///
+/// نستخدم `NSScreen.backingScaleFactor` (الأدق: 2.0 على Retina، 1.0 على غيرها)
+/// عبر JXA، ونرجع لـ`system_profiler` لو فشل. **بلا كاش دائم** — كان يخزّن
+/// قيمة خاطئة مرة واحدة ويبقى عليها للأبد (سبب بقاء الضبابية عند بعض الأجهزة).
 pub(crate) fn retina_display() -> bool {
-    let cache = crate::data_dir().join("retina.txt");
-    if let Ok(text) = std::fs::read_to_string(&cache) {
-        return text.trim() == "1";
+    if let Some(v) = display_scale_override() {
+        return v >= 2;
     }
+    // الأدق: مقياس الشاشة الحقيقي من AppKit
+    if let Ok(out) = std::process::Command::new("osascript")
+        .arg("-l")
+        .arg("JavaScript")
+        .arg("-e")
+        .arg("ObjC.import('AppKit'); $.NSScreen.mainScreen.backingScaleFactor.js")
+        .output()
+    {
+        if let Ok(text) = String::from_utf8(out.stdout) {
+            if let Ok(v) = text.trim().parse::<f64>() {
+                if v >= 1.5 {
+                    return true;
+                }
+                if v > 0.0 {
+                    return false;
+                }
+            }
+        }
+    }
+    // احتياط: وصف الشاشة
     let out = std::process::Command::new("system_profiler")
         .arg("SPDisplaysDataType")
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
         .unwrap_or_default();
-    let is_retina = out.contains("retina");
-    let _ = std::fs::write(&cache, if is_retina { "1" } else { "0" });
-    is_retina
+    out.contains("retina")
+}
+
+/// تجاوز يدوي لمقياس الواجهة: `~/Library/Application Support/Jisr/display-scale.txt`
+/// (اكتب `1` أو `2`) — لمن عنده شاشة غريبة أو يبي تجربة قيمة مختلفة.
+fn display_scale_override() -> Option<u8> {
+    let text = std::fs::read_to_string(crate::data_dir().join("display-scale.txt")).ok()?;
+    match text.trim() {
+        "1" => Some(1),
+        "2" => Some(2),
+        _ => None,
+    }
 }
 
 /// معامل تحجيم الواجهة: 2 على شاشات Retina (حاد)، 1 على غيرها
 pub(crate) fn desktop_scaling() -> &'static str {
     if retina_display() { "2" } else { "1" }
 }
+
+/// فلاقين CEF الافتراضية: رسم برمجي **متعدد العمليات**.
+///
+/// `--single-process` كان يخلي كل نسخة مساعدة من `steamwebhelper` تبني
+/// نافذتها الخاصة ⇒ **نافذتان لستيم** (وحدة حقيقية ووحدة شبح). أزلناه:
+/// تعطيل الـGPU وحده يحل الشاشة السوداء (سببها سياق GLES 3.0)، ونبقى
+/// متعددي العمليات = أسرع وأثبت.
+pub(crate) const DEFAULT_CEF_FLAGS: &str = "--disable-gpu --disable-gpu-compositing";
 
 fn set_phase(state: &SteamState, phase: Phase) {
     if let Ok(mut p) = state.phase.lock() {
@@ -544,6 +619,7 @@ pub async fn steam_status(state: State<'_, SteamState>) -> Result<SteamStatus, S
         bottle_ready: bottle::bottle_ready(bottle::MAIN_ID),
         ui_gpu: cef_flags_override().is_some(),
         desktop_scale: if retina_display() { 2 } else { 1 },
+        last_launch: read_launch_state(),
     })
 }
 
@@ -791,6 +867,24 @@ pub async fn steam_install(app: AppHandle, state: State<'_, SteamState>) -> Resu
     Ok(())
 }
 
+/// عمليات steam.exe الشغّالة الآن (لو فيه ستيم من جلسة سابقة)
+fn steam_pids() -> Vec<u32> {
+    let Ok(out) = std::process::Command::new("pgrep")
+        .arg("-f")
+        .arg("steam.exe")
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .collect()
+}
+
 /// شغّل ستيم داخل القارورة الرئيسية
 #[tauri::command]
 pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(), String> {
@@ -819,6 +913,33 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
     let prefix = bottle::bottle_dir(bottle::MAIN_ID);
     bottle::sync_ca_bundle(&prefix);
 
+    // ستيم شغّال أصلاً (من جلسة سابقة أو نافذة تانية)؟ نتبنّاه بدل ما نفتح
+    // نسخة ثانية — وهذا كان سبب «نافذتين ستيم» لما التطبيق ينسى الحالة.
+    if !steam_pids().is_empty() {
+        set_phase(&state, Phase::Running);
+        state.stopped.store(false, Ordering::Relaxed);
+        emit(&app);
+        crate::debuglog::raw(
+            "info",
+            "steam",
+            "steam already running — adopting instead of spawning",
+        );
+        let app2 = app.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                if steam_pids().is_empty() {
+                    if let Some(st) = app2.try_state::<SteamState>() {
+                        set_phase(&st, Phase::Idle);
+                    }
+                    emit(&app2);
+                    break;
+                }
+            }
+        });
+        return Ok(());
+    }
+
     // قفل التشغيل: نتحقق أولاً، ثم نثبّت الغلاف/الإعدادات ونشغّل — بلا await
     let child = {
         let mut ph = state.phase.lock().map_err(|_| "خطأ داخلي".to_string())?;
@@ -839,10 +960,10 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         cmd.env("WINEPREFIX", &prefix);
         bottle::apply_wine_env(&mut cmd, true);
         graphics::apply_env(&mut cmd, true);
-        // تجاوز تشخيصي اختياري — الواجهة ما تكتبه، نقرأه لو الملف موجود
-        if let Some(flags) = cef_flags_override() {
-            cmd.env("JISR_CEF_FLAGS", flags);
-        }
+        // فلاقين CEF: الافتراضي الجديد (متعدد العمليات، بلا GPU) أو تجاوز المستخدم
+        // — بدون --single-process اللي كان يسبب نافذة ستيم شبح ثانية
+        let cef_flags = cef_flags_override().unwrap_or_else(|| DEFAULT_CEF_FLAGS.to_string());
+        cmd.env("JISR_CEF_FLAGS", &cef_flags);
         cmd.arg(&dos_exe)
             // معيار ستيم على Wine: بند Chromium الداخلي ما يشتغل صح تحت Wine
             .arg("-no-cef-sandbox")

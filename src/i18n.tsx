@@ -262,6 +262,14 @@ const ar = {
   "issue.anticheat": "مضاد غش بدرايفر ويندوز — مستحيل على الماك",
   "issue.x86": "32-بت — ممكن تحتاج تجربة/إعدادات إضافية",
   "issue.dotnet": ".NET — قد تحتاج تثبيت .NET داخل القارورة",
+  lastLaunch: "آخر تشغيل: {game} · {dx} · {arch}-بت —",
+  layerOk: "الطبقة DXVK محمّلة ✓",
+  layerNoDeploy: "ملفات DXVK ما انتشرت داخل القارورة ✗",
+  layerNoRegistry: "تجاوزات الريجستري ما انكتبت ✗ (Wine يستخدم WineD3D)",
+  layerNoDll: "ملف d3d9.dll ما اننسخ لنظام القارورة ✗",
+  layerNoVulkan32: "Vulkan 32-بت غير موجود في المحرك ✗ (DXVK 32-بت ما يقدر يشتغل)",
+  displayScaleHint:
+    "لو الواجهة لسه ضبابية: اكتب 2 في الملف ~/Library/Application Support/Jisr/display-scale.txt وأعد تشغيل ستيم.",
   "log.graphicsReady": "تجهّزت طبقة DXVK لتسريع ألعاب DirectX 10/11.",
   "log.graphicsFailed":
     "تعذّر تجهيز DXVK — الألعاب ستشتغل بالطبقة الافتراضية: {error}",
@@ -529,6 +537,14 @@ const en: Record<TKey, string> = {
   "issue.anticheat": "Kernel-level anti-cheat — impossible on macOS",
   "issue.x86": "32-bit — may need extra setup/testing",
   "issue.dotnet": ".NET — may need .NET installed inside the bottle",
+  lastLaunch: "Last launch: {game} · {dx} · {arch}-bit —",
+  layerOk: "DXVK layer loaded ✓",
+  layerNoDeploy: "DXVK files were not deployed into the bottle ✗",
+  layerNoRegistry: "Registry overrides were not written ✗ (Wine falls back to WineD3D)",
+  layerNoDll: "d3d9.dll was not copied into the bottle's system dir ✗",
+  layerNoVulkan32: "32-bit Vulkan is missing from the engine ✗ (32-bit DXVK can't load)",
+  displayScaleHint:
+    "Still blurry? Write 2 into ~/Library/Application Support/Jisr/display-scale.txt and restart Steam.",
   "log.graphicsReady": "DXVK is ready for DirectX 10/11 game acceleration.",
   "log.graphicsFailed":
     "DXVK setup failed — games will use the default layer: {error}",
