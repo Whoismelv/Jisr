@@ -130,6 +130,9 @@ const ar = {
     "DXVK يسرّع DirectX 10/11. لو ظهرت مشاكل في لعبة، بدّله إلى WineD3D. التغيير يحتاج إعادة تشغيل ستيم.",
   dxvkLayer: "طبقة DXVK",
   layersSection: "الطبقات (تسريع الألعاب)",
+  autoPlan: "الطبقة المناسبة",
+  autoNeedsDxvk: "تحتاج تثبيت طبقة DXVK قبل التشغيل",
+  autoNeedsD3dx: "تحتاج تثبيت D3DX9 الأصلي (من صفحة الإعدادات)",
   layerInstalled: "مثبّتة وجاهزة ✓",
   dxvkMissingHint:
     "مو مثبّتة — بدونها تشتغل الألعاب على WineD3D البطيء وقد تنهار. التنزيل 5 MB.",
@@ -145,7 +148,11 @@ const ar = {
   fontSystem: "خط النظام",
   fontDesc: "التطبيق يستخدم خط النظام (SF على الماك) عشان يطلع طبيعي",
   autoSaveNote: "الإعدادات تُحفظ تلقائياً بمجرد ما تغيّرها — بدون زر حفظ.",
-  engineSection: "المحرك",
+  engineSection: "Engine",
+  engineChoice: "نسخة المحرك",
+  engineChoiceHint:
+    "11.18 = الأحدث (فيها Vulkan/MoltenVK كامل). 11.6.1 = بديل فيه حزمة «إصلاح ستيم» من Gcenx — جرّبه لو واجهة ستيم ما ظهرت.",
+  engineChoiceSaved: "بدّلنا نسخة المحرك — أعد تشغيل ستيم لتطبيقها.",
   install: "تثبيت",
   saved: "تم الحفظ",
   comingSoon: "قريباً",
@@ -264,6 +271,9 @@ const ar = {
     "فعّلنا وضع النافذة في «{name}» — شغّلها الآن من زر «تشغيل».",
   steamUiGpuOn: "رسم الواجهة: GPU",
   steamUiGpuOff: "رسم الواجهة: برمجي",
+  cefModeSoftware: "برمجي",
+  cefModeSingle: "أحادي",
+  cefModeGpu: "GPU",
   steamUiGpuHint:
     "الرسم بالـGPU (عبر Vulkan) أوضح وأسرع — لازم تعيد تشغيل ستيم بعد التبديل",
   steamUiGpuSaved: "حفظنا الإعداد — أعد تشغيل ستيم لتطبيقه.",
@@ -420,6 +430,9 @@ const en: Record<TKey, string> = {
     "DXVK speeds up DirectX 10/11. If a game misbehaves, switch to WineD3D. Changing it requires restarting Steam.",
   dxvkLayer: "DXVK layer",
   layersSection: "Layers (game acceleration)",
+  autoPlan: "Right layer",
+  autoNeedsDxvk: "Needs the DXVK layer installed before playing",
+  autoNeedsD3dx: "Needs native D3DX9 (install it from Settings)",
   layerInstalled: "Installed and ready ✓",
   dxvkMissingHint:
     "Not installed — without it games fall back to slow WineD3D and may crash. 5 MB download.",
@@ -436,6 +449,10 @@ const en: Record<TKey, string> = {
   fontDesc: "Jisr uses the system font (SF on Mac) so it feels native",
   autoSaveNote: "Settings save automatically the moment you change them — no save button.",
   engineSection: "Engine",
+  engineChoice: "Engine version",
+  engineChoiceHint:
+    "11.18 = newest (full Vulkan/MoltenVK). 11.6.1 = alternative with Gcenx's Steam fix — try it if the Steam window never shows.",
+  engineChoiceSaved: "Engine version changed — restart Steam to apply it.",
   install: "Install",
   saved: "Saved",
   comingSoon: "Coming soon",
@@ -552,6 +569,9 @@ const en: Record<TKey, string> = {
     "Windowed mode is on for “{name}” — launch it now with Play.",
   steamUiGpuOn: "UI rendering: GPU",
   steamUiGpuOff: "UI rendering: software",
+  cefModeSoftware: "Software",
+  cefModeSingle: "Single",
+  cefModeGpu: "GPU",
   steamUiGpuHint:
     "GPU rendering (via Vulkan) is sharper and faster — restart Steam after switching",
   steamUiGpuSaved: "Saved — restart Steam to apply it.",

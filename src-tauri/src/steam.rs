@@ -94,6 +94,8 @@ pub struct SteamStatus {
     pub bottle_ready: bool,
     /// رسم واجهة ستيم بالـGPU (أحدّ) بدل الرسم البرمجي (أكثر ثباتاً)
     pub ui_gpu: bool,
+    /// وضع رسم الواجهة الحالي: software | single | gpu
+    pub ui_mode: String,
     /// معامل تحجيم الواجهة: 2 على شاشات Retina (حاد) و1 على غيرها
     pub desktop_scale: u8,
     /// آخر لعبة شغّلناها: هل الطبقة انتشرت فعلاً؟
@@ -148,11 +150,12 @@ static CEF_SHIM: &[u8] = include_bytes!("../assets/steamwebhelper.exe");
 
 /// بصمة داخل الغلاف نفسه — نتعرف بها على أن الملف الحالي غلافنا لا الأصل.
 /// نقبل النسخ القديمة (V1/V2 منشورة) وV3 الحالي حتى نستبدلها بأمان.
-const CEF_SHIM_MARKERS: [&[u8]; 4] = [
+const CEF_SHIM_MARKERS: [&[u8]; 5] = [
     b"JISR_CEF_SHIM_V1",
     b"JISR_CEF_SHIM_V2",
     b"JISR_CEF_SHIM_V3",
     b"JISR_CEF_SHIM_V4",
+    b"JISR_CEF_SHIM_V5",
 ];
 
 /// هل الملف الحالي هو غلاف Jisr؟ (البصمة داخل أول ميغابايت)
@@ -238,14 +241,13 @@ pub fn cef_shim_disable() -> Result<bool, String> {
             let helper = cef.join("steamwebhelper.exe");
             let real = cef.join("steamwebhelper_real.exe");
             // الأصل المحفوظ هو نسخة Valve الكاملة
-            if looks_like_real_helper(&backup_dir.join("steamwebhelper.exe")) {
-                if write_atomic(
-                    &helper,
-                    &std::fs::read(backup_dir.join("steamwebhelper.exe")).unwrap_or_default(),
-                )
-                .is_ok()
-                {
-                    restored = true;
+            let backup = backup_dir.join("steamwebhelper.exe");
+            if looks_like_real_helper(&backup) {
+                // ⚠️ ما نكتب أبداً ملفاً فارغاً فوق أصل Valve (يخرب ستيم)
+                if let Ok(bytes) = std::fs::read(&backup) {
+                    if bytes.len() > 1_000_000 && write_atomic(&helper, &bytes).is_ok() {
+                        restored = true;
+                    }
                 }
             } else if looks_like_real_helper(&real) && std::fs::copy(&real, &helper).is_ok() {
                 restored = true;
@@ -450,12 +452,6 @@ fn rename_stale_items(base: &Path, stamp: u64, renamed: &mut Vec<String>) {
     }
 }
 
-/// علامة «ستيم اشتغل وما تأكدنا إنه خرج نظيف» — نكتبها عند كل تشغيل ناجح،
-/// ونمسحها فقط عند خروج بكود 0. التنظيف يصير **فقط** لو العلامة موجودة.
-fn dirty_flag() -> PathBuf {
-    crate::data_dir().join("steam-dirty.flag")
-}
-
 /// تنظيف بقايا الكاش **بعد كل تشغيل** + تقليم النسخ القديمة.
 ///
 /// لماذا كل تشغيل؟ كاش CEF التالف سبب موثّق لـ«ستيم يفتح بدون نافذة»،
@@ -465,20 +461,19 @@ pub(crate) fn cleanup_after_unclean_exit(steam_dir: &Path) {
     cleanup_stale_steam_state(steam_dir);
 }
 
-/// نحتفظ بأحدث نسختين من النسخ الاحتياطية ونحذف الأقدم
+/// نحتفظ بأحدث نسختين من النسخ الاحتياطية ونحذف الأقدم.
+/// الترتيب حسب **الوقت المدوّن في الاسم** (`.jisr-bak-<millis>`) لا وقت
+/// تعديل الملف (الـrename يحافظ على وقت الأصل ⇒ ترتيب خاطئ).
 fn prune_backups(dir: &Path) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut backups: Vec<(std::time::SystemTime, PathBuf)> = rd
+    let mut backups: Vec<(u64, PathBuf)> = rd
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            if !name.contains(".jisr-bak-") {
-                return None;
-            }
-            let modified = e.metadata().ok()?.modified().ok()?;
-            Some((modified, e.path()))
+            let stamp = name.rsplit(".jisr-bak-").next()?.parse::<u64>().ok()?;
+            Some((stamp, e.path()))
         })
         .collect();
     if backups.len() <= 2 {
@@ -496,12 +491,12 @@ fn prune_backups(dir: &Path) {
 
 /// ستيم انطلق — حتى نشوف خروجه النظيف تعتبر الجلسة «وسخة»
 pub(crate) fn mark_dirty() {
-    let _ = std::fs::write(dirty_flag(), b"1\n");
+    let _ = std::fs::write(crate::data_dir().join("steam-dirty.flag"), b"1\n");
 }
 
 /// خرج بكود 0 — ما فيه بقايا تحتاج تنظيف
 pub(crate) fn mark_clean() {
-    let _ = std::fs::remove_file(dirty_flag());
+    let _ = std::fs::remove_file(crate::data_dir().join("steam-dirty.flag"));
 }
 
 /// تنظيف بقايا الكاش والأقفال القديمة — سبب معروف موثّق لمشكلة
@@ -624,25 +619,33 @@ pub(crate) fn steam_args_override() -> Vec<String> {
 /// `~/Library/Application Support/Jisr/cef-flags.txt` — أول سطر يبدأ بـ`--`
 /// (سطر `steam:` ممنوع هنا — له معالجة مستقلة).
 pub(crate) fn cef_flags_override() -> Option<String> {
-    let text = std::fs::read_to_string(crate::data_dir().join("cef-flags.txt")).ok()?;
-    for line in text.lines() {
-        let line = line.trim();
-        // تجاهل التعليقات وسطر وسائط ستيم — كان يمرّر `steam:...` كفلاق CEF
-        if line.is_empty() || line.starts_with('#') || line.starts_with("steam:") {
-            continue;
+    // 1) ملف الفلاقين (تجاوز يدوي) — له الأولوية
+    if let Some(text) = std::fs::read_to_string(crate::data_dir().join("cef-flags.txt")).ok() {
+        for line in text.lines() {
+            let line = line.trim();
+            // تجاهل التعليقات وسطر وسائط ستيم — كان يمرّر `steam:...` كفلاق CEF
+            if line.is_empty() || line.starts_with('#') || line.starts_with("steam:") {
+                continue;
+            }
+            if !line.starts_with("--") || line.len() > 512 {
+                continue;
+            }
+            if !line
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_=., :".contains(c))
+            {
+                continue;
+            }
+            return Some(line.to_string());
         }
-        if !line.starts_with("--") || line.len() > 512 {
-            continue;
-        }
-        if !line
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_=., :".contains(c))
-        {
-            continue;
-        }
-        return Some(line.to_string());
     }
-    None
+    // 2) الوضع المحفوظ (لو الملف ضاع) — الوضع البرمجي = بلا فلاقين
+    let mode = cef_mode();
+    if mode == "software" {
+        None
+    } else {
+        Some(cef_flags_for_mode(&mode).to_string())
+    }
 }
 
 /// هل الشاشة Retina (2x)؟
@@ -754,12 +757,19 @@ fn set_phase(state: &SteamState, phase: Phase) {
 }
 
 /// هل ستيم شغّال الآن؟ (تحتاجه مكتبة ستيم قبل إرسال أمر تشغيل)
+///
+/// نعتمد على **العمليات الحقيقية** مو على المرحلة internal فقط: بعد إعادة
+/// تشغيل جسر تكون المرحلة Idle بينما ستيم شغّال — وكان يعرض «شغّل ستيم أولاً».
 pub(crate) fn is_running(state: &SteamState) -> bool {
-    state
+    if state
         .phase
         .lock()
         .map(|p| *p == Phase::Running)
         .unwrap_or(false)
+    {
+        return true;
+    }
+    matches!(steam_pids(), Some(v) if !v.is_empty())
 }
 
 /// إصلاحات واجهة ستيم قبل أي تشغيل (الغلاف + HTTP/2). مشتركة بين تشغيل
@@ -814,7 +824,8 @@ pub async fn steam_status(state: State<'_, SteamState>) -> Result<SteamStatus, S
         // بينما ستيم شغّال — وهذا كان يخلي الزر يقول «تشغيل» واللعبة ترفض.
         running: phase == Phase::Running || matches!(steam_pids(), Some(v) if !v.is_empty()),
         bottle_ready: bottle::bottle_ready(bottle::MAIN_ID),
-        ui_gpu: cef_flags_override().is_some(),
+        ui_gpu: cef_mode() == "gpu",
+        ui_mode: cef_mode(),
         desktop_scale: if retina_display() { 2 } else { 1 },
         last_launch: read_launch_state(),
     })
@@ -843,32 +854,75 @@ fn write_cef_flags(path: &Path, cef: Option<&str>) -> std::io::Result<()> {
     std::fs::write(path, out)
 }
 
+/// أوضاع رسم واجهة ستيم (CEF) — كل واحد له فلاقين مثبتة
+///
+/// * `software` — `--disable-gpu --single-process` (الأكثر ثباتاً، لكن بعض
+///   المحركات تسقط عند طلب سياق GLES 3.0 ⇒ نافذة سودا + استهلاك CPU عالي)
+/// * `single` — `--single-process` وحده (يعمل على المحركات المتعثّرة)
+/// * `gpu` — `--in-process-gpu --use-angle=vulkan` (رسم عبر ANGLE→Vulkan→Metal)
+pub const CEF_MODES: [&str; 3] = ["software", "single", "gpu"];
+
+fn cef_flags_for_mode(mode: &str) -> &'static str {
+    match mode {
+        "single" => "--single-process --no-disable-gpu",
+        "gpu" => "--in-process-gpu --use-angle=vulkan --ignore-gpu-blocklist",
+        _ => "--disable-gpu --single-process",
+    }
+}
+
+fn cef_mode_path() -> PathBuf {
+    crate::data_dir().join("cef-mode.txt")
+}
+
+/// وضع رسم الواجهة الحالي
+#[tauri::command]
+pub fn cef_mode() -> String {
+    std::fs::read_to_string(cef_mode_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|m| CEF_MODES.contains(&m.as_str()))
+        .unwrap_or_else(|| "software".to_string())
+}
+
+/// تبديل وضع رسم الواجهة — يحفظ الوضع **والفلاقين** معاً (مصدر واحد للحقيقة)
+#[tauri::command]
+pub fn cef_set_mode(mode: String) -> Result<String, String> {
+    let _trace = crate::debuglog::trace("steam", "cef_set_mode", format!("mode={mode}"));
+    let value = mode.trim().to_string();
+    if !CEF_MODES.contains(&value.as_str()) {
+        return Err("وضع رسم غير معروف".into());
+    }
+    let path = cef_mode_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("تعذّر تجهيز مجلد الإعدادات: {e}"))?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, format!("{value}\n")).map_err(|e| format!("تعذّر حفظ وضع الرسم: {e}"))?;
+    if std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&path);
+        std::fs::rename(&tmp, &path).map_err(|e| format!("تعذّر إتمام حفظ الوضع: {e}"))?;
+    }
+    write_cef_flags(
+        &crate::data_dir().join("cef-flags.txt"),
+        Some(cef_flags_for_mode(&value)),
+    )
+    .map_err(|e| format!("تعذّر حفظ الفلاقين: {e}"))?;
+    crate::debuglog::raw(
+        "info",
+        "steam",
+        &format!("cef mode = {value} ({})", cef_flags_for_mode(&value)),
+    );
+    Ok(value)
+}
+
 /// تبديل رسم واجهة ستيم:
 /// • `false` (الافتراضي): رسم برمجي — الأكثر ثباتاً (مهم مع CEF على Wine)
 /// • `true`: رسم عبر ANGLE → Vulkan → MoltenVK → Metal — **أحدّ وأسرع**
 ///   (يعيد كتابة الفلاقين ⇒ لازم تعيد تشغيل ستيم)
 #[tauri::command]
 pub fn steam_ui_gpu(enabled: bool) -> Result<bool, String> {
-    let path = crate::data_dir().join("cef-flags.txt");
-    if enabled {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("تعذّر تجهيز مجلد الإعدادات: {e}"))?;
-        }
-        write_cef_flags(
-            &path,
-            Some("--in-process-gpu --use-angle=vulkan --ignore-gpu-blocklist"),
-        )
-        .map_err(|e| format!("تعذّر حفظ إعدادات الرسم: {e}"))?;
-    } else {
-        // نحذف سطر CEF فقط — سطر `steam:` وتعليقات المستخدم تبقى
-        write_cef_flags(&path, None).map_err(|e| format!("تعذّر حفظ إعدادات الرسم: {e}"))?;
-    }
-    crate::debuglog::raw(
-        "info",
-        "steam",
-        &format!("ui_gpu_rendering = {enabled} (restart steam to apply)"),
-    );
+    // مصدر واحد للحقيقة: الوضع المحفوظ (وليس سطر الفلاقين لوحده)
+    cef_set_mode(if enabled { "gpu" } else { "software" }.to_string())?;
     Ok(enabled)
 }
 
@@ -1176,8 +1230,12 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
             return Ok(());
         }
         None => {
-            return Err(
-                "ما قدرنا نتحقق من حالة ستيم (pgrep) — أعد المحاولة بدل فتح نسخة ثانية".into(),
+            // pgrep مو متاح ⇒ ما نقدر نتحقق. نكمل التشغيل بدل ما نمنع المستخدم
+            // (منع التشغيل بالكامل كان أسوأ: المستخدم ما يقدر يفتح ستيم أبداً).
+            crate::debuglog::raw(
+                "warn",
+                "steam",
+                "pgrep unavailable — cannot verify a running Steam; launching anyway",
             );
         }
         _ => {}
@@ -1553,7 +1611,7 @@ mod tests {
         h.update(CEF_SHIM);
         let got = format!("{:x}", h.finalize());
         assert_eq!(
-            got, "b3550fb7ccba5ce639059bc8e57569f1ea6c8a637fe09ff8116d1adce7292c74",
+            got, "1bbcd0c05080031c4d9159480c9eb72e86da8f7283e02c9499f1878ce2c42594",
             "تغيّر غلاف CEF — أعد بناءه من tools/steamwebhelper-shim ثم حدّث البصمة هنا"
         );
     }

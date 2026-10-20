@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// بصمة يتعرّف بها ظهر Jisr على أن الملف الحالي هو غلافه (لا نلمس الأصل)
-static MARKER: &[u8; 16] = b"JISR_CEF_SHIM_V4";
+static MARKER: &[u8; 16] = b"JISR_CEF_SHIM_V5";
 
 const REAL_NAME: &str = "steamwebhelper_real.exe";
 const LOG_NAME: &str = "steamwebhelper_shim.log";
@@ -53,9 +53,13 @@ fn flags_for(args: &[String], overridden: Option<&str>) -> Vec<String> {
     let raw = overridden.unwrap_or("");
     let mut tokens: Vec<&str> = raw.split_whitespace().collect();
     let drop_single = tokens.iter().any(|t| *t == "--no-single-process");
-    tokens.retain(|t| *t != "--no-single-process");
+    let drop_gpu_off = tokens.iter().any(|t| *t == "--no-disable-gpu");
+    tokens.retain(|t| *t != "--no-single-process" && *t != "--no-disable-gpu");
 
-    let mut flags: Vec<String> = vec!["--disable-gpu".to_string()];
+    let mut flags: Vec<String> = Vec::new();
+    if !drop_gpu_off {
+        flags.push("--disable-gpu".to_string());
+    }
     if !child && !drop_single {
         flags.push("--single-process".to_string());
     }
@@ -251,19 +255,26 @@ fn main() {
     };
 
     // نربط الأصل بـJob: موت الغلاف = موت الأصل (ما تبقى نافذة شبح).
-    // ⚠️ **اختياري** (`JISR_CEF_JOB=1`): تفعيله افتراضياً كان يطيح واجهة
-    // ستيم (العملية الأصلية تموت مع الغلاف قبل ما ترسم). نخليها للاختبار.
+    // ⚠️ **مهم:** المقبض لازم يبقى حيًّا **لحد ما ينتظر** الغلاف العملية.
+    // لو أسقطناه هنا، `KILL_ON_JOB_CLOSE` يقتل العملية الأصلية فوراً ⇒
+    // «ستيم يفتح بدون نافذة» (هذا بالضبط ما صار في 0.1.21).
+    // ⚠️.opt-in عبر `JISR_CEF_JOB=1` (افتراضياً مفعّل؟ لا — مطفأ).
     #[cfg(windows)]
-    if std::env::var("JISR_CEF_JOB").as_deref() == Ok("1") {
-        match job::Job::new() {
-            Some(j) => {
-                if !j.assign(&child) {
-                    log_line(&dir, "warn: job assign failed (continuing)");
+    let _job = {
+        let mut handle: Option<job::Job> = None;
+        if std::env::var("JISR_CEF_JOB").as_deref() == Ok("1") {
+            match job::Job::new() {
+                Some(j) => {
+                    if !j.assign(&child) {
+                        log_line(&dir, "warn: job assign failed (continuing)");
+                    }
+                    handle = Some(j);
                 }
+                None => log_line(&dir, "warn: job create failed (continuing)"),
             }
-            None => log_line(&dir, "warn: job create failed (continuing)"),
         }
-    }
+        handle
+    };
 
     match child.wait() {
         Ok(status) => {
@@ -332,5 +343,16 @@ mod tests {
         let f = flags_for(&args(&["-lang=en_US"]), Some("--no-single-process"));
         assert!(!f.iter().any(|x| x == "--single-process"));
         assert!(!f.iter().any(|x| x == "--no-single-process"));
+    }
+
+    /// وضع «أحادي»: `--single-process` وحده — بدون `--disable-gpu`
+    /// (تركيبة `--disable-gpu --single-process` هي الوحيدة التي قيستها مصادر
+    ///  مستقلة وتسبب «نافذة ما تظهر» على محركات بلا سياق GLES 3.0)
+    #[test]
+    fn no_disable_gpu_escape_hatch() {
+        let f = flags_for(&args(&["-lang=en_US"]), Some("--single-process --no-disable-gpu"));
+        assert!(f.iter().any(|x| x == "--single-process"));
+        assert!(!f.iter().any(|x| x == "--disable-gpu"));
+        assert!(!f.iter().any(|x| x == "--no-disable-gpu"));
     }
 }

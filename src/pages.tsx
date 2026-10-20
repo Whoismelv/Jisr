@@ -27,10 +27,13 @@ import {
   cefShimDisable,
   cefShimEnable,
   cefShimStatus,
+  getEngineChoice,
+  setEngineChoice,
   steamGameLaunch,
   steamGameWindowed,
   steamGamesList,
-  steamUiGpu,
+  setCefMode,
+  type CefMode,
   type Bottle,
   type D3dxStatus,
   type DownloadProgress,
@@ -42,6 +45,7 @@ import {
 } from "./api";
 import {
   D3DX9_ID,
+  ENGINE_ALT_ID,
   ENGINE_ID,
   GRAPHICS_ID,
   engineButtonState,
@@ -216,7 +220,7 @@ export const HomePage = memo(function HomePage({
           {gfxDl && (
             <EngineDownloadBox
               p={gfxDl}
-              installed={!!sys?.graphics_layer}
+              installed={!!sys?.dxvk_installed}
               onCancel={() => dl.cancel(GRAPHICS_ID)}
             />
           )}
@@ -283,10 +287,10 @@ export const HomePage = memo(function HomePage({
         <Card title={t("layersSection")} icon={<Icon.Download size={16} />}>
           <Row
             label={t("dxvkLayer")}
-            hint={sys?.graphics_layer ? t("layerInstalled") : t("dxvkMissingHint")}
+            hint={sys?.dxvk_installed ? t("layerInstalled") : t("dxvkMissingHint")}
           >
-            {sys?.graphics_layer ? (
-              <span className="value">{sys.graphics_layer}</span>
+            {sys?.dxvk_installed ? (
+              <span className="value">{sys?.graphics_layer ?? "DXVK"}</span>
             ) : isActive(gfxDl) ? (
               <span className="value muted">{t("installing")}</span>
             ) : (
@@ -607,6 +611,25 @@ const SteamLibrary = memo(function SteamLibrary({
                       {issues.map((code) => issueText(code)).join(" · ")}
                     </span>
                   )}
+                  {/* خطة التشغيل التلقائي: أي طبقة تناسب اللعبة وأي موانع */}
+                  {g.plan && g.plan.layer_labels.length > 0 && (
+                    <span className="muted small">
+                      {t("autoPlan")}: {g.plan.layer_labels.join(" · ")}
+                    </span>
+                  )}
+                  {g.plan && g.plan.blockers.length > 0 && (
+                    <span className="game-issue blocked">
+                      {g.plan.blockers.join(" · ")}
+                    </span>
+                  )}
+                  {/* ينقصنا طبقة؟ نوضّح للمستخدم وش ينقص بالضبط */}
+                  {g.plan?.actions.includes("install_layer") && (
+                    <span className="muted small">
+                      {g.plan.layer_labels.includes("D3DX9 الأصلي")
+                        ? t("autoNeedsD3dx")
+                        : t("autoNeedsDxvk")}
+                    </span>
+                  )}
                 </div>
                 <Button
                   variant="filled"
@@ -717,17 +740,20 @@ const SteamCard = memo(function SteamCard({
                 {t("steamRunBtn")}
               </Button>
             )}
-            <Button
-              variant="plain"
-              title={t("steamUiGpuHint")}
-              onClick={() => {
-                steamUiGpu(!(s?.ui_gpu ?? false))
+            <Segmented
+              id="cefmode"
+              value={s?.ui_mode ?? "software"}
+              onChange={(v) => {
+                setCefMode(v as CefMode)
                   .then(() => notify(t("steamUiGpuSaved")))
                   .catch((err) => notify(String(err)));
               }}
-            >
-              {s?.ui_gpu ? t("steamUiGpuOn") : t("steamUiGpuOff")}
-            </Button>
+              options={[
+                { value: "software", label: t("cefModeSoftware") },
+                { value: "single", label: t("cefModeSingle") },
+                { value: "gpu", label: t("cefModeGpu") },
+              ]}
+            />
           </div>
           <p className="muted small">
             {t("steamUiScale", { n: s?.desktop_scale ?? 1 })}
@@ -1092,6 +1118,16 @@ export const SettingsPage = memo(function SettingsPage({
   const engineDl = dl.items[ENGINE_ID];
   const engineBtn = engineButtonState(engineDl, !!sys?.engine_installed);
 
+  // اختيار المحرّك (11.18 أو البديل 11.6.1 — فيه حزمة «HACK: Steam»)
+  const [engineChoice, setEngineChoiceState] = useState<string>(ENGINE_ID);
+  useEffect(() => {
+    getEngineChoice()
+      .then(setEngineChoiceState)
+      .catch(() => {});
+  }, []);
+  const choiceDl = dl.items[engineChoice];
+  const choiceBtn = engineButtonState(choiceDl, !!sys?.engine_installed);
+
   // حالة الطبقات: DXVK + D3DX9 (نسخة مايكروسوفت)
   const gfxDl = dl.items[GRAPHICS_ID];
   const d3dxDl = dl.items[D3DX9_ID];
@@ -1187,6 +1223,34 @@ export const SettingsPage = memo(function SettingsPage({
             onCancel={() => dl.cancel(ENGINE_ID)}
           />
         )}
+        {/* اختيار المحرّك: البديل 11.6.1 فيه حزمة «HACK: Steam» من Gcenx
+            (بعد 11.7 صار Wine نقي وواجهة ستيم ما تظهر عند بعض الأجهزة) */}
+        <Row label={t("engineChoice")} hint={t("engineChoiceHint")}>
+          <Segmented
+            id="engine"
+            value={engineChoice}
+            onChange={(v) => {
+              setEngineChoiceState(v);
+              setEngineChoice(v).catch(() => {});
+            }}
+            options={[
+              { value: ENGINE_ID, label: "11.18" },
+              { value: ENGINE_ALT_ID, label: "11.6.1" },
+            ]}
+          />
+        </Row>
+        {choiceDl && (
+          <EngineDownloadBox
+            p={choiceDl}
+            installed={!!sys?.engine_installed}
+            onCancel={() => dl.cancel(engineChoice)}
+          />
+        )}
+        {choiceBtn === "idle" && engineChoice !== ENGINE_ID && (
+          <Button variant="tinted" onClick={() => dl.start(engineChoice)}>
+            {t("install")} 11.6.1
+          </Button>
+        )}
         <Row label={t("graphicsLayer")} hint={t("gfxHint")}>
           <Segmented
             id="gfx"
@@ -1203,10 +1267,10 @@ export const SettingsPage = memo(function SettingsPage({
             على WineD3D وترفض شيدرات Apple ⇒ شاشة سوداء/انهيار */}
         <Row
           label={t("dxvkLayer")}
-          hint={sys?.graphics_layer ? t("layerInstalled") : t("dxvkMissingHint")}
+          hint={sys?.dxvk_installed ? t("layerInstalled") : t("dxvkMissingHint")}
         >
-          {sys?.graphics_layer ? (
-            <span className="value">{sys.graphics_layer}</span>
+          {sys?.dxvk_installed ? (
+            <span className="value">{sys?.graphics_layer ?? "DXVK"}</span>
           ) : isActive(gfxDl) ? (
             <span className="value muted">{t("installing")}</span>
           ) : (

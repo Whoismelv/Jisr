@@ -26,6 +26,67 @@ pub struct SteamGame {
     pub size_bytes: u64,
     /// فحص اللعبة الحقيقي (من ملفها التنفيذي) — قبل ما يجرّب المستخدم ويضيع وقته
     pub probe: GameProbe,
+    /// خطة التشغيل التلقائي: أي طبقة تناسب هذه اللعبة وأي موانع فيها
+    pub plan: GamePlan,
+}
+
+/// خطة «تشغيل تلقائي» لكل لعبة — يختارها المخطّط من حقائق الـPE
+#[derive(Serialize, Clone, Default)]
+pub struct GamePlan {
+    /// الطبقات المطلوبة (معرّفات تقنية)
+    pub layers: Vec<String>,
+    /// أسماء الطبقات بالعربي (للعرض)
+    pub layer_labels: Vec<String>,
+    /// موانع تمنع التشغيل (مضاد غش، DX12، …)
+    pub blockers: Vec<String>,
+    /// ملاحظات (بالعربي) للمستخدم
+    pub notes: Vec<String>,
+    /// إجراءات مطلوبة قبل التشغيل (تثبيت طبقة، تجاوز ريجستري…)
+    pub actions: Vec<String>,
+    /// نقدر نشغّلها؟
+    pub launchable: bool,
+}
+
+/// حالة الطبقات المتاحة على هذا الجهاز (لحساب الخطة)
+fn layer_availability() -> crate::auto::LayerAvailability {
+    let i386_vulkan = bottle::wine_bin()
+        .map(|w| engine_has_i386_vulkan(&w))
+        .unwrap_or(false);
+    crate::auto::LayerAvailability {
+        dxvk: graphics::is_installed(),
+        dxvk_d3d9: graphics::d3d9_available(),
+        d3dx9: crate::d3dx::is_installed(),
+        // DXMT/vkd3d غير مدمجين بعد (الخطة توضّح للمستخدم المسار المتاح)
+        dxmt: false,
+        vkd3d: false,
+        engine_has_i386_vulkan: i386_vulkan,
+    }
+}
+
+/// خطة اللعبة: الطبقات + الموانع + الخطوات
+pub fn plan_for(probe: &GameProbe) -> GamePlan {
+    let facts = crate::auto::GameFacts {
+        probe: probe.clone(),
+        needs_d3dx9: probe.needs_d3dx9,
+        needs_d3dcompiler: probe.needs_d3dcompiler,
+    };
+    let plan = crate::auto::plan_with_facts(&facts, &layer_availability(), &graphics::mode());
+    GamePlan {
+        layers: plan.layers.iter().map(|l| l.as_str().to_string()).collect(),
+        layer_labels: plan
+            .layers
+            .iter()
+            .map(|l| l.label_ar().to_string())
+            .collect(),
+        blockers: plan
+            .blockers
+            .iter()
+            .map(|b| b.label_ar().to_string())
+            .collect(),
+        notes: plan.notes.clone(),
+        actions: plan.actions.iter().map(|a| a.kind().to_string()).collect(),
+        launchable: plan.is_launchable(),
+    }
 }
 
 /// نتيجة فحص اللعبة: DirectX المطلوب + المعمارية + موانع معروفة
@@ -39,6 +100,10 @@ pub struct GameProbe {
     pub is_64: Option<bool>,
     /// رموز موانع: `dx8` · `dx12` · `anticheat` · `x86` · `dotnet`
     pub issues: Vec<String>,
+    /// اللعبة تستدعي d3dx9_*.dll ⇒ تحتاج D3DX9 الأصلي (نسخة Wine تنهار)
+    pub needs_d3dx9: bool,
+    /// اللعبة تستدعي d3dcompiler_*.dll ⇒ مترجم HLSL (نسخة Wine تنهار)
+    pub needs_d3dcompiler: bool,
 }
 
 // ============================================================
@@ -632,6 +697,12 @@ fn probe_game_dir(dir: &Path) -> GameProbe {
             if info.dx() == pe::DxLevel::None && info.dotnet {
                 probe.issues.push("dotnet".into());
             }
+            // D3DX9 / d3dcompiler: نسخ Wine المدمجة تنهار في ألعاب DX9 القديمة
+            probe.needs_d3dx9 = info
+                .imports
+                .iter()
+                .any(|i| i.starts_with("d3dx9_") || i.starts_with("d3dx10_"));
+            probe.needs_d3dcompiler = info.imports.iter().any(|i| i.starts_with("d3dcompiler_"));
             crate::debuglog::raw(
                 "info",
                 "library",
@@ -693,13 +764,16 @@ fn scan() -> Vec<SteamGame> {
                 continue;
             }
 
+            let probe = probe_game_dir(&dir);
+            let plan = plan_for(&probe);
             games.insert(
                 appid,
                 SteamGame {
                     appid,
                     name,
                     size_bytes: size,
-                    probe: probe_game_dir(&dir),
+                    probe,
+                    plan,
                 },
             );
         }
@@ -782,6 +856,8 @@ pub async fn steam_game_launch(
     let d3dx_ok = crate::d3dx::ensure_layer(&wine, &prefix)
         .await
         .unwrap_or(false);
+    // WineD3D عبر Vulkan (وليس OpenGL القديم): يمنع انهيار wow64cpu في 32-بت
+    let vulkan_renderer = graphics::ensure_vulkan_renderer(&wine, &prefix).await;
     // حزام أمان للعرض: يمنع الألعاب القديمة من تعتيم الشاشة أو احتكارها بالكامل
     let safety = bottle::ensure_mac_safety(&wine, &prefix).await;
 
@@ -794,7 +870,7 @@ pub async fn steam_game_launch(
         "info",
         "steam",
         &format!(
-            "layer state: dxvk_deployed={deployed} registry_overrides={reg_ok} d3dx9={d3dx_ok} mac_safety={safety} d3d9_64={d3d9_64} d3d9_32={d3d9_32} vulkan_32={vulkan_32}"
+            "layer state: dxvk_deployed={deployed} registry_overrides={reg_ok} d3dx9={d3dx_ok} vulkan_renderer={vulkan_renderer} mac_safety={safety} d3d9_64={d3d9_64} d3d9_32={d3d9_32} vulkan_32={vulkan_32}"
         ),
     );
     if let Some((dir, p)) = &probe {

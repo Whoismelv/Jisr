@@ -10,6 +10,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
+mod auto;
 mod bottle;
 mod d3dx;
 mod debuglog;
@@ -176,6 +177,9 @@ pub struct SystemInfo {
     pub engine_installed: bool,
     pub engine_path: Option<String>,
     pub graphics_layer: Option<String>,
+    /// طبقة DXVK **مثبّتة فعلاً** (ملفاتها موجودة) — لا يكفي اسم الطبقة
+    /// (كان يعرض «مثبّتة» دائماً فيحتفظ زر التثبيت مخفياً)
+    pub dxvk_installed: bool,
     /// متطلب Wine على الماك — GStreamer.framework (أي إصدار 1.x حديث يكفي)
     pub gstreamer_installed: bool,
     pub gstreamer_version: Option<String>,
@@ -539,6 +543,8 @@ fn detect_system() -> SystemInfo {
     } else {
         detected
     };
+    // هل ملفات DXVK موجودة فعلاً؟ (لازم للزر: الاسم موجود حتى بدون تثبيت)
+    info.dxvk_installed = graphics::is_installed();
     // نحفظ نتيجة الفحص كاملة في السجل الدائم (تشخيص من الجهاز نفسه)
     debuglog::raw(
         "debug",
@@ -1008,6 +1014,9 @@ pub fn run() {
             bottle::bottle_create,
             bottle::bottle_retry,
             bottle::bottle_delete,
+            bottle::engine_choice,
+            bottle::engine_set_choice,
+            bottle::engine_choices,
             game::games_list,
             game::game_add,
             game::game_remove,
@@ -1015,6 +1024,8 @@ pub fn run() {
             game::game_stop,
             steam::steam_status,
             steam::steam_ui_gpu,
+            steam::cef_mode,
+            steam::cef_set_mode,
             steam::cef_shim_status,
             steam::cef_shim_enable,
             steam::cef_shim_disable,

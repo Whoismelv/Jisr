@@ -47,6 +47,8 @@ export type SystemInfo = {
   engine_installed: boolean;
   engine_path: string | null;
   graphics_layer: string | null;
+  /** طبقة DXVK مثبّتة فعلاً (ملفاتها موجودة) */
+  dxvk_installed: boolean;
   gstreamer_installed: boolean;
   gstreamer_version: string | null;
 };
@@ -222,6 +224,8 @@ export type SteamStatus = {
   bottle_ready: boolean;
   /** رسم واجهة ستيم بالـGPU (أحدّ) بدل الرسم البرمجي */
   ui_gpu: boolean;
+  /** وضع رسم الواجهة: software | single | gpu */
+  ui_mode: CefMode;
   /** معامل تحجيم الواجهة: 2 على شاشات Retina */
   desktop_scale: number;
   /** آخر لعبة شغّلناها وحالة الطبقة وقتها */
@@ -252,6 +256,20 @@ export type GameProbe = {
   is_64: boolean | null;
   /** dx8 · dx12 · anticheat · x86 · dotnet */
   issues: string[];
+  /** اللعبة تحتاج d3dx9_*.dll (نسخة Wine تنهار) */
+  needs_d3dx9: boolean;
+  /** اللعبة تحتاج d3dcompiler_*.dll */
+  needs_d3dcompiler: boolean;
+};
+
+/** خطة التشغيل التلقائي: الطبقات المناسبة + الموانع + الخطوات */
+export type GamePlan = {
+  layers: string[];
+  layer_labels: string[];
+  blockers: string[];
+  notes: string[];
+  actions: string[];
+  launchable: boolean;
 };
 
 /** لعبة ستيم مثبّتة داخل القارورة (نقرأها محلياً من appmanifest) */
@@ -260,6 +278,7 @@ export type SteamGame = {
   name: string;
   size_bytes: number;
   probe: GameProbe;
+  plan: GamePlan;
 };
 
 /** كل ألعاب ستيم المثبّتة — قراءة محلية فقط */
@@ -288,8 +307,17 @@ export const getGraphicsMode = () => call<GraphicsMode>("graphics_mode");
 export const setGraphicsMode = (mode: GraphicsMode) =>
   call<void>("graphics_set_mode", { mode });
 
-/** حالة D3DX9 الأصلي (نسخة مايكروسوفت) — إصلاح ألعاب DirectX 9 */
-export type D3dxStatus = { installed: boolean; deployed: boolean };
+/** وضع رسم واجهة ستيم: software | single | gpu */
+export type CefMode = "software" | "single" | "gpu";
+export const getCefMode = () => call<CefMode>("cef_mode");
+export const setCefMode = (mode: CefMode) => call<CefMode>("cef_set_mode", { mode });
+
+/** المحرّك المستخدم حالياً (11.18 أو البديل 11.6.1 لواجهة ستيم) */
+export const getEngineChoice = () => call<string>("engine_choice");
+export const setEngineChoice = (id: string) => call<string>("engine_set_choice", { id });
+export const getEngineChoices = () => call<string[]>("engine_choices");
+
+/** حالة D3DX9 الأصلي (نسخة مايكروسوفت) — إصلاح ألعاب DirectX 9 */export type D3dxStatus = { installed: boolean; deployed: boolean };
 export const d3dxStatus = () => call<D3dxStatus>("d3dx_status");
 
 /** غلاف CEF مفعّل؟ (مخرج طوارئ لو واجهة ستيم ما ظهرت) */

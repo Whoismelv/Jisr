@@ -154,13 +154,58 @@ fn remove_z_drive(prefix: &Path) {
     }
 }
 
-/// ملف تشغيل Wine من أول محرك بنوع engine في الكتالوج
-pub(crate) fn wine_bin() -> Option<PathBuf> {
-    let id = download::catalog()
+/// معرّف المحرك الافتراضي (النسخة الحديثة)
+pub const DEFAULT_ENGINE_ID: &str = "wine-11.18";
+
+/// المحرك الذي اختاره المستخدم (`engine-choice.txt` في مجلد البيانات)
+pub fn chosen_engine_id() -> String {
+    std::fs::read_to_string(crate::data_dir().join("engine-choice.txt"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_ENGINE_ID.to_string())
+}
+
+/// كل محركات الكتالوج (لاختيار المستخدم)
+pub fn engine_choice_ids() -> Vec<String> {
+    download::catalog()
         .into_iter()
-        .find(|a| a.kind == "engine")?
-        .id;
-    engine::wine_bin(id)
+        .filter(|a| a.kind == "engine")
+        .map(|a| a.id.to_string())
+        .collect()
+}
+
+/// اختيار المحرك (مستخدم) — نتحقق إن المعرّف موجود فعلاً
+pub fn set_chosen_engine(id: &str) -> Result<String, String> {
+    if !engine_choice_ids().iter().any(|c| c == id) {
+        return Err("معرّف محرك غير معروف".into());
+    }
+    let path = crate::data_dir().join("engine-choice.txt");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("تعذّر تجهيز مجلد الإعدادات: {e}"))?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, format!("{id}\n")).map_err(|e| format!("تعذّر حفظ اختيار المحرك: {e}"))?;
+    if std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&path);
+        std::fs::rename(&tmp, &path).map_err(|e| format!("تعذّر إتمام الحفظ: {e}"))?;
+    }
+    Ok(id.to_string())
+}
+
+/// ملف تشغيل Wine — من المحرك المختار، أو أول محرك مثبّت (احتياط)
+pub(crate) fn wine_bin() -> Option<PathBuf> {
+    let chosen = chosen_engine_id();
+    if let Some(p) = engine::wine_bin(&chosen) {
+        return Some(p);
+    }
+    // المحرك المختار مو مثبّت ⇒ نستخدم أول محرك مثبّت موجود
+    for id in engine_choice_ids() {
+        if let Some(p) = engine::wine_bin(&id) {
+            return Some(p);
+        }
+    }
+    None
 }
 
 /// متغيّرات Wine الموحّدة لكل تشغيل:
@@ -513,6 +558,27 @@ async fn run_wineboot(id: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// المحرك المختار حالياً (للواجهة)
+#[tauri::command]
+pub fn engine_choice() -> String {
+    chosen_engine_id()
+}
+
+/// تغيير المحرك المستخدم (بديل جاهز لو واجهة ستيم ما ظهرت)
+#[tauri::command]
+pub fn engine_set_choice(id: String) -> Result<String, String> {
+    let _trace = crate::debuglog::trace("engine", "engine_set_choice", format!("id={id}"));
+    let value = set_chosen_engine(&id)?;
+    crate::debuglog::raw("info", "engine", &format!("engine choice = {value}"));
+    Ok(value)
+}
+
+/// كل محركات الكتالوج (لاختيار المستخدم)
+#[tauri::command]
+pub fn engine_choices() -> Vec<String> {
+    engine_choice_ids()
 }
 
 // ============================================================

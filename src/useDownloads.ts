@@ -14,6 +14,8 @@ import {
 
 /** معرّف محرك Wine في الكتالوج الرسمي */
 export const ENGINE_ID = "wine-11.18";
+/** المحرّك البديل (فيه حزمة «HACK: Steam» من Gcenx) — لواجهة ستيم */
+export const ENGINE_ALT_ID = "wine-11.6_1";
 /** معرّف طبقة DXVK (تنزيل تلقائي بعد المحرك) */
 export const GRAPHICS_ID = "dxvk-macos-d3d9-1.10.3";
 /** معرّف D3DX9 الأصلي من مايكروسوفت (إصلاح ألعاب DirectX 9) */

@@ -6,9 +6,30 @@
 //  • الهدف: زر «تشغيل» يشتغل من أول مرة — بدون تجارب يدوية ولا تخمين.
 //  • هذا الملف ما ينفّذ ولا يكتب ولا يقرأ القرص: **قرار فقط**
 //    (النفاذ الفعلي في graphics.rs / d3dx.rs / steam_library.rs).
-//  • القاعدة الذهبية: ما نلمس ريجستري القارورة إلا لو الطلب واضح
-//    (طبقة DXVK مثبتة +Override = native)، وإلا نكتفي بتحذير.
 // ============================================================
+//! # مخطط التشغيل التلقائي — ليش هذا الملف موجود؟
+//!
+//! **المشكلة الميدانية:** كل لعبة تحتاج «إعداد» مختلف: DX9 تحتاج DXVK-d3d9
+//! (وإلا سقطت على WineD3D ⇒ ترجمة GLSL ⇒ `Pixel shader error … E5000` ⇒
+//! شاشة سودا)، وألعاب DX9 القديمة تحتاج D3DX9 الأصلي (وإلا انهارت على
+//! `d3dx9_43` المدمجة)، وDX12 تحتاج DXMT (وإلا ما عندنا مسار — D3DMetal
+//! من Apple ما نقدر نوزّعه)، ولعبة 32-بت تحتاج `vulkan-1.dll` للـi386 في
+//! المحرك (وإلا DXVK 32-بت ما يحمّل)، ومضاد الغش يحتاج درايفر كيرنل —
+//! **مستحيل** على macOS.
+//!
+//! **الحل:** نجمع هذه المعرفة كلها في **قرار واحد حتمي** (deterministic):
+//! يُرجع «ما الطبقة، ما التجاوزات، ما التحذيرات، ما الموانع» — فزر
+//! «تشغيل» يشتغل من أول مرة، والمعروف يقول «مستحيل» بدل ما نضيّع وقت
+//! المستخدم في تجارب.
+//!
+//! **حدود الملف (مهم):** منطق خالص — بلا I/O، بلا async، بلا أوامر Tauri.
+//! هذا الملف **يقرّر فقط**؛ التنفيذ (نشر ملفات، كتابة ريجستري، تنزيل طبقة)
+//! في `graphics.rs` و`d3dx.rs`، والقرار يُترجم هناك. كل نص عربي هنا
+//! جاهز للواجبة والسجل.
+//!
+//! **قاعدة صارمة:** ما نطلب تجاوز `native` إلا لو الطبقة موجودة فعلاً
+//! عندنا — وإلا نكتفي بتحذير (لأن طلب تجاوز لملف غير موجود = كسر للعبة).
+#![allow(dead_code)]
 use crate::steam_library::GameProbe;
 
 // ============================================================
@@ -28,10 +49,12 @@ pub enum Layer {
     D3dx9Native,
     /// WineD3D — مترجم GLSL المدمج في Wine (بطيء ومكسور على ماك)
     WineD3D,
-    /// DXMT — DirectX 12 فوق Vulkan (يعمل على macOS عبر MoltenVK)
-    DxmtD3d12,
-    /// vkd3d — DirectX 12 فوق Vulkan (تغطية ضعيفة — تجريبي)
-    Vkd3dD3d12,
+    /// DXMT — DirectX 11/10 فوق Metal مباشرة (بدون Vulkan)
+    /// ⚠️ **تصحيح مهم:** DXMT ما يدعم DirectX 12 — مجلد `src/d3d12/` فيه
+    /// `IMPLEMENT_ME` (abort). DXMT = D3D11 + D3D10 فقط.
+    Dxmt,
+    /// vkd3d-proton — DirectX 12 فوق Vulkan (يحتاج Metal مخصّص — تجريبي)
+    Vkd3d,
     /// ما فيه طبقة: اللعبة ما تستخدم DirectX أصلاً (أو ما عرفنا)
     None,
 }
@@ -45,8 +68,8 @@ impl Layer {
             Layer::Dxvk11 => "dxvk-d3d11",
             Layer::D3dx9Native => "d3dx9-native",
             Layer::WineD3D => "wined3d",
-            Layer::DxmtD3d12 => "dxmt-d3d12",
-            Layer::Vkd3dD3d12 => "vkd3d-d3d12",
+            Layer::Dxmt => "dxmt-d3d11-metal",
+            Layer::Vkd3d => "vkd3d-d3d12",
             Layer::None => "none",
         }
     }
@@ -59,8 +82,8 @@ impl Layer {
             Layer::Dxvk11 => "DXVK (DirectX 11)",
             Layer::D3dx9Native => "D3DX9 الأصلي",
             Layer::WineD3D => "WineD3D (مترجم GLSL)",
-            Layer::DxmtD3d12 => "DXMT (DirectX 12)",
-            Layer::Vkd3dD3d12 => "vkd3d (DirectX 12)",
+            Layer::Dxmt => "DXMT (DirectX 11/10 فوق Metal)",
+            Layer::Vkd3d => "vkd3d (DirectX 12 — تجريبي)",
             Layer::None => "بلا طبقة",
         }
     }
@@ -142,7 +165,7 @@ impl Blocker {
         }
     }
 
-    /// هل يمنع التشغيل فعلاً؟ (`Unknown`conditionsinfo soft — نجهّز ونجرّب)
+    /// هل يمنع التشغيل فعلاً؟ (`Unknown` حالة ناعمة — نجهّز ونجرّب)
     pub fn is_hard(self) -> bool {
         !matches!(self, Blocker::Unknown)
     }
@@ -221,83 +244,72 @@ pub struct GameFacts {
 //  الرسائل (عربية — الواجهة تتركّب منها نصوصها)
 // ============================================================
 
-const ANTI_CHEAT_BLOCK: &str =
-    "مضاد الغش في هذه اللعبة يحتاج درايفر على مستوى الكيرنل في ويندوز (مثل Easy Anti-Cheat أو BattlEye). \
+const ANTI_CHEAT_BLOCK: &str = "مضاد الغش في هذه اللعبة يحتاج درايفر على مستوى الكيرنل في ويندوز (مثل Easy Anti-Cheat أو BattlEye). \
 macOS ما يقدر يحمّل درايفر ويندوز، فالتشغيل مستحيل — ما راح نحاول نخدعك بتجاوز.";
-const ANTI_CHEAT_NOTE: &str =
-    "مضاد الغش (kernel anti-cheat) مستحيل على macOS:Wine يشغّل المستخدم العادي، لكن الدرايفر ما له بديل.";
+const ANTI_CHEAT_NOTE: &str = "مضاد الغش (kernel anti-cheat) مستحيل على macOS — Wine يشغّل المستخدم العادي، لكن درايفر الكيرنل ما له بديل.";
 
-const D3D12_BLOCK: &str =
-    "DirectX 12 يحتاج D3DMetal من Apple — ما نقدر نوزّعه (ترخيص Apple). \
-بدون DXMT ما راح تشتغل اللعبة على macOS.";
-const D3D12_NOTE: &str =
-    "Apple ما تسمح بتوزيع D3DMetal، والبديل الوحيد على macOS هو DXMT (DirectX 12 فوق Vulkan → MoltenVK → Metal).";
+const D3D12_BLOCK: &str = "DirectX 12 على macOS ما له مسار مضمون: Apple ما تسمح بتوزيع D3DMetal (مغلق)، \
+والبديل المفتوح الوحيد هو vkd3d-proton فوق نسخة Metal مخصّصة — تجريبي وتغطيته ضعيفة.";
+const D3D12_NOTE: &str = "DirectX 12 على macOS: vkd3d-proton (LGPL) فوق Vulkan → Metal، لكنه يحتاج Metal مخصّصة \
+(MoltenVK القياسي ما يحقّق شروط vkd3d) ⇒ تغطية ضعيفة — أغلب ألعاب D3D12 ما تشتغل.";
 const D3D12_VKD3D_NOTE: &str =
-    "vkd3d متاح كبديل تجريبي لـDirectX 12، لكن تغطيته ضعيفة — أغلب ألعاب D3D12 ما تشتغل به.";
+    "vkd3d-proton متاح كبديل تجريبي لـDirectX 12، لكن تغطيته ضعيفة — أغلب ألعاب D3D12 ما تشتغل به.";
 
-const DXVK_MISSING_WARN: &str =
-    "طبقة DXVK مو مثبّتة — Wine يستخدم WineD3D (ترجمة GLSL)، وعلى macOS هذا يعني غالباً \
+const DXMT_NOTE: &str = "DXMT يحوّل DirectX 11/10 إلى Metal مباشرة (بدون Vulkan) — أسرع وأدق من DXVK على macOS. \
+⚠️ DXMT ما يدعم DirectX 12 (كوده فيه abort).";
+
+const DXVK_MISSING_WARN: &str = "طبقة DXVK مو مثبّتة — Wine يستخدم WineD3D (ترجمة GLSL)، وعلى macOS هذا يعني غالباً \
 «Pixel shader error … E5000: syntax error» وشاشة سودا. ثبّت طبقة DXVK من صفحة الرسوميات.";
-const DXVK9_MISSING_WARN: &str =
-    "نسخة DXVK المثبّتة ما فيها d3d9.dll ⇒ Wine يسقط على WineD3D (ترجمة GLSL) ⇒ مُصرّف GLSL من Apple \
+const DXVK9_MISSING_WARN: &str = "نسخة DXVK المثبّتة ما فيها d3d9.dll ⇒ Wine يسقط على WineD3D (ترجمة GLSL) ⇒ مُصرّف GLSL من Apple \
 يرفض الـshader («Pixel shader error … E5000») ⇒ شاشة سودا. نزّل نسخة DXVK اللي فيها d3d9.dll.";
 const DXVK9_OK_NOTE: &str =
     "DXVK يحوّل DirectX 9 إلى Vulkan → Metal: أسرع وأدق من WineD3D على ألعاب DX9.";
-const DXVK11_OK_NOTE: &str =
+const DXVK10_11_OK_NOTE: &str =
     "DXVK يحوّل DirectX 10/11 إلى Vulkan → MoltenVK → Metal — نفس مسار Whisky.";
-const WINE_D3D_FALLBACK_NOTE: &str =
-    "WineD3D يترجم GLSL علىflies:Slowest path، وعلى ماك مُصرّف GLSL من Apple يرفض أغلب الـshaders.";
+const WINE_D3D_FALLBACK_NOTE: &str = "WineD3D هو المترجم المدمج في Wine (GLSL بدل HLSL) — أبطأ، وعلى ماك مُصرّف GLSL من Apple يرفض أغلب الـshaders.";
 
-const D3DX9_MISSING_NOTE: &str =
-    "اللعبة تحتاج d3dx9_43.dll — النسخة المدمجة في Wine تنهار (page fault) في ألعاب DX9 القديمة. \
+const D3DX9_MISSING_NOTE: &str = "اللعبة تحتاج d3dx9_43.dll — النسخة المدمجة في Wine تنهار (page fault) في ألعاب DX9 القديمة. \
 ثبّت D3DX9 الأصلي (حزمة DirectX End-User Runtime) — نفس اللي CrossOver وwinetricks يسوونه.";
 const D3DX9_OK_NOTE: &str = "D3DX9 الأصلي جاهز — ألعاب DX9 القديمة ما تنهار على d3dx9_43.";
 
-const I386_VULKAN_WARN: &str =
-    "اللعبة 32-بت، ومحرّك Wine ما فيه vulkan-1.dll للـi386 ⇒ DXVK ما يقدر يحمّل ⇒ Wine يرجع لـWineD3D \
+const I386_VULKAN_WARN: &str = "اللعبة 32-بت، ومحرّك Wine ما فيه vulkan-1.dll للـi386 ⇒ DXVK ما يقدر يحمّل ⇒ Wine يرجع لـWineD3D \
 (ترجمة GLSL) ⇒ نفس خطأ الـpixel shader (شاشة سودا). حدّث المحرك لو تبي دعم 32-بت.";
-const I386_VULKAN_NOTE: &str =
-    "دعم 32-بت يحتاج vulkan-1.dll في i386-windows داخل محرّك Wine — بدونه DXVK ما يشتغل للألعاب القديمة.";
+const I386_VULKAN_NOTE: &str = "دعم 32-بت يحتاج vulkan-1.dll في i386-windows داخل محرّك Wine — بدونه DXVK ما يشتغل للألعاب القديمة.";
 
-const DX8_BLOCK: &str =
-    "DirectX 8 ما له مسار على macOS: DXVK ما يدعم d3d8، وWineD3D يكسر عند ترجمة GLSL في Apple. \
+const DX8_BLOCK: &str = "DirectX 8 ما له مسار على macOS: DXVK ما يدعم d3d8، وWineD3D يكسر عند ترجمة GLSL في Apple. \
 ما فيه حل مضمون — تشغيل اللعبة على ويندوز/لينكس هو الخيار الوحيد.";
-const DX8_NOTE: &str = "بدائل DirectX 8:.port/ dxvk-d3d8 غير رسمي، أو older engine — الكود قديم جداً.";
+const DX8_NOTE: &str = "بدائل DirectX 8 غير رسمية (dxvk-d3d8) وقلّتها على macOS — الكود قديم جداً.";
 
 const D3D12_I386_NOTE: &str =
-    "DXMT يدعم 64-بت فقط — لعبة 32-بت تحتاج DirectX 12 ما راح تشتغل بطبقة DXMT.";
+    "DirectX 12 32-بت: ما فيه مسار مفتوح على macOS — حزمة vkd3d-proton المنشورة لـx86_64 فقط.";
 
-const UNKNOWN_WARN: &str =
-    "ما قدرنا نحدّد واجهة الرسوم في ملف اللعبة (ما فيها import معروف لـDirectX). \
-شغّل اللعبة مرة واحدة وشاركنا آخر 20 سطر من السجل — بعدها نضبط الطبقة المناسبة deterministically.";
-const UNKNOWN_NOTE: &str =
-    "ألعاب كثير تستدعي d3d11 عبر LoadLibrary وقت التشغيل، فالفحص الساكن ما يشوفها — لازم سجل التشغيل.";
-const ENGINE_UPDATE_NOTE: &str =
-    "ما قدرنا نقرأ ملف اللعبة — جرّب تحدّث محرّك Wine (نسخة أحدث تقرأ PE أفضل وتكشف DirectX 12 و32-بت).";
+const UNKNOWN_WARN: &str = "ما قدرنا نحدّد واجهة الرسوم في ملف اللعبة (ما فيها import معروف لـDirectX). \
+شغّل اللعبة مرة واحدة وشاركنا آخر 20 سطر من السجل — بعدها نضبط الطبقة المناسبة بدقة.";
+const UNKNOWN_NOTE: &str = "ألعاب كثير تستدعي d3d11 عبر LoadLibrary وقت التشغيل، فالفحص الساكن ما يشوفها — لازم سجل التشغيل.";
+const ENGINE_UPDATE_NOTE: &str = "ما قدرنا نقرأ ملف اللعبة — جرّب تحدّث محرّك Wine (نسخة أحدث تقرأ PE أفضل وتكشف DirectX 12 و32-بت).";
 
 const WINED3D_MODE_NOTE: &str =
     "وضع الرسوميات الحالي WineD3D (اختيارك الصريح) — عطّلنا طبقات DXVK وأزلنا تجاوزات native.";
 
-const DRM_BLOCK: &str =
-    "نسخة اللعبة محمية بحماية ضد النسخ (DRM) — ما نقدر نشغّلها.";
+const DRM_BLOCK: &str = "نسخة اللعبة محمية بحماية ضد النسخ (DRM) — ما نقدر نشغّلها.";
 const DRM_NOTE: &str = "حماية DRM تعتمد على خدمات ويندوز (أو سكربتات) — ما عندنا بديل على macOS.";
 
-const VULKAN_NOTE: &str =
-    "اللعبة تستدعي Vulkan-1.dll أصلياً ⇒ هي ليست DirectX أصلاً، ومحرك Wine عندنا ما يوفّر Vulkan 1.3 كامل. \
-جرّب تشغيلها أولاً — Wine 9+ مع DXVK ممكن يمشي.";
-const OPENGL_NOTE: &str =
-    "اللعبة تستخدم OpenGL — Wine يترجمها إلى OpenGL/Metal، وغالباً تشتغل (أو تتعطّل بسبب GLSL). \
+const VULKAN_WARN: &str = "اللعبة تستدعي Vulkan-1.dll أصلياً — هي ليست DirectX، ومحرّك Wine عندنا ما يوفّر Vulkan 1.3 كامل. \
+شغّلها أولاً: Wine 9+ مع طبقة DXVK يمشي كثير من الألعاب Vulkan.";
+const VULKAN_NOTE: &str = "ألعاب Vulkan أصلي: مسارها Metal مباشر (لا DXVK) — كود Vulkan داخل اللعبة يحتاج محرّك Vulkan كامل.";
+const OPENGL_WARN: &str = "اللعبة تستخدم OpenGL — Wine يترجمها إلى OpenGL/Metal، وغالباً تشتغل (أو تتعطّل بسبب GLSL). \
 فعّل وضع النافذة من إعدادات اللعبة أول مرة.";
+const OPENGL_NOTE: &str =
+    "OpenGL داخل Wine: ما يحتاج DXVK — بس الترجمة محدودة وتتعطّل مع shaders حديثة.";
 
 /// علامات مضاد الغش في اسم الملف التنفيذي الرئيسي.
 /// (نفس قائمة `uses_kernel_anticheat` في steam_library.rs)
-const ANTI_CHEAT_MARKERS: [&str; 7] = [
+const ANTI_CHEAT_MARKERS: [&str; 6] = [
     "easyanticheat",
     "battleye",
     "beclient",
     "vanguard",
     "gameguard",
-    "xignode",
     "xigncode",
 ];
 
@@ -332,7 +344,7 @@ fn has_kernel_anticheat(probe: &GameProbe) -> bool {
         return false;
     }
     ANTI_CHEAT_MARKERS.iter().any(|m| name.contains(m))
-        // "vgc" قصيرة جداً — نقبلها بس في بداية الاسم (وحدة تحكّم Riot)
+        // "vgc" قصيرة جداً — نقبلها في بداية الاسم فقط (وحدة تحكّم Riot)
         || name.starts_with("vgc")
 }
 
@@ -361,29 +373,28 @@ fn push_layer(plan: &mut LayerPlan, layer: Layer) {
 }
 
 // ============================================================
-//  القواعد — كل واحدة في دالة مستقلة (اختبار أسهل،责任 واضحة)
+//  القواعد — كل واحدة في دالة مستقلة (اختبار أسهل ومسؤولية واضحة)
 // ============================================================
 
-/// DirectX 12 — DXMT إن توفّر، وإلا مانع D3DMetal (+ vkd3d تجريبي).
+/// DirectX 12 — ما فيه مسار مضمون على macOS.
+/// vkd3d-proton هو البديل المفتوح الوحيد (64-بت، تجريبي، يحتاج Metal مخصّصة).
+/// ⚠️ DXMT **ما** يدعم D3D12 (كوده فيه `abort()`).
 fn plan_d3d12(plan: &mut LayerPlan, avail: &LayerAvailability, x86: bool) {
-    if avail.dxmt {
-        push_layer(plan, Layer::DxmtD3d12);
-        plan.actions.push(Action::InstallLayer(Layer::DxmtD3d12));
-        plan.actions.push(Action::EnableRegistryOverride("d3d12"));
-        plan.notes.push(D3D12_NOTE.to_string());
-        if x86 {
-            plan.notes.push(D3D12_I386_NOTE.to_string());
-        }
+    // 32-بت: ما فيه حزمة منشورة تدعمها
+    if x86 {
+        plan.blockers.push(Blocker::D3D12NeedsD3DMetal);
+        plan.actions.push(Action::Block(D3D12_BLOCK.to_string()));
+        plan.notes.push(D3D12_I386_NOTE.to_string());
         return;
     }
 
-    // DXMT مو متاح ⇒ مانع: Apple ما تسمح بتوزيع D3DMetal
+    // DXMT ما يحل D3D12 ⇒ نتجاهله هنا (يُستعمل لـ DX11/10)
     plan.blockers.push(Blocker::D3D12NeedsD3DMetal);
     plan.actions.push(Action::Block(D3D12_BLOCK.to_string()));
     plan.notes.push(D3D12_NOTE.to_string());
     if avail.vkd3d {
-        push_layer(plan, Layer::Vkd3dD3d12);
-        plan.actions.push(Action::InstallLayer(Layer::Vkd3dD3d12));
+        push_layer(plan, Layer::Vkd3d);
+        plan.actions.push(Action::InstallLayer(Layer::Vkd3d));
         plan.actions.push(Action::EnableRegistryOverride("d3d12"));
         plan.notes.push(D3D12_VKD3D_NOTE.to_string());
     }
@@ -401,20 +412,23 @@ fn plan_dx10_11(
     let can_dxvk = avail.dxvk && (!x86 || avail.engine_has_i386_vulkan);
     if can_dxvk {
         push_layer(plan, layer);
-        plan.actions.push(Action::EnableRegistryOverride(override_name));
-        plan.notes.push(DXVK11_OK_NOTE.to_string());
+        plan.actions
+            .push(Action::EnableRegistryOverride(override_name));
+        plan.notes.push(DXVK10_11_OK_NOTE.to_string());
         return;
     }
     push_layer(plan, Layer::WineD3D);
     if x86 {
-        plan.actions.push(Action::WarnUser(I386_VULKAN_WARN.to_string()));
+        plan.actions
+            .push(Action::WarnUser(I386_VULKAN_WARN.to_string()));
     } else {
-        plan.actions.push(Action::WarnUser(DXVK_MISSING_WARN.to_string()));
+        plan.actions
+            .push(Action::WarnUser(DXVK_MISSING_WARN.to_string()));
     }
     plan.notes.push(WINE_D3D_FALLBACK_NOTE.to_string());
 }
 
-/// DirectX 9 — DXVK-d3d9 إن توفّر، وإلا WineD3D (screen black متوقّع).
+/// DirectX 9 — DXVK-d3d9 إن توفّر، وإلا WineD3D (شاشة سودا متوقّعة).
 fn plan_d3d9(plan: &mut LayerPlan, avail: &LayerAvailability) {
     if avail.dxvk_d3d9 {
         push_layer(plan, Layer::Dxvk9);
@@ -427,7 +441,8 @@ fn plan_d3d9(plan: &mut LayerPlan, avail: &LayerAvailability) {
         return;
     }
     push_layer(plan, Layer::WineD3D);
-    plan.actions.push(Action::WarnUser(DXVK9_MISSING_WARN.to_string()));
+    plan.actions
+        .push(Action::WarnUser(DXVK9_MISSING_WARN.to_string()));
     plan.notes.push(WINE_D3D_FALLBACK_NOTE.to_string());
 }
 
@@ -442,21 +457,22 @@ fn plan_d3d8(plan: &mut LayerPlan) {
 /// Vulkan أصلي — Wine عندنا ما يوفّر Vulkan 1.3 كامل.
 fn plan_vulkan(plan: &mut LayerPlan) {
     push_layer(plan, Layer::None);
-    plan.actions.push(Action::WarnUser(VULKAN_NOTE.to_string()));
+    plan.actions.push(Action::WarnUser(VULKAN_WARN.to_string()));
     plan.notes.push(VULKAN_NOTE.to_string());
 }
 
-/// OpenGL —Wine يترجمه، وغالباً يشتغل.
+/// OpenGL — Wine يترجمه، وغالباً يشتغل.
 fn plan_opengl(plan: &mut LayerPlan) {
     push_layer(plan, Layer::None);
-    plan.actions.push(Action::WarnUser(OPENGL_NOTE.to_string()));
+    plan.actions.push(Action::WarnUser(OPENGL_WARN.to_string()));
     plan.notes.push(OPENGL_NOTE.to_string());
 }
 
 /// ما عرفنا الواجهة — نطلب سجل التشغيل.
 fn plan_unknown(plan: &mut LayerPlan, probe: &GameProbe) {
     push_layer(plan, Layer::None);
-    plan.actions.push(Action::WarnUser(UNKNOWN_WARN.to_string()));
+    plan.actions
+        .push(Action::WarnUser(UNKNOWN_WARN.to_string()));
     plan.notes.push(UNKNOWN_NOTE.to_string());
     if probe.exe.is_none() {
         // ما قدرنا نقرأ ملف اللعبة أصلاً ⇒ نطلب سجل + تحديث المحرك
@@ -518,11 +534,7 @@ fn apply_wined3d_mode(plan: &mut LayerPlan) {
 // ============================================================
 
 /// الخطة مع كل الحقائق (بما فيها d3dx9/d3dcompiler).
-pub fn plan_with_facts(
-    facts: &GameFacts,
-    avail: &LayerAvailability,
-    mode: &str,
-) -> LayerPlan {
+pub fn plan_with_facts(facts: &GameFacts, avail: &LayerAvailability, mode: &str) -> LayerPlan {
     let probe = &facts.probe;
     let dx = probe
         .dx
@@ -536,7 +548,8 @@ pub fn plan_with_facts(
     // 1) مضاد الغش — أولوية قصوى (ما فيه طبقة تنقذ درايفر كيرنل)
     if has_kernel_anticheat(probe) {
         plan.blockers.push(Blocker::KernelAntiCheat);
-        plan.actions.push(Action::Block(ANTI_CHEAT_BLOCK.to_string()));
+        plan.actions
+            .push(Action::Block(ANTI_CHEAT_BLOCK.to_string()));
         plan.notes.push(ANTI_CHEAT_NOTE.to_string());
     }
 
@@ -564,7 +577,8 @@ pub fn plan_with_facts(
 
     // 5) 32-بت بدون Vulkan للـi386 ⇒ DXVK 32-بت ما يحمّل
     if x86 && avail.dxvk_d3d9 && !avail.engine_has_i386_vulkan {
-        plan.actions.push(Action::WarnUser(I386_VULKAN_WARN.to_string()));
+        plan.actions
+            .push(Action::WarnUser(I386_VULKAN_WARN.to_string()));
         plan.notes.push(I386_VULKAN_NOTE.to_string());
     }
 
@@ -666,6 +680,8 @@ mod tests {
             dx: dx.map(|s| s.to_string()),
             is_64,
             issues: Vec::new(),
+            needs_d3dx9: false,
+            needs_d3dcompiler: false,
         }
     }
 
@@ -686,9 +702,7 @@ mod tests {
         let p = plan(&probe(Some("d3d9"), Some(true)), &avail_all(), "auto");
         assert!(p.has_layer(Layer::Dxvk9));
         assert!(!p.has_layer(Layer::WineD3D));
-        assert!(p
-            .actions
-            .contains(&Action::EnableRegistryOverride("d3d9")));
+        assert!(p.actions.contains(&Action::EnableRegistryOverride("d3d9")));
         assert!(p.blockers.is_empty());
         assert!(p.is_launchable());
         // ما في تحذير GLSL — DXVK موجود
@@ -703,10 +717,11 @@ mod tests {
         assert!(p.has_layer(Layer::WineD3D));
         assert!(!p.has_layer(Layer::Dxvk9));
         // ما فيه تجاوز native — WineD3D هو المدمج
-        assert!(!p
-            .actions
-            .iter()
-            .any(|x| matches!(x, Action::EnableRegistryOverride(_))));
+        assert!(
+            !p.actions
+                .iter()
+                .any(|x| matches!(x, Action::EnableRegistryOverride(_)))
+        );
         let text = plan_to_text(&p);
         assert!(text.contains("GLSL"), "لازم نذكر فشل الـshader: {text}");
         assert!(text.contains("E5000"), "لازم نذكر كود الخطأ: {text}");
@@ -722,7 +737,10 @@ mod tests {
             needs_d3dcompiler: true,
         };
         let p = plan_with_facts(&facts, &a, "auto");
-        assert!(p.actions.contains(&Action::InstallLayer(Layer::D3dx9Native)));
+        assert!(
+            p.actions
+                .contains(&Action::InstallLayer(Layer::D3dx9Native))
+        );
         assert!(p.has_layer(Layer::D3dx9Native));
         let text = plan_to_text(&p);
         assert!(text.contains("d3dx9_43"), "لازم نذكر d3dx9_43: {text}");
@@ -738,35 +756,43 @@ mod tests {
             needs_d3dcompiler: false,
         };
         let p = plan_with_facts(&facts, &avail_all(), "auto");
-        assert!(!p
-            .actions
-            .contains(&Action::InstallLayer(Layer::D3dx9Native)));
+        assert!(
+            !p.actions
+                .contains(&Action::InstallLayer(Layer::D3dx9Native))
+        );
         assert!(p.has_layer(Layer::D3dx9Native));
     }
 
+    /// DXMT ما يدعم DirectX 12 (كوده فيه abort) ⇒ D3D12 ما له مسار مضمون.
     #[test]
-    fn dx12_with_dxmt_uses_dxmt_and_d3d12_override() {
+    fn dx12_is_blocked_even_with_dxmt_available() {
         let p = plan(&probe(Some("d3d12"), Some(true)), &avail_all(), "auto");
-        assert!(p.has_layer(Layer::DxmtD3d12));
-        assert!(p.actions.contains(&Action::InstallLayer(Layer::DxmtD3d12)));
-        assert!(p
-            .actions
-            .contains(&Action::EnableRegistryOverride("d3d12")));
-        assert!(p.blockers.is_empty());
-        assert!(p.is_launchable());
-    }
-
-    #[test]
-    fn dx12_without_dxmt_is_blocked_with_d3dmetal_explanation() {
-        let mut a = avail_all();
-        a.dxmt = false;
-        a.vkd3d = false;
-        let p = plan(&probe(Some("d3d12"), Some(true)), &a, "auto");
         assert!(p.blockers.contains(&Blocker::D3D12NeedsD3DMetal));
-        assert!(!p.has_layer(Layer::DxmtD3d12));
+        assert!(!p.has_layer(Layer::Dxmt));
         assert!(!p.is_launchable());
         let text = plan_to_text(&p);
         assert!(text.contains("D3DMetal"), "لازم نذكر D3DMetal: {text}");
+    }
+
+    /// vkd3d-proton هو البديل المفتوح الوحيد لـD3D12 (تجريبي) — يظهر كخيار
+    #[test]
+    fn dx12_lists_vkd3d_when_available() {
+        let mut a = avail_all();
+        a.vkd3d = true;
+        let p = plan(&probe(Some("d3d12"), Some(true)), &a, "auto");
+        assert!(p.has_layer(Layer::Vkd3d));
+        assert!(p.actions.contains(&Action::InstallLayer(Layer::Vkd3d)));
+        assert!(p.actions.contains(&Action::EnableRegistryOverride("d3d12")));
+        // ما زال مانع (المسار تجريبي) — بس الخطة توضّح الخطوة
+        assert!(!p.is_launchable());
+    }
+
+    /// D3D12 32-بت: ما فيه حزمة منشورة تدعمه
+    #[test]
+    fn dx12_32bit_is_blocked() {
+        let p = plan(&probe(Some("d3d12"), Some(false)), &avail_all(), "auto");
+        assert!(p.blockers.contains(&Blocker::D3D12NeedsD3DMetal));
+        assert!(!p.is_launchable());
     }
 
     #[test]
@@ -793,18 +819,18 @@ mod tests {
     fn wined3d_mode_forces_wined3d_and_removes_overrides() {
         let p = plan(&probe(Some("d3d11"), Some(true)), &avail_all(), "wined3d");
         assert_eq!(p.layers, vec![Layer::WineD3D]);
-        assert!(!p
-            .actions
-            .iter()
-            .any(|a| matches!(a, Action::EnableRegistryOverride(_))));
-        assert!(p
-            .actions
-            .contains(&Action::RemoveRegistryOverride("d3d11")));
+        assert!(
+            !p.actions
+                .iter()
+                .any(|a| matches!(a, Action::EnableRegistryOverride(_)))
+        );
+        assert!(p.actions.contains(&Action::RemoveRegistryOverride("d3d11")));
         // ما ننصّب DXVK في وضع WineD3D
-        assert!(!p
-            .actions
-            .iter()
-            .any(|a| matches!(a, Action::InstallLayer(Layer::Dxvk11))));
+        assert!(
+            !p.actions
+                .iter()
+                .any(|a| matches!(a, Action::InstallLayer(Layer::Dxvk11)))
+        );
     }
 
     #[test]
@@ -832,6 +858,8 @@ mod tests {
             dx: None,
             is_64: None,
             issues: Vec::new(),
+            needs_d3dx9: false,
+            needs_d3dcompiler: false,
         };
         let p = plan(&pr, &avail_all(), "auto");
         assert!(p.has_layer(Layer::None));
@@ -854,9 +882,10 @@ mod tests {
     fn dx10_64bit_uses_dxvk10_and_d3d10core_override() {
         let p = plan(&probe(Some("d3d10"), Some(true)), &avail_all(), "auto");
         assert!(p.has_layer(Layer::Dxvk10));
-        assert!(p
-            .actions
-            .contains(&Action::EnableRegistryOverride("d3d10core")));
+        assert!(
+            p.actions
+                .contains(&Action::EnableRegistryOverride("d3d10core"))
+        );
     }
 
     #[test]
@@ -875,11 +904,15 @@ mod tests {
         assert_eq!(layers[0].as_str(), Some("dxvk-d3d9"));
         let actions = j["actions"].as_array().expect("إجراءات مصفوفة");
         assert!(!actions.is_empty());
-        assert!(actions
-            .iter()
-            .all(|a| a["kind"].is_string() && a.get("arg").is_some()));
+        assert!(
+            actions
+                .iter()
+                .all(|a| a["kind"].is_string() && a.get("arg").is_some())
+        );
         assert!(j["blockers"].as_array().expect("موانع مصفوفة").is_empty());
-        assert!(j["notes"].as_array().expect("ملاحظات مصفوفة").is_empty());
+        let notes = j["notes"].as_array().expect("ملاحظات مصفوفة");
+        assert!(!notes.is_empty(), "لازم في ملاحظة واحدة على الأقل");
+        assert!(notes.iter().all(|n| n.is_string()));
         assert_eq!(j["launchable"].as_bool(), Some(true));
     }
 

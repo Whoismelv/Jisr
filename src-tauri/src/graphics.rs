@@ -114,8 +114,45 @@ pub(crate) fn apply_env(cmd: &mut tokio::process::Command, steam: bool) -> bool 
     // ستيم بما فيها CEF ⇒ نافذة ستيم ما تظهر. نكتفي بالريجستري ونتحقق منه.
     cmd.env("WINEDLLPATH_PREPEND", install_dir())
         .env("DXVK_ASYNC", "1")
-        .env("DXVK_HUD", "devinfo");
+        .env("DXVK_HUD", "devinfo")
+        // إصلاح شاشة DX9 السوداء: تصادم فهارس الـbuffers في SPIRV-Cross
+        // (بدون هذا المتغيّر: كل draw يُتخطّى ⇒ شاشة سودا مع HUD يعمل)
+        .env("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "1");
     true
+}
+
+/// قيمة `renderer=vulkan` في ريجستري القارورة.
+///
+/// **ليست رفاهية:** مسار WineD3D على ماك يستخدم OpenGL القديم (بلا compute)،
+/// ويعرّض WineHQ 60494: تطبيقات 32-بت تنهار عشوائياً في `wow64cpu` أثناء
+/// تهيئة محوّل GL. مع `renderer=vulkan` (wined3d → winevulkan → MoltenVK)
+/// اختفى الانهيار (0/60 فشل مقابل 27/86) والأداء صار ~4× أسرع.
+pub async fn ensure_vulkan_renderer(wine: &Path, prefix: &Path) -> bool {
+    let marker = prefix.join(".jisr-wined3d-vulkan.ok");
+    if marker.is_file() {
+        return true;
+    }
+    let mut cmd = tokio::process::Command::new(wine);
+    cmd.env("WINEPREFIX", prefix)
+        .arg("reg")
+        .arg("add")
+        .arg("HKCU\\Software\\Wine\\Direct3D")
+        .arg("/v")
+        .arg("renderer")
+        .arg("/t")
+        .arg("REG_SZ")
+        .arg("/d")
+        .arg("vulkan")
+        .arg("/f")
+        .stdin(std::process::Stdio::null());
+    let ok = match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await {
+        Ok(Ok(o)) => o.status.success(),
+        _ => false,
+    };
+    if ok {
+        let _ = std::fs::write(&marker, b"ok\n");
+    }
+    ok
 }
 
 /// يكتب تجاوزات DXVK في **ريجستري القارورة** (تسري على كل العمليات الجديدة).
@@ -153,27 +190,76 @@ pub async fn apply_registry_overrides(wine: &Path, prefix: &Path) -> Result<(), 
         }
     }
 
-    // قراءة التحقق — نعرف فعلياً إن الريجستري صار فيه native
+    // استثناء واجهة ستيم: d3d* تبقى builtin لعميل ستيم وواجهته
+    // (التجاوز العام يصيب كل عمليات القارورة — وCEF ما يحتاج DXVK)
+    for exe in [
+        "steam.exe",
+        "steamwebhelper.exe",
+        "steamwebhelper_real.exe",
+        "steamservice.exe",
+    ] {
+        for dll in ["d3d9", "d3d10core", "d3d11"] {
+            let mut cmd = tokio::process::Command::new(wine);
+            cmd.env("WINEPREFIX", prefix)
+                .env("WINEMSYNC", "1")
+                .arg("reg")
+                .arg("add")
+                .arg(format!(
+                    "HKCU\\Software\\Wine\\AppDefaults\\{exe}\\DllOverrides"
+                ))
+                .arg("/v")
+                .arg(dll)
+                .arg("/t")
+                .arg("REG_SZ")
+                .arg("/d")
+                .arg("builtin")
+                .arg("/f")
+                .stdin(std::process::Stdio::null());
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
+        }
+    }
+
+    // قراءة تحقق واحدة (بدل 3 عمليات): نطلب المفتاح كله ونتحقق من القيم
+    let mut cmd = tokio::process::Command::new(wine);
+    cmd.env("WINEPREFIX", prefix)
+        .arg("reg")
+        .arg("query")
+        .arg("HKCU\\Software\\Wine\\DllOverrides")
+        .stdin(std::process::Stdio::null());
+    let out = match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await {
+        Ok(Ok(o)) => o,
+        _ => return Err("تعذّر التحقق من تجاوزات DXVK".into()),
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
     for dll in ["d3d9", "d3d10core", "d3d11"] {
-        let mut cmd = tokio::process::Command::new(wine);
-        cmd.env("WINEPREFIX", prefix)
-            .arg("reg")
-            .arg("query")
-            .arg("HKCU\\Software\\Wine\\DllOverrides")
-            .arg("/v")
-            .arg(dll)
-            .stdin(std::process::Stdio::null());
-        let out = match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await
-        {
-            Ok(Ok(o)) => o,
-            _ => return Err(format!("تعذّر التحقق من تجاوز {dll}")),
-        };
-        let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
-        if !text.contains("native") {
+        if !registry_value_is(&text, dll, "native") {
             return Err(format!("تجاوز {dll} ما انكتب في الريجستري"));
         }
     }
     Ok(())
+}
+
+/// قيمة الريجستري **بالضبط** (لا نقبل `native,builtin` ولا `not-native`)
+///
+/// صيغة `reg query`:
+/// ```text
+/// HKEY_CURRENT_USER\Software\Wine\DllOverrides
+///     d3d9    REG_SZ    native
+/// ```
+pub(crate) fn registry_value_is(text: &str, name: &str, expected: &str) -> bool {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let mut parts = trimmed.split_whitespace();
+        let key = parts.next().unwrap_or("");
+        if !key.eq_ignore_ascii_case(name) {
+            continue;
+        }
+        let rest: Vec<&str> = parts.collect();
+        if rest.len() >= 2 {
+            return rest[1].eq_ignore_ascii_case(expected);
+        }
+    }
+    false
 }
 
 /// علامة «الطبقة منشورة داخل القارورة» (نكتبها بعد نسخ الملفات بنجاح)

@@ -82,6 +82,20 @@ pub fn catalog() -> Vec<Asset> {
             sha256: "aa0ea4c82e636ae7bca2076387cb0a5affa26509ad13f119ecd0d62bd7ba6f82",
             size: 190_974_384,
         },
+        // ⚠️ محرّك بديل: 11.6_1 — آخر نسخة قبل ما Gcenx يوقف حزمة
+        // «HACK: Steam» (11.7+ became pure upstream Wine ⇒ واجهة ستيم ما تظهر
+        // عند بعض الأجهزة). ن offerه كخيار للمستخدم يجرّب لو النافذة ما ظهرت.
+        // ملاحظة: 11.6_1 ما فيه MoltenVK_icd.json بنفس المسار ⇒ DXVK/Vulkan
+        // ممكن ما تشتغل معه — فنستخدمه لواجهة ستيم فقط.
+        Asset {
+            id: "wine-11.6_1",
+            name: "Wine 11.6.1 (بديل — واجهة ستيم)",
+            version: "11.6.1",
+            kind: "engine",
+            url: "https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.6_1/wine-devel-11.6_1-osx64.tar.xz",
+            sha256: "737c5bbcef4dab626e6dcb58f3736bf910780de25d53e52e7d7c01e521da725a",
+            size: 319_775_820,
+        },
         // طبقة DXVK-macOS (مفتوحة المصدر) — DirectX 9/10/11 داخل Wine.
         // الحزمة: d3d10core + d3d11 من repack Gcenx (مبني للماك)
         //        + d3d9 من DXVK الرسمي 1.10.3 (لأن repack Gcenx ما يجي معه)
@@ -290,7 +304,20 @@ async fn send_with_retry(
             req = req.header(reqwest::header::RANGE, format!("bytes={range_from}-"));
         }
         match req.send().await {
-            Ok(r) => return Ok(r),
+            Ok(r) => {
+                // 5xx/429 = خطأ مؤقّت في السيرفر ⇒ نعيد المحاولة
+                let status = r.status();
+                if status.is_server_error() || status.as_u16() == 429 {
+                    last = format!("السيرفر رد بحالة {}", status.as_u16());
+                    crate::debuglog::raw(
+                        "warn",
+                        "download",
+                        &format!("attempt {} got HTTP {} — retrying", i + 1, status.as_u16()),
+                    );
+                    continue;
+                }
+                return Ok(r);
+            }
             Err(e) => {
                 last = e.to_string();
                 crate::debuglog::raw(
@@ -305,6 +332,11 @@ async fn send_with_retry(
 }
 
 async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
+    // ٣ محاولات: انقطاع أثناء النقل (السبب الحقيقي لـ«لازم تدوس مرتين»)
+    run_download_attempt(app, asset, cancel, 0).await
+}
+
+async fn run_download_attempt(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>, attempt: u8) {
     let id = asset.id;
 
     let dir = downloads_dir();
@@ -403,6 +435,8 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     // العميل: تتبّع تحويلات GitHub فقط + HTTPS إجباري
     let client = match reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
+        // مهلة عامة: سيرفر يوقف الإرسال ما يعلّق التطبيق للأبد
+        .timeout(Duration::from_secs(120))
         .https_only(true)
         .redirect(reqwest::redirect::Policy::custom(|a| {
             if a.previous().len() >= 10 {
@@ -642,6 +676,17 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     }
 
     if let Some(msg) = failure {
+        // انقطاع أثناء النقل ⇒ نعيد المحاولة بنفس الجزء (استكمال تلقائي)
+        if attempt < 2 {
+            crate::debuglog::raw(
+                "warn",
+                "download",
+                &format!("attempt {} failed: {msg} — retrying", attempt + 1),
+            );
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            Box::pin(run_download_attempt(app, asset, cancel, attempt + 1)).await;
+            return;
+        }
         fail(&app, &asset, log_keys::DOWNLOAD_FAILED, "download", msg);
         return;
     }
