@@ -256,6 +256,12 @@ const ar = {
   steamUiGpuSaved: "حفظنا الإعداد — أعد تشغيل ستيم لتطبيقه.",
   steamUiScale:
     "مقياس واجهة ستيم: {n}× — على شاشات Retina نستخدم 2× عشان تكون حادّة.",
+  "issue.dx12":
+    "DX12 — يحتاج D3DMetal من Apple (ما نوزّعه): غالباً ما تشتغل",
+  "issue.dx8": "DX8 — مسار غير مدعوم بعد (يحتاج طبقة d8vk)",
+  "issue.anticheat": "مضاد غش بدرايفر ويندوز — مستحيل على الماك",
+  "issue.x86": "32-بت — ممكن تحتاج تجربة/إعدادات إضافية",
+  "issue.dotnet": ".NET — قد تحتاج تثبيت .NET داخل القارورة",
   "log.graphicsReady": "تجهّزت طبقة DXVK لتسريع ألعاب DirectX 10/11.",
   "log.graphicsFailed":
     "تعذّر تجهيز DXVK — الألعاب ستشتغل بالطبقة الافتراضية: {error}",
@@ -517,6 +523,12 @@ const en: Record<TKey, string> = {
   steamUiGpuSaved: "Saved — restart Steam to apply it.",
   steamUiScale:
     "Steam UI scale: {n}× — we use 2× on Retina displays so it stays sharp.",
+  "issue.dx12":
+    "DX12 — needs Apple D3DMetal (we can't ship it): usually won't run",
+  "issue.dx8": "DX8 — not supported yet (needs a d8vk layer)",
+  "issue.anticheat": "Kernel-level anti-cheat — impossible on macOS",
+  "issue.x86": "32-bit — may need extra setup/testing",
+  "issue.dotnet": ".NET — may need .NET installed inside the bottle",
   "log.graphicsReady": "DXVK is ready for DirectX 10/11 game acceleration.",
   "log.graphicsFailed":
     "DXVK setup failed — games will use the default layer: {error}",

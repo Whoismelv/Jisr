@@ -229,11 +229,22 @@ export const steamRun = () => call<void>("steam_run");
 /** أوقف ستيم (أو التثبيت الجاري) */
 export const steamStop = () => call<void>("steam_stop");
 
+/** فحص اللعبة من ملفها التنفيذي (DirectX + المعمارية + موانع) */
+export type GameProbe = {
+  exe: string | null;
+  /** d3d9 · d3d11 · d3d12 · vulkan · opengl · none */
+  dx: string | null;
+  is_64: boolean | null;
+  /** dx8 · dx12 · anticheat · x86 · dotnet */
+  issues: string[];
+};
+
 /** لعبة ستيم مثبّتة داخل القارورة (نقرأها محلياً من appmanifest) */
 export type SteamGame = {
   appid: number;
   name: string;
   size_bytes: number;
+  probe: GameProbe;
 };
 
 /** كل ألعاب ستيم المثبّتة — قراءة محلية فقط */

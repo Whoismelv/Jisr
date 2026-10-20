@@ -926,6 +926,18 @@ html.is-macos[dir="rtl"] .toolbar {
   white-space: nowrap;
 }
 
+/* فحص اللعبة: معلومة صغيرة، وتصير كهرمانية لو فيه مانع معروف */
+.game-issue {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.game-issue.blocked {
+  color: var(--warn-text);
+  font-weight: 500;
+}
+
 .empty {
   display: flex;
   flex-direction: column;

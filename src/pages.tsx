@@ -472,6 +472,23 @@ const SteamLibrary = memo(function SteamLibrary({
   onWindowed: (g: SteamGame) => void;
 }) {
   const { t } = useI18n();
+  // رموز الموانع من الخلفية → نصوص مفهومة (بدون تخمين في الواجهة)
+  const issueText = (code: string) => {
+    switch (code) {
+      case "dx12":
+        return t("issue.dx12");
+      case "dx8":
+        return t("issue.dx8");
+      case "anticheat":
+        return t("issue.anticheat");
+      case "x86":
+        return t("issue.x86");
+      case "dotnet":
+        return t("issue.dotnet");
+      default:
+        return code;
+    }
+  };
   return (
     <Card title={t("steamLibraryTitle")} icon={<Icon.Gamepad size={16} />}>
       <div className="bottle-row">
@@ -496,33 +513,51 @@ const SteamLibrary = memo(function SteamLibrary({
 
       {games.length > 0 && (
         <div className="steam-games">
-          {games.map((g) => (
-            <div className="steam-game" key={g.appid}>
-              <div className="steam-game-info">
-                <span className="steam-game-name">{g.name}</span>
-                <span className="muted small">
-                  {t("steamAppId", { id: g.appid })}
-                  {g.size_bytes > 0 ? ` · ${fmtBytes(g.size_bytes)}` : ""}
-                </span>
+          {games.map((g) => {
+            const issues = g.probe?.issues ?? [];
+            const blocked =
+              issues.includes("anticheat") ||
+              issues.includes("dx12") ||
+              issues.includes("dx8");
+            const facts = [
+              t("steamAppId", { id: g.appid }),
+              g.size_bytes > 0 ? fmtBytes(g.size_bytes) : "",
+              g.probe?.dx && g.probe.dx !== "none"
+                ? g.probe.dx.toUpperCase()
+                : "",
+              g.probe?.is_64 === false ? "32-bit" : "",
+            ].filter(Boolean);
+            return (
+              <div className="steam-game" key={g.appid}>
+                <div className="steam-game-info">
+                  <span className="steam-game-name">{g.name}</span>
+                  <span className="muted small">{facts.join(" · ")}</span>
+                  {/* فحص حقيقي من ملف اللعبة: نقول للمستخدم وش ينتظر قبل ما يضيع وقته */}
+                  {issues.length > 0 && (
+                    <span className={"game-issue" + (blocked ? " blocked" : "")}>
+                      {issues.map((code) => issueText(code)).join(" · ")}
+                    </span>
+                  )}
+                </div>
+                <Button
+                  variant="filled"
+                  icon={<Icon.Play size={13} />}
+                  disabled={!running}
+                  onClick={() => onPlay(g)}
+                >
+                  {t("gamePlay")}
+                </Button>
+                {/* تشغيل في نافذة: يمنع الشاشة السوداء مع الألعاب القديمة */}
+                <Button
+                  variant="plain"
+                  title={t("windowedHint")}
+                  onClick={() => onWindowed(g)}
+                >
+                  {t("windowedBtn")}
+                </Button>
               </div>
-              <Button
-                variant="filled"
-                icon={<Icon.Play size={13} />}
-                disabled={!running}
-                onClick={() => onPlay(g)}
-              >
-                {t("gamePlay")}
-              </Button>
-              {/* تشغيل في نافذة: يمنع الشاشة السوداء مع الألعاب القديمة */}
-              <Button
-                variant="plain"
-                title={t("windowedHint")}
-                onClick={() => onWindowed(g)}
-              >
-                {t("windowedBtn")}
-              </Button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

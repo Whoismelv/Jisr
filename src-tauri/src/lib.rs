@@ -16,6 +16,7 @@ mod download;
 mod engine;
 mod game;
 mod graphics;
+mod pe;
 mod steam;
 mod steam_library;
 

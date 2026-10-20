@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, State};
 
-use crate::{bottle, graphics, log, log_keys, steam};
+use crate::{bottle, graphics, log, log_keys, pe, steam};
 
 /// سقوف أمان: ملفات VDF المحلية صغيرة بطبيعتها
 const MAX_VDF_BYTES: u64 = 2 * 1024 * 1024;
@@ -24,6 +24,21 @@ pub struct SteamGame {
     pub appid: u32,
     pub name: String,
     pub size_bytes: u64,
+    /// فحص اللعبة الحقيقي (من ملفها التنفيذي) — قبل ما يجرّب المستخدم ويضيع وقته
+    pub probe: GameProbe,
+}
+
+/// نتيجة فحص اللعبة: DirectX المطلوب + المعمارية + موانع معروفة
+#[derive(Serialize, Clone, Default, PartialEq, Debug)]
+pub struct GameProbe {
+    /// مسار الملف التنفيذي الرئيسي داخل مجلد اللعبة
+    pub exe: Option<String>,
+    /// `d3d9` · `d3d11` · `d3d12` · `vulkan` · `opengl` · `none`
+    pub dx: Option<String>,
+    /// 64-بت؟
+    pub is_64: Option<bool>,
+    /// رموز موانع: `dx8` · `dx12` · `anticheat` · `x86` · `dotnet`
+    pub issues: Vec<String>,
 }
 
 // ============================================================
@@ -442,6 +457,170 @@ pub async fn steam_game_windowed(
     })
 }
 
+/// مجلد لعبة مثبّتة (من المانيفست + تأكيد وجوده)
+fn game_dir(appid: u32) -> Option<PathBuf> {
+    for apps in library_roots() {
+        let manifest = apps.join(format!("appmanifest_{appid}.acf"));
+        let Some(text) = read_limited(&manifest) else {
+            continue;
+        };
+        let pairs = vdf_pairs(&text);
+        let Some(dir) = pairs
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("installdir"))
+            .and_then(|(_, v)| safe_component(v))
+        else {
+            continue;
+        };
+        let full = apps.join("common").join(dir);
+        if full.is_dir() {
+            return Some(full);
+        }
+    }
+    None
+}
+
+/// ملفات مساعدة ما نحسبها «اللعبة» (مثبّتات/أدوات كراش)
+const SKIP_EXE: [&str; 12] = [
+    "unins",
+    "vcredist",
+    "dxsetup",
+    "dxwebsetup",
+    "setup",
+    "install",
+    "crashhandler",
+    "crashreport",
+    "errorreporter",
+    "unitycrashhandler",
+    "steamerrorreporter",
+    "report",
+];
+
+const MAX_SCAN_ENTRIES: usize = 4_000;
+
+/// أكبر ملف .exe في مجلد اللعبة — عادةً هو الملف الرئيسي
+fn find_main_exe(dir: &Path) -> Option<PathBuf> {
+    let mut best: Option<(u64, PathBuf)> = None;
+    let mut stack = vec![(dir.to_path_buf(), 0usize)];
+    let mut seen = 0usize;
+    while let Some((current, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            seen += 1;
+            if seen > MAX_SCAN_ENTRIES {
+                return best.map(|(_, p)| p);
+            }
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                if depth < 3 && !name.starts_with('.') {
+                    stack.push((entry.path(), depth + 1));
+                }
+                continue;
+            }
+            if !name.ends_with(".exe") || SKIP_EXE.iter().any(|s| name.contains(s)) {
+                continue;
+            }
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            if best.as_ref().map(|(b, _)| size > *b).unwrap_or(true) {
+                best = Some((size, entry.path()));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// هل اللعبة تستخدم مضاد غش يحتاج درايفر ويندوز (مستحيل على الماك)؟
+fn uses_kernel_anticheat(dir: &Path) -> bool {
+    let mut stack = vec![(dir.to_path_buf(), 0usize)];
+    let mut seen = 0usize;
+    while let Some((current, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            seen += 1;
+            if seen > MAX_SCAN_ENTRIES {
+                return false;
+            }
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if name.contains("easyanticheat")
+                || name.contains("battleye")
+                || name == "beclient.dll"
+                || name == "beclient_x64.dll"
+                || name.contains("vgc")
+                || name.contains("vanguard")
+                || name.contains("gameguard")
+                || name.contains("xigncode")
+                || name.contains("anticheat")
+            {
+                return true;
+            }
+            if depth < 3 && entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                stack.push((entry.path(), depth + 1));
+            }
+        }
+    }
+    false
+}
+
+/// ذاكرة مؤقتة: فحص كل لعبة مرة وحدة (مفتاح = مجلد اللعبة + وقت تعديله)
+static PROBE_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, (u64, GameProbe)>>> =
+    std::sync::OnceLock::new();
+
+fn probe_game_dir(dir: &Path) -> GameProbe {
+    let stamp = std::fs::metadata(dir)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let cache = PROBE_CACHE.get_or_init(Default::default);
+
+    if let Ok(guard) = cache.lock() {
+        if let Some((cached_stamp, probe)) = guard.get(dir) {
+            if *cached_stamp == stamp {
+                return probe.clone();
+            }
+        }
+    }
+
+    let mut probe = GameProbe::default();
+    if let Some(exe) = find_main_exe(dir) {
+        probe.exe = Some(exe.display().to_string());
+        if let Some(info) = pe::probe_file(&exe) {
+            probe.dx = Some(info.dx().as_str().to_string());
+            probe.is_64 = Some(info.is_64);
+            if let Some(blocker) = info.dx().blocker() {
+                probe.issues.push(blocker.to_string());
+            }
+            if !info.is_64 {
+                probe.issues.push("x86".into());
+            }
+            if info.dx() == pe::DxLevel::None && info.dotnet {
+                probe.issues.push("dotnet".into());
+            }
+            crate::debuglog::raw(
+                "info",
+                "library",
+                &format!("game_probe {} | {}", exe.display(), info.summary()),
+            );
+        }
+    }
+    if uses_kernel_anticheat(dir) {
+        probe.issues.push("anticheat".into());
+    }
+
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(dir.to_path_buf(), (stamp, probe.clone()));
+    }
+    probe
+}
+
 fn scan() -> Vec<SteamGame> {
     let libs = library_roots();
     let mut games: HashMap<u32, SteamGame> = HashMap::new();
@@ -473,21 +652,28 @@ fn scan() -> Vec<SteamGame> {
             }
 
             // تأكيد فعلي: مجلد اللعبة موجود (المانيفست وحده لا يكفي)
-            let installed = vdf_pairs(&text)
+            let pairs = vdf_pairs(&text);
+            let Some(dir) = pairs
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("installdir"))
                 .and_then(|(_, v)| safe_component(v))
-                .map(|dir| apps.join("common").join(dir).is_dir())
-                .unwrap_or(false);
-            if !installed {
+                .map(|dir| apps.join("common").join(dir))
+            else {
+                continue;
+            };
+            if !dir.is_dir() || games.contains_key(&appid) {
                 continue;
             }
 
-            games.entry(appid).or_insert(SteamGame {
+            games.insert(
                 appid,
-                name,
-                size_bytes: size,
-            });
+                SteamGame {
+                    appid,
+                    name,
+                    size_bytes: size,
+                    probe: probe_game_dir(&dir),
+                },
+            );
         }
     }
 
@@ -540,6 +726,25 @@ pub async fn steam_game_launch(
 
     let prefix = bottle::bottle_dir(bottle::MAIN_ID);
     bottle::sync_ca_bundle(&prefix);
+    // فحص اللعبة قبل التشغيل: نسجّل DirectX والمعمارية والموانع المعروفة
+    // (هذا اللي يخلّينا نعرف السبب بدل التخمين)
+    if let Some(dir) = game_dir(appid) {
+        let probe = probe_game_dir(&dir);
+        crate::debuglog::raw(
+            "info",
+            "steam",
+            &format!(
+                "game_probe appid={appid} dx={} x64={} issues={:?} exe={}",
+                probe.dx.as_deref().unwrap_or("?"),
+                probe
+                    .is_64
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "?".into()),
+                probe.issues,
+                probe.exe.as_deref().unwrap_or("?")
+            ),
+        );
+    }
     // نشر طبقة DXVK داخل القارورة (لازم قبل التشغيل: بدونها Wine يتجاهل DXVK)
     let deployed = graphics::deploy_to_prefix(&prefix).is_ok();
     // تجاوزات native في الريجستري — تسري على كل العمليات الجديدة
@@ -547,6 +752,13 @@ pub async fn steam_game_launch(
     let reg_ok = graphics::apply_registry_overrides(&wine, &prefix).await;
     // حزام أمان للعرض: يمنع الألعاب القديمة من تعتيم الشاشة أو احتكارها بالكامل
     let safety = bottle::ensure_mac_safety(&wine, &prefix).await;
+    crate::debuglog::raw(
+        "info",
+        "steam",
+        &format!(
+            "layer state: dxvk_deployed={deployed} registry_overrides={reg_ok} mac_safety={safety}"
+        ),
+    );
     if let Some(dir) = mac_exe.parent() {
         steam::prepare_steam_ui(&app, dir);
     }
