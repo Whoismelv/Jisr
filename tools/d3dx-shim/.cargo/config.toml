@@ -1,0 +1,7 @@
+# غلاف d3dcompiler_43 يجب أن يعمل داخل أي قارورة بلا متطلبات خارجية:
+# CRT ثابت ⇒ لا نستورد VCRUNTIME140.dll ولا api-ms-win-crt-* من القارورة.
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

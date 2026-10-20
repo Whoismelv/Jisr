@@ -123,6 +123,36 @@ impl Compiler {
     }
 }
 
+/// طريقة عرض اللعبة — **اختيار المستخدم** ويُحفظ لكل لعبة.
+///
+/// الافتراضي `Fullscreen` (سلوك اللعبة الأصلي). لو اختار المستخدم
+/// `Windowed` نطبّقه على `settings.txt` قبل كل تشغيل — بلا حوارات
+/// «جرّب تركيبة» ولا تغيير لخيارات ستيم.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayMode {
+    /// ملء الشاشة (الافتراضي — اللعبة تاخذ الشاشة كاملة).
+    Fullscreen,
+    /// نافذة — يمنع الشاشة السوداء/احتجاز الشاشة في ألعاب DX9 القديمة.
+    Windowed,
+}
+
+impl DisplayMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DisplayMode::Fullscreen => "fullscreen",
+            DisplayMode::Windowed => "windowed",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "fullscreen" | "full" | "exclusive" => Some(DisplayMode::Fullscreen),
+            "windowed" | "window" | "borderless" => Some(DisplayMode::Windowed),
+            _ => None,
+        }
+    }
+}
+
 /// محرك الرسم لـWineD3D: Vulkan (عبر MoltenVK → Metal) أو OpenGL القديم.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Renderer {
@@ -168,8 +198,8 @@ pub struct GameProfile {
     pub compiler: Compiler,
     /// محرك الرسم لـWineD3D.
     pub renderer: Renderer,
-    /// نفرض تشغيل اللعبة في نافذة (بعض ألعاب DX9 القديمة تاخد الشاشة كلها).
-    pub windowed: bool,
+    /// طريقة العرض التي اختارها المستخدم (ملء الشاشة/نافذة).
+    pub display: DisplayMode,
     /// Steam overlay مفعّل (هوكل على `IDirect3DDevice9::CreateDevice` ⇒ انهيارات).
     pub overlay: bool,
     /// كم محاولة Déjà جرت على هذه اللعبة.
@@ -194,7 +224,7 @@ impl GameProfile {
             d3dx9: D3dx9Layer::Native,
             compiler: Compiler::Native,
             renderer: Renderer::Vulkan,
-            windowed: false,
+            display: DisplayMode::Fullscreen,
             overlay: false,
             attempts: 0,
             tried: Vec::new(),
@@ -202,16 +232,41 @@ impl GameProfile {
         }
     }
 
+    /// طريقة العرض مفروضة في نافذة؟
+    pub fn windowed(&self) -> bool {
+        self.display == DisplayMode::Windowed
+    }
+
+    /// يضبط طريقة العرض ويحدّث وقت التعديل (تُحفظ في ملف اللعبة).
+    pub fn set_display(&mut self, mode: DisplayMode) {
+        self.display = mode;
+        self.updated_ms = now_ms();
+    }
+
+    /// **التركيبة الواحدة الثابتة** — تُطبَّع أي ملف قديم عليها عند التحميل.
+    ///
+    /// ليش؟ ملفات 0.1.28 كانت تحفظ `compiler: builtin` بعد محاولة فاشلة،
+    /// وهي تُلغي الحارس (Wine يحمّل المترجم المدمج ولا يرى غلافنا). المستخدم
+    /// ما عنده واجهة تركيبات — فالملف القديم ما لازم يفرض علينا تجربة قديمة.
+    pub fn normalized(mut self) -> Self {
+        self.d3d9 = D3d9Layer::Dxvk;
+        self.d3dx9 = D3dx9Layer::Native;
+        self.compiler = Compiler::Native;
+        self.renderer = Renderer::Vulkan;
+        self.overlay = false;
+        self
+    }
+
     /// بصمة التركيبة (نص قصير) — نستخدمها لمقارنة التركيبات ولمنع تكرار
     /// تركيبة جرت وفشلت.
     pub fn signature(&self) -> String {
         format!(
-            "d3d9={};d3dx9={};compiler={};renderer={};windowed={};overlay={}",
+            "d3d9={};d3dx9={};compiler={};renderer={};display={};overlay={}",
             self.d3d9.as_str(),
             self.d3dx9.as_str(),
             self.compiler.as_str(),
             self.renderer.as_str(),
-            self.windowed,
+            self.display.as_str(),
             self.overlay
         )
     }
@@ -341,16 +396,16 @@ impl GameProfile {
             }
             // ألعاب DX9 القديمة تاخد الشاشة كلها ⇒ نجرّب نافذة مفروضة.
             "check-game-files" => {
-                if self.windowed {
+                if self.windowed() {
                     return None;
                 }
-                next.windowed = true;
+                next.display = DisplayMode::Windowed;
             }
             "windowed-off" => {
-                if !self.windowed {
+                if !self.windowed() {
                     return None;
                 }
-                next.windowed = false;
+                next.display = DisplayMode::Fullscreen;
             }
             // "missing-dll:…" وما شابه ⇒ يحتاج تدخل المستخدم (لا تغيير آلي).
             _ => return None,
@@ -409,7 +464,8 @@ impl GameProfile {
             "d3dx9": self.d3dx9.as_str(),
             "compiler": self.compiler.as_str(),
             "renderer": self.renderer.as_str(),
-            "windowed": self.windowed,
+            "windowed": self.windowed(),
+            "display": self.display.as_str(),
             "overlay": self.overlay,
             "attempts": self.attempts,
             "tried": self.tried,
@@ -453,10 +509,21 @@ impl GameProfile {
                 .and_then(serde_json::Value::as_str)
                 .and_then(Renderer::parse)
                 .unwrap_or(fallback.renderer),
-            windowed: obj
-                .get("windowed")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(fallback.windowed),
+            display: obj
+                .get("display")
+                .and_then(serde_json::Value::as_str)
+                .and_then(DisplayMode::parse)
+                .unwrap_or_else(|| {
+                    if obj
+                        .get("windowed")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        DisplayMode::Windowed
+                    } else {
+                        fallback.display
+                    }
+                }),
             overlay: obj
                 .get("overlay")
                 .and_then(serde_json::Value::as_bool)
@@ -527,7 +594,7 @@ fn load_in(base: &Path, appid: u32) -> Option<GameProfile> {
     let path = profile_path_in(base, appid);
     let text = std::fs::read_to_string(&path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    GameProfile::from_json_for(appid, &value)
+    GameProfile::from_json_for(appid, &value).map(GameProfile::normalized)
 }
 
 /// احفظ ملف تعريف لعبة (في مجلد أساس معيّن) — كتابة ذرّية.
@@ -619,7 +686,7 @@ mod tests {
         assert_eq!(p.d3dx9, D3dx9Layer::Native);
         assert_eq!(p.compiler, Compiler::Native);
         assert_eq!(p.renderer, Renderer::Vulkan);
-        assert!(!p.windowed);
+        assert_eq!(p.display, DisplayMode::Fullscreen);
         assert!(!p.overlay);
         assert_eq!(p.attempts, 0);
         assert!(p.updated_ms > 0, "الوقت لازم يكون مضبوط");
@@ -742,7 +809,7 @@ mod tests {
     fn windowed_tokens_toggle_the_window() {
         let p = GameProfile::default_for(1);
         let c = p.next_candidate("check-game-files").expect("فيه تغيير");
-        assert!(c.windowed);
+        assert_eq!(c.display, DisplayMode::Windowed);
         assert!(c.next_candidate("check-game-files").is_none());
         // الرجوع لغير النافذة = التركيبة الافتراضية (جرت) ⇒ ما نرجع لها
         assert!(
@@ -779,13 +846,14 @@ mod tests {
         p.d3dx9 = D3dx9Layer::Builtin;
         p.compiler = Compiler::Builtin;
         p.renderer = Renderer::Gl;
-        p.windowed = true;
+        p.display = DisplayMode::Windowed;
         p.overlay = false;
         p.attempts = 7;
         let v = p.to_json();
         assert_eq!(v["version"], json!(1));
         assert_eq!(v["appid"], json!(1234));
         assert_eq!(v["d3d9"], json!("wined3d"));
+        assert_eq!(v["display"], json!("windowed"));
         let back = GameProfile::from_json(&v).expect("ملف صالح");
         assert_eq!(back, p);
     }
@@ -832,7 +900,7 @@ mod tests {
         let base = temp_dir("roundtrip");
         let mut p = GameProfile::default_for(77);
         p.attempts = 2;
-        p.windowed = true;
+        p.display = DisplayMode::Windowed;
         assert!(load_in(&base, 77).is_none(), "ما فيه ملف قبل الحفظ");
         save_in(&base, &p).expect("الحفظ ينجح");
         let loaded = load_in(&base, 77).expect("الملف موجود بعد الحفظ");
@@ -887,6 +955,31 @@ mod tests {
         assert!(d2.contains("WineD3D"), "{d2}");
         assert!(d2.contains("OpenGL"), "{d2}");
         assert!(d2.contains("مترجم"), "{d2}");
+    }
+
+    /// ملف 0.1.28 قديم يحمل `compiler: builtin` + `windowed: true`:
+    /// نطبّعه على التركيبة الثابتة (الحارس لا يُلغى) ونحترم اختيار العرض.
+    #[test]
+    fn old_builtin_profile_is_normalized_to_fixed_stack() {
+        let base = temp_dir("migrate");
+        let dir = profiles_dir_in(&base);
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("mkdir: {e}"));
+        let old = json!({
+            "version": 1, "appid": 48010, "d3d9": "dxvk", "d3dx9": "native",
+            "compiler": "builtin", "renderer": "vulkan", "windowed": true,
+            "overlay": true, "attempts": 3, "tried": [], "updated_ms": 1
+        });
+        std::fs::write(
+            dir.join("48010.json"),
+            serde_json::to_string(&old).unwrap_or_default(),
+        )
+        .unwrap();
+        let p = load_in(&base, 48010).expect("ملف قديم صالح");
+        assert_eq!(p.compiler, Compiler::Native, "الحارس لا يُلغى بملف قديم");
+        assert_eq!(p.d3dx9, D3dx9Layer::Native);
+        assert!(!p.overlay, "الـoverlay يبقى مقفولاً");
+        assert_eq!(p.display, DisplayMode::Windowed, "اختيار العرض يبقى");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// هل في ملف مؤقت (*.tmp) داخل المجلد؟

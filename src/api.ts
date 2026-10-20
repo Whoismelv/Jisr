@@ -282,6 +282,10 @@ export type SteamGame = {
   size_bytes: number;
   probe: GameProbe;
   plan: GamePlan;
+  /** اختيار المستخدم: ملء الشاشة أو نافذة (محفوظ لكل لعبة) */
+  display: "fullscreen" | "windowed";
+  /** اللعبة تقبل تغيير windowedmode من settings.txt؟ */
+  display_supported: boolean;
 };
 
 /** كل ألعاب ستيم المثبّتة — قراءة محلية فقط */
@@ -291,12 +295,36 @@ export const steamGamesList = () => call<SteamGame[]>("steam_games_list");
 export const steamGameLaunch = (appid: number) =>
   call<void>("steam_game_launch", { appid });
 
-/** تفعيل/تعطيل وضع النافذة للعبة (settings.txt) — يمنع الشاشة السوداء */
+/** اختيار طريقة العرض (ملء الشاشة/نافذة) — يُحفظ ويُطبّق فوراً */
+export type DisplayResult = {
+  /** انكتب في settings.txt الآن؟ */
+  applied: boolean;
+  /** اللعبة تدعم المفتاح؟ لو لا، الاختيار محفوظ لكن اللعبة تحكم بنفسها */
+  supported: boolean;
+  file?: string;
+};
+export const steamGameDisplaySet = (
+  appid: number,
+  display: "fullscreen" | "windowed",
+) => call<DisplayResult>("steam_game_display_set", { appid, display });
+
+/** توافق قديم: تفعيل/تعطيل وضع النافذة */
 export const steamGameWindowed = (appid: number, enabled: boolean) =>
   call<{ applied: boolean; file?: string }>("steam_game_windowed", {
     appid,
     enabled,
   });
+
+/** متطلبات ويندوز: Visual C++ 2015‑2022 (x86 + x64) */
+export type VcredistStatus = {
+  installed: boolean;
+  x86: boolean;
+  x64: boolean;
+  version: string;
+  missing: string[];
+};
+export const vcredistStatus = () => call<VcredistStatus>("vcredist_status");
+export const vcredistPrepare = () => call<VcredistStatus>("vcredist_prepare");
 
 // ============================================================
 //  طبقة الرسومات
@@ -322,6 +350,8 @@ export type GameProfile = {
   d3dx9: "Native" | "Builtin";
   compiler: "Native" | "Builtin";
   renderer: "Vulkan" | "Gl";
+  /** "fullscreen" أو "windowed" */
+  display: "fullscreen" | "windowed";
   windowed: boolean;
   overlay: boolean;
   attempts: number;

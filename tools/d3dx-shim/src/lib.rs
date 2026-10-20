@@ -1,28 +1,27 @@
-//! Jisr — غلاف تشخيص لمترجم الـHLSL (`d3dcompiler_43`)
+//! Jisr — درع مترجم الـHLSL (`d3dcompiler_43`)
 //!
 //! **لماذا:** ألعاب DirectX 9 القديمة (LIMBO مثلًا) تنهار داخل مترجم
-//! Microsoft's `d3dcompiler_43` نفسه (page fault على مؤشر فارغ)، وكذلك تنهار
-//! داخل نسخة Wine المدمجة. أي نصلّح طبقة D3DX ⇒ ينتقل الانهيار.
+//! مايكروسوفت `d3dcompiler_43` نفسه عندما تمرّر `pTarget=NULL` أو
+//! `pEntrypoint=NULL` (مُثبت معملياً: +0x1E96A9 و+0x1C5C66).
 //!
 //! **هذا الغلاف** يجلس بين اللعبة والمترجم الحقيقي:
-//! 1. **مِجهر**: يسجّل كل استدعاء (المصدر وطوله، الـdefines، الـinclude، الهدف
-//!    والـflags) ⇒ نعرف بالضبط ما الذي يعطّل المترجم.
-//! 2. **حارس**: لو المدخل باطل (مصدر NULL أو طول صفر) ⇒ يرجع خطأ نظيف
-//!    بدل قفزة الذاكرة (انهيار قابل للقراءة بدل قفزة عشوائية).
-//! 3. **مِطرقة**: يوجّه الاستدعاء لمترجم **آخر** عبر المتغيّر
-//!    `JISR_D3DCOMPILER_BACKEND` (مثلاً d3dcompiler_47) ⇒ نجرّب بديل
-//!    بدون ما نلمس اللعبة.
+//! 1. **حارس**: لو المدخل باطل ⇒ نكمّله بقيمة مشتقّة من المصدر بدل قفزة
+//!    الذاكرة، ولو المصدر نفسه فارغ ⇒ `E_FAIL` نظيف.
+//! 2. **مِجهر**: يسجّل كل استدعاء + النتيجة (`hr`) + نص الخطأ + طول الكود.
+//! 3. **بصمة**: يخبر التطبيق أنه غلافنا (لا نسخة مايكروسوفت).
 //!
-//! المرجع الحقيقي يُحمَّل من `d3dcompiler_43_ms.dll` (نسخة مايكروسوفت)
-//! أو من المسار المعطى في `JISR_D3DCOMPILER_BACKEND`.
+//! المرجع الحقيقي يُحمَّل من `d3dcompiler_43_ms.dll` **بجانب هذا الملف**
+//! (وليس بجانب اللعبة — هذا كان العيب القاتل في 0.1.30: كنا نبحث في مجلد
+//! اللعبة فما نلقى المترجم ⇒ كل ترجمة ترجع E_FAIL ⇒ اللعبة تنهار وهي
+//! تظن أن الشيدر انبنى).
 //!
-//! **كل الاستدعاءات تمرّ كما هي** — ما نغيّر سلوك المترجم إلا في حالة
-//! المدخل الفارغ (وهو بالضبط ما كان يfoil الانهيار).
+//! كل الاستدعاءات الأخرى (17 تصديراً) تمرّ للمترجم الحقيقي كما هي.
 
 #![allow(non_snake_case)]
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 // ============================================================
@@ -41,55 +40,74 @@ type REFIID = *const c_void;
 
 const S_OK: HRESULT = 0;
 const E_FAIL: HRESULT = -2147467259; // 0x80004005
+const E_NOTIMPL: HRESULT = -2147467263; // 0x80004001
+
+const GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT: DWORD = 0x0000_0002;
+const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: DWORD = 0x0000_0004;
 
 #[link(name = "kernel32")]
 extern "system" {
     fn LoadLibraryA(name: *const c_char) -> *mut c_void;
     fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
     fn GetModuleFileNameA(module: *mut c_void, buf: *mut c_char, size: DWORD) -> DWORD;
+    fn GetModuleHandleExA(flags: DWORD, name: *const c_char, module: *mut *mut c_void) -> i32;
+    fn GetSystemDirectoryA(buf: *mut c_char, size: UINT) -> UINT;
     fn GetLastError() -> DWORD;
+    fn GetCurrentProcessId() -> DWORD;
+    fn GetTickCount() -> DWORD;
 }
+
+/// عنوان ثابت داخل هذا الـDLL — نستخدمه لمعرفة مسار الوحدة نفسها
+/// (`GetModuleHandleExA(FROM_ADDRESS)`) بدل `GetModuleFileNameA(NULL)` الذي
+/// يرجع مسار **اللعبة** لا مسار الغلاف.
+static MODULE_ANCHOR: u8 = 0;
 
 // ============================================================
 //  سجل الاستدعاءات
 // ============================================================
 
-/// مسار السجل: من `JISR_D3DX_LOG` أو بجانب الـDLL
-fn log_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("JISR_D3DX_LOG") {
-        let path = PathBuf::from(p);
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+/// المسار الافتراضي: جذر القارورة (`C:\jisr-d3dx-shim.log`) — نفس المسار
+/// الذي يقرأه التطبيق. يُمكن تجاوزه بـ`JISR_D3DX_LOG`.
+const DEFAULT_LOG: &str = r"C:\jisr-d3dx-shim.log";
+
+fn log_path() -> PathBuf {
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        if let Ok(p) = std::env::var("JISR_D3DX_LOG") {
+            let p = p.trim();
+            if !p.is_empty() {
+                return PathBuf::from(p);
+            }
         }
-        return Some(path);
-    }
-    None
+        PathBuf::from(DEFAULT_LOG)
+    })
+    .clone()
 }
 
 /// نكتب سطراً واحداً (best-effort — ما نبيّن فشل التسجيل للعبة)
 fn log_line(line: &str) {
-    let Some(path) = log_path() else { return };
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    let pid = unsafe { GetCurrentProcessId() };
+    let tick = unsafe { GetTickCount() };
+    let path = log_path();
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
     {
-        let _ = writeln!(f, "{line}");
+        let _ = writeln!(f, "[jisr] #{n} pid={pid} t={tick} {line}");
     }
 }
 
-/// أول ٦٤ بايت من المصدر (كـhex) — تكفي للتعرّف على الشيدر
+/// أول ٦٤ بايت من المصدر (hex + نص مقروء) — تكفي للتعرّف على الشيدر
 fn source_head(p: *const c_void, size: usize) -> String {
     if p.is_null() || size == 0 {
         return String::from("<null>");
     }
     let bytes = unsafe { std::slice::from_raw_parts(p as *const u8, size.min(64)) };
-    let hex: String = bytes
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<Vec<_>>()
-        .join("");
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     let printable: String = bytes
         .iter()
         .map(|b| {
@@ -104,8 +122,68 @@ fn source_head(p: *const c_void, size: usize) -> String {
 }
 
 // ============================================================
-//  تحميل المترجم الحقيقي
+//  مسار الوحدة + تحميل المترجم الحقيقي
 // ============================================================
+
+unsafe fn module_file_name(module: *mut c_void) -> Option<PathBuf> {
+    let mut buf = [0i8; 512];
+    let n = GetModuleFileNameA(module, buf.as_mut_ptr(), buf.len() as DWORD);
+    if n == 0 || n as usize >= buf.len() {
+        return None;
+    }
+    let bytes: Vec<u8> = buf.iter().take(n as usize).map(|c| *c as u8).collect();
+    Some(PathBuf::from(String::from_utf8_lossy(&bytes).to_string()))
+}
+
+/// مسار **هذا الغلاف** (وليس مسار اللعبة)
+fn shim_path() -> Option<PathBuf> {
+    unsafe {
+        let mut h: *mut c_void = std::ptr::null_mut();
+        let addr = std::ptr::addr_of!(MODULE_ANCHOR) as *const c_char;
+        let flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+        if GetModuleHandleExA(flags, addr, &mut h) == 0 || h.is_null() {
+            return None;
+        }
+        module_file_name(h)
+    }
+}
+
+fn system_dir() -> Option<PathBuf> {
+    unsafe {
+        let mut buf = [0i8; 512];
+        let n = GetSystemDirectoryA(buf.as_mut_ptr(), buf.len() as UINT);
+        if n == 0 || n as usize >= buf.len() {
+            return None;
+        }
+        let bytes: Vec<u8> = buf.iter().take(n as usize).map(|c| *c as u8).collect();
+        Some(PathBuf::from(String::from_utf8_lossy(&bytes).to_string()))
+    }
+}
+
+/// ترتيب البحث عن المترجم الحقيقي:
+/// 1. `JISR_D3DCOMPILER_BACKEND` (تشخيص/بديل)
+/// 2. مجلد الغلاف نفسه (`syswow64\d3dcompiler_43_ms.dll`)
+/// 3. مجلد النظام (نفس المكان فعلياً — احتياط)
+/// 4. اسم مجرّد يترك Wine يبحث في مسارها
+fn backend_candidates() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("JISR_D3DCOMPILER_BACKEND") {
+        let p = p.trim();
+        if !p.is_empty() {
+            out.push(PathBuf::from(p));
+        }
+    }
+    if let Some(m) = shim_path() {
+        if let Some(dir) = m.parent() {
+            out.push(dir.join("d3dcompiler_43_ms.dll"));
+        }
+    }
+    if let Some(dir) = system_dir() {
+        out.push(dir.join("d3dcompiler_43_ms.dll"));
+    }
+    out.push(PathBuf::from("d3dcompiler_43_ms.dll"));
+    out
+}
 
 type CompileFn = unsafe extern "system" fn(
     LPCVOID,
@@ -121,136 +199,162 @@ type CompileFn = unsafe extern "system" fn(
     *mut *mut c_void,
 ) -> HRESULT;
 
-type Compile2Fn = unsafe extern "system" fn(
+type AssembleFn = unsafe extern "system" fn(
     LPCVOID,
     SIZE_T,
     LPCSTR,
     *const c_void,
     *const c_void,
-    LPCSTR,
-    LPCSTR,
-    UINT,
-    UINT,
-    *mut *mut c_void,
-    *mut *mut c_void,
-    *mut UINT,
-    *mut DWORD,
-) -> HRESULT;
-
-type CompileFromFileFn = unsafe extern "system" fn(
-    LPCWSTR,
-    LPCSTR,
-    LPCSTR,
-    UINT,
     UINT,
     *mut *mut c_void,
     *mut *mut c_void,
 ) -> HRESULT;
 
-type CompileFromFile2Fn = unsafe extern "system" fn(
-    LPCWSTR,
-    LPCSTR,
-    LPCSTR,
-    UINT,
-    UINT,
-    *mut *mut c_void,
-    *mut *mut c_void,
-    *mut UINT,
-    *mut DWORD,
-) -> HRESULT;
+type CreateBlobFn = unsafe extern "system" fn(SIZE_T, *mut *mut c_void) -> HRESULT;
 
 type DisassembleFn =
     unsafe extern "system" fn(LPCVOID, SIZE_T, UINT, *mut *mut c_void, *mut *mut c_void) -> HRESULT;
 
-type ReflectFn =
-    unsafe extern "system" fn(LPCVOID, SIZE_T, REFIID, *mut *mut c_void) -> HRESULT;
+type GetBlobFn = unsafe extern "system" fn(LPCVOID, SIZE_T, *mut *mut c_void) -> HRESULT;
 
-type GetBlobSizeFn = unsafe extern "system" fn(LPCVOID) -> SIZE_T;
-type GetErrorFn = unsafe extern "system" fn(LPCVOID) -> *const c_char;
+type GetBlobPartFn =
+    unsafe extern "system" fn(LPCVOID, SIZE_T, UINT, UINT, *mut *mut c_void) -> HRESULT;
 
-/// الوحدة الحقيقية للمترجم + عناوين الدوال
+type PreprocessFn = unsafe extern "system" fn(
+    LPCVOID,
+    SIZE_T,
+    LPCSTR,
+    *const c_void,
+    *const c_void,
+    *mut *mut c_void,
+    *mut *mut c_void,
+) -> HRESULT;
+
+type ReflectFn = unsafe extern "system" fn(LPCVOID, SIZE_T, REFIID, *mut *mut c_void) -> HRESULT;
+
+type StripShaderFn =
+    unsafe extern "system" fn(LPCVOID, SIZE_T, UINT, *mut *mut c_void) -> HRESULT;
+
 struct Backend {
     module: *mut c_void,
+    path: String,
     compile: Option<CompileFn>,
-    compile2: Option<Compile2Fn>,
-    compile_from_file: Option<CompileFromFileFn>,
-    compile_from_file2: Option<CompileFromFile2Fn>,
+    assemble: Option<AssembleFn>,
+    create_blob: Option<CreateBlobFn>,
     disassemble: Option<DisassembleFn>,
+    get_blob_part: Option<GetBlobPartFn>,
+    get_debug_info: Option<GetBlobFn>,
+    get_inout_sig: Option<GetBlobFn>,
+    get_in_sig: Option<GetBlobFn>,
+    get_out_sig: Option<GetBlobFn>,
+    preprocess: Option<PreprocessFn>,
     reflect: Option<ReflectFn>,
-    get_blob_size: Option<GetBlobSizeFn>,
-    get_error: Option<GetErrorFn>,
+    strip_shader: Option<StripShaderFn>,
 }
 
 unsafe impl Send for Backend {}
 unsafe impl Sync for Backend {}
 
-/// مسار الـDLL الحقيقي: `JISR_D3DCOMPILER_BACKEND` أو `d3dcompiler_43_ms.dll` بجانبنا
-fn real_backend_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("JISR_D3DCOMPILER_BACKEND") {
-        if !p.trim().is_empty() {
-            return Some(PathBuf::from(p.trim()));
-        }
+fn load_backend() -> Option<Backend> {
+    static BOOT: AtomicBool = AtomicBool::new(false);
+    if !BOOT.swap(true, Ordering::Relaxed) {
+        log_line(&format!(
+            "BOOT shim=d3dcompiler_43 v2 module={:?} log={:?}",
+            shim_path().map(|p| p.display().to_string()),
+            log_path().display().to_string()
+        ));
     }
-    // مجلد هذا الـDLL + اسم ملف النسخة الأصلية
-    let mut buf = [0i8; 260];
-    unsafe {
-        let h = GetModuleFileNameA(std::ptr::null_mut(), buf.as_mut_ptr(), 260);
-        if h == 0 {
-            return None;
-        }
-        let bytes: Vec<u8> = buf
-            .iter()
-            .take_while(|c| **c != 0)
-            .map(|c| *c as u8)
-            .collect();
-        let path = PathBuf::from(String::from_utf8_lossy(&bytes).to_string());
-        let dir = path.parent()?.to_path_buf();
-        return Some(dir.join("d3dcompiler_43_ms.dll"));
-    }
-}
 
-fn backend() -> &'static Backend {
-    static BACKEND: OnceLock<Backend> = OnceLock::new();
-    BACKEND.get_or_init(|| {
-        let path = real_backend_path();
-        let module = match &path {
-            Some(p) => {
-                let c = CString::new(p.to_string_lossy().as_bytes()).unwrap_or_default();
-                unsafe { LoadLibraryA(c.as_ptr()) }
-            }
-            None => std::ptr::null_mut(),
+    for cand in backend_candidates() {
+        let c = match CString::new(cand.to_string_lossy().as_bytes()) {
+            Ok(c) => c,
+            Err(_) => continue,
         };
+        let module = unsafe { LoadLibraryA(c.as_ptr()) };
         if module.is_null() {
             let err = unsafe { GetLastError() };
             log_line(&format!(
-                "[jisr] d3dx-shim: تعذّر تحميل المترجم الحقيقي (GetLastError={err}) — path={:?}",
-                path
+                "backend: load failed path={} err={err}",
+                cand.display()
             ));
-        } else {
-            log_line(&format!(
-                "[jisr] d3dx-shim: المترجم الحقيقي = {:?}",
-                path.as_ref().map(|p| p.display().to_string())
-            ));
+            continue;
         }
+        log_line(&format!("backend: loaded path={}", cand.display()));
+
         let sym = |name: &str| -> *mut c_void {
-            if module.is_null() {
-                return std::ptr::null_mut();
-            }
             let c = CString::new(name).unwrap_or_default();
             unsafe { GetProcAddress(module, c.as_ptr()) }
         };
-        Backend {
+
+        return Some(Backend {
             module,
+            path: cand.display().to_string(),
             compile: unsafe { std::mem::transmute(sym("D3DCompile")) },
-            compile2: unsafe { std::mem::transmute(sym("D3DCompile2")) },
-            compile_from_file: unsafe { std::mem::transmute(sym("D3DCompileFromFile")) },
-            compile_from_file2: unsafe { std::mem::transmute(sym("D3DCompileFromFile2")) },
+            assemble: unsafe { std::mem::transmute(sym("D3DAssemble")) },
+            create_blob: unsafe { std::mem::transmute(sym("D3DCreateBlob")) },
             disassemble: unsafe { std::mem::transmute(sym("D3DDisassemble")) },
+            get_blob_part: unsafe { std::mem::transmute(sym("D3DGetBlobPart")) },
+            get_debug_info: unsafe { std::mem::transmute(sym("D3DGetDebugInfo")) },
+            get_inout_sig: unsafe {
+                std::mem::transmute(sym("D3DGetInputAndOutputSignatureBlob"))
+            },
+            get_in_sig: unsafe { std::mem::transmute(sym("D3DGetInputSignatureBlob")) },
+            get_out_sig: unsafe { std::mem::transmute(sym("D3DGetOutputSignatureBlob")) },
+            preprocess: unsafe { std::mem::transmute(sym("D3DPreprocess")) },
             reflect: unsafe { std::mem::transmute(sym("D3DReflect")) },
-            get_blob_size: unsafe { std::mem::transmute(sym("D3DGetBlobSize")) },
-            get_error: unsafe { std::mem::transmute(sym("D3DGetError")) },
-        }
-    })
+            strip_shader: unsafe { std::mem::transmute(sym("D3DStripShader")) },
+        });
+    }
+
+    log_line("backend: NOT FOUND — every D3DCompile will return E_FAIL");
+    None
+}
+
+/// نحاول التحميل مرة واحدة؛ لو فشل نعيد المحاولة في الاستدعاء التالي
+/// (بدل `OnceLock` الذي كان يخزّن الفشل للأبد).
+static BACKEND: OnceLock<Backend> = OnceLock::new();
+
+fn backend() -> Option<&'static Backend> {
+    if let Some(b) = BACKEND.get() {
+        return Some(b);
+    }
+    let b = load_backend()?;
+    let _ = BACKEND.set(b);
+    BACKEND.get()
+}
+
+// ============================================================
+//  أدوات الـblob ونص الخطأ
+// ============================================================
+
+type BlobGetBuffer = unsafe extern "system" fn(*mut c_void) -> *const c_void;
+type BlobGetSize = unsafe extern "system" fn(*mut c_void) -> usize;
+
+/// (الطول، النص) من `ID3D10Blob` — vtable: QI/AddRef/Release ثم
+/// GetBufferPointer (3) وGetBufferSize (4).
+unsafe fn blob_info(p: *mut c_void) -> (usize, String) {
+    if p.is_null() {
+        return (0, String::from("<null>"));
+    }
+    let vt = *(p as *const *const *const c_void);
+    if vt.is_null() {
+        return (0, String::from("<no-vtable>"));
+    }
+    let get_buf: BlobGetBuffer = std::mem::transmute(*vt.add(3));
+    let get_size: BlobGetSize = std::mem::transmute(*vt.add(4));
+    let b = get_buf(p);
+    let n = get_size(p);
+    if b.is_null() || n == 0 {
+        return (0, String::from("<empty>"));
+    }
+    let bytes = std::slice::from_raw_parts(b as *const u8, n.min(1024));
+    let text = String::from_utf8_lossy(bytes)
+        .replace('\0', " ")
+        .replace('\r', " ")
+        .replace('\n', " | ")
+        .trim()
+        .to_string();
+    (n, text)
 }
 
 /// نقرأ نص C-string بحذر (قد يكون NULL)
@@ -285,17 +389,10 @@ unsafe fn count_defines(p: *const c_void) -> usize {
 }
 
 // ============================================================
-//  الدوال المصدَّرة (نفس أسماء d3dcompiler_43)
+//  الحراسة
 // ============================================================
 
 /// نستنتج الـprofile من نص الشيدر لمّا تجي NULL.
-///
-/// **الجذر المثبت معملياً:** `d3dcompiler_43` الأصلي يقرأ `pTarget[0]`
-/// بلا تحقّق ⇒ قفزة على 0x0 (نفس +0x1e96a9 في تقرير LIMBO). اللعبة تمرّر
-/// NULL لأن `D3DXGetPixelShaderProfile` ترجع NULL تحت Wine.
-///
-/// الاشتقاق: وجود `SV_Target`/`COLOR` ⇒ pixel، وجود `SV_Position`/`POSITION`
-/// ⇒ vertex، وإلا نفترض pixel (أغلب شيدرات الألعاب ثنائية الأبعاد).
 unsafe fn guess_profile(p_src: LPCVOID, size: usize) -> &'static [u8] {
     const PS: &[u8] = b"ps_3_0\0";
     const VS: &[u8] = b"vs_3_0\0";
@@ -313,7 +410,6 @@ unsafe fn guess_profile(p_src: LPCVOID, size: usize) -> &'static [u8] {
     }
 }
 
-/// حارس الهدف: لو `pTarget` فارغ نرجّع بديلاً مشتقّاً من المصدر.
 unsafe fn guard_target(target: LPCSTR, p_src: LPCVOID, size: usize) -> (*const c_char, bool) {
     if !target.is_null() && *target != 0 {
         return (target, false);
@@ -321,14 +417,16 @@ unsafe fn guard_target(target: LPCSTR, p_src: LPCVOID, size: usize) -> (*const c
     (guess_profile(p_src, size).as_ptr() as *const c_char, true)
 }
 
-/// حارس الدالة: `pEntrypoint` فارغ ينهار على +0x1c5c66 في المترجم الأصلي
-/// (مُثبت معملياً). نستبدله بـ`main` — لو ما فيه `main` يرجع خطأ ترجمة نظيف.
 unsafe fn guard_entry(entry: LPCSTR) -> (*const c_char, bool) {
     if !entry.is_null() && *entry != 0 {
         return (entry, false);
     }
     (b"main\0".as_ptr() as *const c_char, true)
 }
+
+// ============================================================
+//  التصدير الأساسي: D3DCompile
+// ============================================================
 
 #[no_mangle]
 pub unsafe extern "system" fn D3DCompile(
@@ -344,166 +442,137 @@ pub unsafe extern "system" fn D3DCompile(
     ppCode: *mut *mut c_void,
     ppErrorMsgs: *mut *mut c_void,
 ) -> HRESULT {
-    let (target, substituted) = guard_target(pTarget, pSrcData, SrcDataSize);
-    let (entry, entry_fixed) = guard_entry(pEntrypoint);
+    let (target, t_sub) = guard_target(pTarget, pSrcData, SrcDataSize);
+    let (entry, e_sub) = guard_entry(pEntrypoint);
     log_line(&format!(
-        "[jisr] D3DCompile src={} size={} entry={}{} target={}{} flags1={} flags2={} defines={} include={}",
+        "D3DCompile src={} size={} entry={}{} target={}{} flags=0x{Flags1:x}/0x{Flags2:x} defines={} include={}",
         if pSrcData.is_null() { "NULL" } else { "ok" },
         SrcDataSize,
         cstr(entry),
-        if entry_fixed { " (كان NULL ⇒ main)" } else { "" },
+        if e_sub { " (NULL=>main)" } else { "" },
         cstr(target),
-        if substituted { " (كان NULL ⇒ بدّلناه)" } else { "" },
-        Flags1,
-        Flags2,
+        if t_sub { " (NULL=>guessed)" } else { "" },
         count_defines(pDefines),
         if pInclude.is_null() { "null" } else { "set" },
     ));
-    // حارس: مدخل فارغ ⇒ خطأ نظيف بدل قفزة الذاكرة
+
     if pSrcData.is_null() || SrcDataSize == 0 {
         log_line(&format!(
-            "[jisr] D3DCompile: مصدر فارغ ⇒ نرجع E_FAIL (بدل انهيار). head={}",
+            "D3DCompile: empty source => E_FAIL (guard) head={}",
             source_head(pSrcData, SrcDataSize)
         ));
         return E_FAIL;
     }
+
+    let Some(b) = backend() else {
+        log_line("D3DCompile: no backend => E_FAIL");
+        return E_FAIL;
+    };
+    let Some(f) = b.compile else {
+        log_line(&format!("D3DCompile: {} has no D3DCompile => E_FAIL", b.path));
+        return E_FAIL;
+    };
+
+    let hr = f(
+        pSrcData,
+        SrcDataSize,
+        pSourceName,
+        pDefines,
+        pInclude,
+        entry,
+        target,
+        Flags1,
+        Flags2,
+        ppCode,
+        ppErrorMsgs,
+    );
+
+    let code = if ppCode.is_null() {
+        std::ptr::null_mut()
+    } else {
+        *ppCode
+    };
+    let err = if ppErrorMsgs.is_null() {
+        std::ptr::null_mut()
+    } else {
+        *ppErrorMsgs
+    };
+    let (bytes, _) = if hr == S_OK {
+        blob_info(code)
+    } else {
+        (0, String::new())
+    };
+    let err_text = if err.is_null() {
+        String::from("<none>")
+    } else {
+        blob_info(err).1
+    };
     log_line(&format!(
-        "[jisr] D3DCompile head={}",
+        "D3DCompile => hr=0x{:08X} code={:p} bytes={bytes} err={err_text} head={}",
+        hr,
+        code,
         source_head(pSrcData, SrcDataSize)
     ));
-    let b = backend();
-    match b.compile {
-        Some(f) => f(
-            pSrcData,
-            SrcDataSize,
-            pSourceName,
-            pDefines,
-            pInclude,
-            entry,
-            target,
-            Flags1,
-            Flags2,
-            ppCode,
-            ppErrorMsgs,
-        ),
-        None => {
-            log_line("[jisr] D3DCompile: المترجم الحقيقي ما فيه D3DCompile");
-            E_FAIL
-        }
-    }
+    hr
 }
 
+// ============================================================
+//  بقية تصديرات d3dcompiler_43 (17 تصديراً)
+// ============================================================
+
 #[no_mangle]
-pub unsafe extern "system" fn D3DCompile2(
+pub unsafe extern "system" fn D3DAssemble(
     pSrcData: LPCVOID,
     SrcDataSize: SIZE_T,
     pSourceName: LPCSTR,
     pDefines: *const c_void,
     pInclude: *const c_void,
-    pEntrypoint: LPCSTR,
-    pTarget: LPCSTR,
-    Flags1: UINT,
-    Flags2: UINT,
-    ppCode: *mut *mut c_void,
+    Flags: UINT,
+    ppShader: *mut *mut c_void,
     ppErrorMsgs: *mut *mut c_void,
-    pNumErrors: *mut UINT,
-    pFlags3: *mut DWORD,
 ) -> HRESULT {
-    let (target, substituted) = guard_target(pTarget, pSrcData, SrcDataSize);
-    let (entry, _) = guard_entry(pEntrypoint);
     log_line(&format!(
-        "[jisr] D3DCompile2 src={} size={} target={}{}",
+        "D3DAssemble src={} size={} flags=0x{Flags:x}",
         if pSrcData.is_null() { "NULL" } else { "ok" },
-        SrcDataSize,
-        cstr(target),
-        if substituted { " (كان NULL ⇒ بدّلناه)" } else { "" },
+        SrcDataSize
     ));
     if pSrcData.is_null() || SrcDataSize == 0 {
         return E_FAIL;
     }
-    let b = backend();
-    match b.compile2 {
-        Some(f) => f(
-            pSrcData,
-            SrcDataSize,
-            pSourceName,
-            pDefines,
-            pInclude,
-            entry,
-            target,
-            Flags1,
-            Flags2,
-            ppCode,
-            ppErrorMsgs,
-            pNumErrors,
-            pFlags3,
-        ),
-        None => E_FAIL,
-    }
+    let Some(b) = backend() else {
+        return E_FAIL;
+    };
+    let Some(f) = b.assemble else {
+        log_line("D3DAssemble: backend has no export => E_NOTIMPL");
+        return E_NOTIMPL;
+    };
+    let hr = f(
+        pSrcData,
+        SrcDataSize,
+        pSourceName,
+        pDefines,
+        pInclude,
+        Flags,
+        ppShader,
+        ppErrorMsgs,
+    );
+    log_line(&format!("D3DAssemble => hr=0x{hr:08X}"));
+    hr
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn D3DCompileFromFile(
-    pSourceFile: LPCWSTR,
-    pEntrypoint: LPCSTR,
-    pTarget: LPCSTR,
-    Flags1: UINT,
-    Flags2: UINT,
-    ppCode: *mut *mut c_void,
-    ppErrorMsgs: *mut *mut c_void,
+pub unsafe extern "system" fn D3DCreateBlob(
+    Size: SIZE_T,
+    ppBlob: *mut *mut c_void,
 ) -> HRESULT {
-    log_line(&format!(
-        "[jisr] D3DCompileFromFile entry={} target={}",
-        cstr(pEntrypoint),
-        cstr(pTarget)
-    ));
-    let b = backend();
-    match b.compile_from_file {
-        Some(f) => f(
-            pSourceFile,
-            pEntrypoint,
-            pTarget,
-            Flags1,
-            Flags2,
-            ppCode,
-            ppErrorMsgs,
-        ),
-        None => E_FAIL,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn D3DCompileFromFile2(
-    pSourceFile: LPCWSTR,
-    pEntrypoint: LPCSTR,
-    pTarget: LPCSTR,
-    Flags1: UINT,
-    Flags2: UINT,
-    ppCode: *mut *mut c_void,
-    ppErrorMsgs: *mut *mut c_void,
-    pNumErrors: *mut UINT,
-    pFlags3: *mut DWORD,
-) -> HRESULT {
-    log_line(&format!(
-        "[jisr] D3DCompileFromFile2 entry={} target={}",
-        cstr(pEntrypoint),
-        cstr(pTarget)
-    ));
-    let b = backend();
-    match b.compile_from_file2 {
-        Some(f) => f(
-            pSourceFile,
-            pEntrypoint,
-            pTarget,
-            Flags1,
-            Flags2,
-            ppCode,
-            ppErrorMsgs,
-            pNumErrors,
-            pFlags3,
-        ),
-        None => E_FAIL,
-    }
+    let Some(b) = backend() else {
+        return E_FAIL;
+    };
+    let Some(f) = b.create_blob else {
+        log_line("D3DCreateBlob: backend has no export => E_NOTIMPL");
+        return E_NOTIMPL;
+    };
+    f(Size, ppBlob)
 }
 
 #[no_mangle]
@@ -514,11 +583,120 @@ pub unsafe extern "system" fn D3DDisassemble(
     ppDisasm: *mut *mut c_void,
     ppErrorMsgs: *mut *mut c_void,
 ) -> HRESULT {
-    let b = backend();
-    match b.disassemble {
-        Some(f) => f(pCode, Size, Flags, ppDisasm, ppErrorMsgs),
-        None => E_FAIL,
-    }
+    let Some(b) = backend() else {
+        return E_FAIL;
+    };
+    let Some(f) = b.disassemble else {
+        log_line("D3DDisassemble: backend has no export => E_NOTIMPL");
+        return E_NOTIMPL;
+    };
+    f(pCode, Size, Flags, ppDisasm, ppErrorMsgs)
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn D3DGetBlobPart(
+    pSrcData: LPCVOID,
+    SrcDataSize: SIZE_T,
+    Part: UINT,
+    Flags: UINT,
+    ppPart: *mut *mut c_void,
+) -> HRESULT {
+    let Some(b) = backend() else {
+        return E_FAIL;
+    };
+    let Some(f) = b.get_blob_part else {
+        log_line("D3DGetBlobPart: backend has no export => E_NOTIMPL");
+        return E_NOTIMPL;
+    };
+    f(pSrcData, SrcDataSize, Part, Flags, ppPart)
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn D3DGetDebugInfo(
+    pSrcData: LPCVOID,
+    SrcDataSize: SIZE_T,
+    ppDebugInfo: *mut *mut c_void,
+) -> HRESULT {
+    let Some(b) = backend() else {
+        return E_FAIL;
+    };
+    let Some(f) = b.get_debug_info else {
+        return E_NOTIMPL;
+    };
+    f(pSrcData, SrcDataSize, ppDebugInfo)
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn D3DGetInputAndOutputSignatureBlob(
+    pSrcData: LPCVOID,
+    SrcDataSize: SIZE_T,
+    ppSignatureBlob: *mut *mut c_void,
+) -> HRESULT {
+    let Some(b) = backend() else {
+        return E_FAIL;
+    };
+    let Some(f) = b.get_inout_sig else {
+        return E_NOTIMPL;
+    };
+    f(pSrcData, SrcDataSize, ppSignatureBlob)
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn D3DGetInputSignatureBlob(
+    pSrcData: LPCVOID,
+    SrcDataSize: SIZE_T,
+    ppSignatureBlob: *mut *mut c_void,
+) -> HRESULT {
+    let Some(b) = backend() else {
+        return E_FAIL;
+    };
+    let Some(f) = b.get_in_sig else {
+        return E_NOTIMPL;
+    };
+    f(pSrcData, SrcDataSize, ppSignatureBlob)
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn D3DGetOutputSignatureBlob(
+    pSrcData: LPCVOID,
+    SrcDataSize: SIZE_T,
+    ppSignatureBlob: *mut *mut c_void,
+) -> HRESULT {
+    let Some(b) = backend() else {
+        return E_FAIL;
+    };
+    let Some(f) = b.get_out_sig else {
+        return E_NOTIMPL;
+    };
+    f(pSrcData, SrcDataSize, ppSignatureBlob)
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn D3DPreprocess(
+    pSrcData: LPCVOID,
+    SrcDataSize: SIZE_T,
+    pSourceName: LPCSTR,
+    pDefines: *const c_void,
+    pInclude: *const c_void,
+    ppCodeText: *mut *mut c_void,
+    ppErrorMsgs: *mut *mut c_void,
+) -> HRESULT {
+    let Some(b) = backend() else {
+        return E_FAIL;
+    };
+    let Some(f) = b.preprocess else {
+        log_line("D3DPreprocess: backend has no export => E_NOTIMPL");
+        return E_NOTIMPL;
+    };
+    f(
+        pSrcData,
+        SrcDataSize,
+        pSourceName,
+        pDefines,
+        pInclude,
+        ppCodeText,
+        ppErrorMsgs,
+    )
 }
 
 #[no_mangle]
@@ -528,39 +706,82 @@ pub unsafe extern "system" fn D3DReflect(
     riid: REFIID,
     ppReflector: *mut *mut c_void,
 ) -> HRESULT {
-    let b = backend();
-    match b.reflect {
-        Some(f) => f(pData, DataSize, riid, ppReflector),
-        None => E_FAIL,
-    }
+    let Some(b) = backend() else {
+        return E_FAIL;
+    };
+    let Some(f) = b.reflect else {
+        return E_NOTIMPL;
+    };
+    f(pData, DataSize, riid, ppReflector)
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn D3DGetBlobSize(pBlob: LPCVOID) -> SIZE_T {
-    let b = backend();
-    match b.get_blob_size {
-        Some(f) => f(pBlob),
-        None => 0,
-    }
+pub unsafe extern "system" fn D3DStripShader(
+    pShaderBytecode: LPCVOID,
+    BytecodeLength: SIZE_T,
+    uStripFlags: UINT,
+    ppStrippedBlob: *mut *mut c_void,
+) -> HRESULT {
+    let Some(b) = backend() else {
+        return E_FAIL;
+    };
+    let Some(f) = b.strip_shader else {
+        return E_NOTIMPL;
+    };
+    f(pShaderBytecode, BytecodeLength, uStripFlags, ppStrippedBlob)
+}
+
+// ------------------------------------------------------------
+//  تصديرات قديمة موجودة في d3dcompiler_43 لكنها stubs حتى في Wine.
+//  نصدّرها حتى يرى أي برنامج فحص التصديرات أن الغلاف مكتمل.
+// ------------------------------------------------------------
+
+#[no_mangle]
+pub extern "system" fn DebugSetMute() {}
+
+#[no_mangle]
+pub extern "system" fn D3DReturnFailure1() -> HRESULT {
+    E_FAIL
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn D3DGetError(pErrorData: LPCVOID) -> *const c_char {
-    let b = backend();
-    match b.get_error {
-        Some(f) => f(pErrorData),
-        None => std::ptr::null(),
-    }
+pub unsafe extern "system" fn D3DCompressShaders(
+    _uNumShaders: UINT,
+    _pShaderData: *const c_void,
+    _uFlags: UINT,
+    _ppCompressedData: *mut *mut c_void,
+) -> HRESULT {
+    E_NOTIMPL
 }
 
-/// رمز نجاح (D3DCompile يرجّع S_OK) — نصدّره حتى لا complains المحلّل
 #[no_mangle]
-pub extern "system" fn D3DCompile_Ok() -> HRESULT {
-    S_OK
+pub unsafe extern "system" fn D3DDecompressShaders(
+    _uNumShaders: UINT,
+    _pShaderData: *const c_void,
+    _uSrcDataSize: UINT,
+    _uStartIndex: UINT,
+    _pIndices: *mut UINT,
+    _uFlags: UINT,
+    _ppShaders: *mut *mut c_void,
+    _pTotalShaders: *mut UINT,
+) -> HRESULT {
+    E_NOTIMPL
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn D3DDisassemble10Effect(
+    _pEffect: *const c_void,
+    _Flags: UINT,
+    _ppDisassembly: *mut *mut c_void,
+) -> HRESULT {
+    E_NOTIMPL
 }
 
 /// **بصمة الغلاف** — التطبيق يقرأ هذه السلسلة من الملف ليعرف أن المثبَّت
-/// هو غلافنا (لا نسخة مايكروسوفت). بدونها كان `is_shim()` يرجع false دائماً
-/// ⇒ الحالة في الواجهة «غير مفعّل» حتى بعد التثبيت، وزر الإيقاف ما يشتغل.
+/// هو غلافنا (لا نسخة مايكروسوفت).
 #[no_mangle]
 pub static JISR_D3DX_SHIM_V1: [u8; 17] = *b"JISR_D3DX_SHIM_V1";
+
+// نمنع تحذير S_OK غير المستخدم في بعض إعدادات البناء
+#[allow(dead_code)]
+const _: HRESULT = S_OK;

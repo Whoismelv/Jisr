@@ -30,6 +30,8 @@ const ALLOWED_HOSTS: &[&str] = &[
     "cdn.akamai.steamstatic.com",
     // حزمة DirectX الرسمية من مايكروسوفت (D3DX9) — بصمتها مثبّتة في الكتالوج
     "download.microsoft.com",
+    // حزمة Visual C++ 2015‑2022 الرسمية — بصمتها مثبّتة في vcredist.rs
+    "download.visualstudio.microsoft.com",
 ];
 
 /// سقف الحجم — حماية من رد ضخم غير منطقي (2GB)
@@ -40,7 +42,7 @@ fn host_allowed(host: &str) -> bool {
 }
 
 /// فحص رابط كامل: HTTPS إجباري + نطاق من القائمة البيضاء
-fn url_allowed(url: &str) -> bool {
+pub(crate) fn url_allowed(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else {
         return false;
     };

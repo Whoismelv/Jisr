@@ -286,10 +286,23 @@ const ar = {
   steamGameLaunched: "أرسلنا أمر تشغيل «{name}» إلى ستيم.",
   steamAppId: "رقم {id}",
   windowedBtn: "نافذة",
-  windowedHint:
-    "يشغّل اللعبة داخل نافذة بدل ما تاخذ شاشة الماك كاملة — يمنع الشاشة السوداء",
-  windowedApplied:
-    "فعّلنا وضع النافذة في «{name}» — شغّلها الآن من زر «تشغيل».",
+  displayFullscreen: "ملء الشاشة",
+  displayWindowed: "نافذة",
+  displayHint: "اختيارك يُحفظ لهذي اللعبة ويُطبّق قبل كل تشغيل",
+  displayApplied: "حفظنا اختيار «{name}» وطبّقناه.",
+  displayUnsupported: "العرض من إعدادات اللعبة",
+  displayUnsupportedHint:
+    "هذي اللعبة ما عندها settings.txt — غيّر العرض من داخل إعدادات اللعبة نفسها.",
+  displayUnsupportedToast:
+    "حفظنا اختيار «{name}»، لكن اللعبة ما تدعم تغييره من هنا — غيّره من إعداداتها.",
+  vcredistLabel: "متطلبات ويندوز (VC++)",
+  vcredistHint:
+    "نزّل حزمة مايكروسوفت الرسمية (بصمة موثّقة) وثبّتها داخل القارورة — x86 ثم x64.",
+  vcredistInstalledHint: "Visual C++ 2015‑2022 مثبّت (x86 + x64).",
+  vcredistInstall: "تجهيز",
+  vcredistPreparing: "جاري التنزيل والتثبيت…",
+  vcredistReady: "متطلبات ويندوز جاهزة — أعد تشغيل اللعبة.",
+  vcredistMissing: "ناقص",
   steamUiGpuOn: "رسم الواجهة: GPU",
   steamUiGpuOff: "رسم الواجهة: برمجي",
   cefModeSoftware: "برمجي",
@@ -605,10 +618,23 @@ const en: Record<TKey, string> = {
   steamGameLaunched: "Asked Steam to launch “{name}”.",
   steamAppId: "App {id}",
   windowedBtn: "Windowed",
-  windowedHint:
-    "Runs the game inside a window instead of taking over the whole screen — prevents a black screen",
-  windowedApplied:
-    "Windowed mode is on for “{name}” — launch it now with Play.",
+  displayFullscreen: "Fullscreen",
+  displayWindowed: "Windowed",
+  displayHint: "Your choice is saved per game and applied before every launch",
+  displayApplied: "Saved and applied your choice for “{name}”.",
+  displayUnsupported: "Display is set in-game",
+  displayUnsupportedHint:
+    "This game has no settings.txt — change the display mode from the game's own settings.",
+  displayUnsupportedToast:
+    "Saved your choice for “{name}”, but this game can't apply it from here — change it in-game.",
+  vcredistLabel: "Windows runtime (VC++)",
+  vcredistHint:
+    "Downloads Microsoft's official package (pinned hash) and installs it in the bottle — x86 then x64.",
+  vcredistInstalledHint: "Visual C++ 2015‑2022 is installed (x86 + x64).",
+  vcredistInstall: "Set up",
+  vcredistPreparing: "Downloading and installing…",
+  vcredistReady: "Windows runtime is ready — relaunch the game.",
+  vcredistMissing: "Missing",
   steamUiGpuOn: "UI rendering: GPU",
   steamUiGpuOff: "UI rendering: software",
   cefModeSoftware: "Software",

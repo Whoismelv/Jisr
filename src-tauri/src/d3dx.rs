@@ -286,8 +286,21 @@ pub fn guard_enabled(prefix: &Path) -> bool {
 fn ensure_guard_file(dir: &Path, bytes: &[u8]) -> Result<(), String> {
     let target = dir.join("d3dcompiler_43.dll");
     let real = dir.join("d3dcompiler_43_ms.dll");
-    if is_shim(&target) {
-        return Ok(());
+    // غلاف أحدث؟ نستبدله دائماً (التطبيق يتحدّث تلقائياً، والغلاف القديم
+    // كان يبقى للأبد لأن الفحص كان «هل هو غلاف؟» بدل «هل هو هذا الغلاف؟»).
+    if let Ok(existing) = std::fs::read(&target) {
+        if existing == bytes {
+            return Ok(());
+        }
+        if is_shim(&target) {
+            let tmp = dir.join("d3dcompiler_43.dll.jisr-tmp");
+            std::fs::write(&tmp, bytes).map_err(|e| format!("تعذّر كتابة الغلاف: {e}"))?;
+            let _ = std::fs::remove_file(&target);
+            std::fs::rename(&tmp, &target).map_err(|e| format!("تعذّر تثبيت الغلاف: {e}"))?;
+            if is_shim(&target) {
+                return Ok(());
+            }
+        }
     }
     // نحفظ الأصل: الملف نفسه، أو النسخة ذات الأحرف الكبيرة (D3DCompiler_43.dll)
     if !real.is_file() {
@@ -403,12 +416,29 @@ pub fn shim_log_path() -> PathBuf {
     crate::data_dir().join("logs").join("d3dx-shim.log")
 }
 
+/// يدوّر سجل الحارس **قبل كل تشغيل** — كل جلسة لها سجلها، وما نخلط
+/// سجل تشغيل فاشل مع تشغيل ناجح. نحتفظ بجلسة واحدة سابقة فقط.
+pub fn rotate_shim_log(prefix: &Path) {
+    let current = shim_log_path_in(prefix);
+    if !current.is_file() {
+        return;
+    }
+    let old = prefix.join("drive_c").join("jisr-d3dx-shim.1.log");
+    let _ = std::fs::remove_file(&old);
+    let _ = std::fs::rename(&current, &old);
+}
+
+/// هل هذه البايتات غلاف جسر؟ (للتصدير والتشخيص)
+pub fn bytes_are_shim(bytes: &[u8]) -> bool {
+    bytes.windows(SHIM_MARKER.len()).any(|w| w == SHIM_MARKER)
+}
+
 /// هل الملف المعطى هو غلافنا؟
 fn is_shim(path: &Path) -> bool {
     let Ok(bytes) = std::fs::read(path) else {
         return false;
     };
-    bytes.windows(SHIM_MARKER.len()).any(|w| w == SHIM_MARKER)
+    bytes_are_shim(&bytes)
 }
 
 /// هل الغلاف مثبّت داخل القارورة؟
@@ -558,14 +588,14 @@ mod tests {
         h86.update(SHIM_X86);
         assert_eq!(
             format!("{:x}", h86.finalize()),
-            "c694ae15073b71ce53e17938e769071933edb6046b9d3eea00e8c343442b12da",
+            "4eb7049624ba56bd5b3f376da691586b339d6ead35b80f088540587643e7a6a0",
             "تغيّر غلاف D3DX (x86) — أعد البناء من tools/d3dx-shim وحدّث البصمة"
         );
         let mut h64 = Sha256::new();
         h64.update(SHIM_X64);
         assert_eq!(
             format!("{:x}", h64.finalize()),
-            "b0d0ce5b1c4dc000d65daaff2b1fca7ce5baaa4e693b786611c6acd50f8491d3",
+            "7ada311a9ee0b4eb34568a6ae2a4087cfce5180f260167379183d6dd3be78991",
             "تغيّر غلاف D3DX (x64) — أعد البناء من tools/d3dx-shim وحدّث البصمة"
         );
     }

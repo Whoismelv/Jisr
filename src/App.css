@@ -926,6 +926,20 @@ html.is-macos[dir="rtl"] .toolbar {
   white-space: nowrap;
 }
 
+/* اختيار ملء الشاشة/نافذة: ما يصغّر اسم اللعبة ولا يلتف */
+.steam-display {
+  flex: none;
+}
+
+@media (max-width: 620px) {
+  .steam-game {
+    flex-wrap: wrap;
+  }
+  .steam-display {
+    order: 3;
+  }
+}
+
 /* فحص اللعبة: معلومة صغيرة، وتصير كهرمانية لو فيه مانع معروف */
 .game-issue {
   font-size: 11px;

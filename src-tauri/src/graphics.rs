@@ -331,6 +331,35 @@ pub async fn apply_registry_overrides(
         }
     }
 
+    // **تحقق من مفتاح اللعبة** — `AppDefaults` يتقدّم على المفتاح العام في
+    // Wine. لو كتبناه وفشل بصمت، التحقق العام يبقى أخضر واللعبة تاخذ قيمة
+    // قديمة (هذا اللي خلّى الحارس يُلغى في 0.1.28).
+    if let Some(exe) = app_exe {
+        let exe = exe.trim();
+        if !exe.is_empty() {
+            let mut cmd = tokio::process::Command::new(wine);
+            cmd.env("WINEPREFIX", prefix)
+                .arg("reg")
+                .arg("query")
+                .arg(format!(
+                    "HKCU\\Software\\Wine\\AppDefaults\\{exe}\\DllOverrides"
+                ))
+                .stdin(std::process::Stdio::null());
+            let out = match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output())
+                .await
+            {
+                Ok(Ok(o)) => o,
+                _ => return Err(format!("تعذّر التحقق من تجاوزات {exe}")),
+            };
+            let text = String::from_utf8_lossy(&out.stdout);
+            for (dll, value) in ov.entries() {
+                if !registry_value_is(&text, dll, value) {
+                    return Err(format!("تجاوز {dll} الخاص باللعبة ما انكتب"));
+                }
+            }
+        }
+    }
+
     // قراءة تحقق واحدة (بدل 3 عمليات): نطلب المفتاح كله ونتحقق من القيم
     let mut cmd = tokio::process::Command::new(wine);
     cmd.env("WINEPREFIX", prefix)

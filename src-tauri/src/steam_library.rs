@@ -28,6 +28,10 @@ pub struct SteamGame {
     pub probe: GameProbe,
     /// خطة التشغيل التلقائي: أي طبقة تناسب هذه اللعبة وأي موانع فيها
     pub plan: GamePlan,
+    /// اختيار المستخدم: `fullscreen` أو `windowed` (محفوظ لكل لعبة)
+    pub display: String,
+    /// اللعبة تقبل تغيير `windowedmode` من `settings.txt`؟ (LIMBO: نعم)
+    pub display_supported: bool,
 }
 
 /// خطة «تشغيل تلقائي» لكل لعبة — يختارها المخطّط من حقائق الـPE
@@ -415,6 +419,33 @@ fn find_file_ci(dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
+/// فك ترميز `settings.txt` (بعض الألعاب القديمة تحفظه UTF-16 مع BOM)
+fn decode_settings(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(bytes).to_string()
+    }
+}
+
+/// هل اللعبة تقبل `windowedmode` في `settings.txt`؟ (قراءة فقط — لا نكتب)
+fn settings_support_windowed(dir: &Path) -> bool {
+    let Some(file) = find_file_ci(dir, "settings.txt") else {
+        return false;
+    };
+    let Ok(bytes) = std::fs::read(&file) else {
+        return false;
+    };
+    if bytes.len() > 512 * 1024 {
+        return false;
+    }
+    patch_windowed(&decode_settings(&bytes), true).is_some()
+}
+
 /// يستبدل قيمة `windowedmode` داخل settings.txt.
 /// يرجع None لو الملف ما فيه هذا المفتاح (لعبة ما تدعمه) — ما نكتب شي عندها.
 /// نحافظ على نمط نهاية السطر عشان محرّك اللعبة يقرأه بنفس الطريقة.
@@ -460,6 +491,82 @@ pub struct WindowedResult {
     pub file: Option<String>,
 }
 
+/// نتيجة اختيار طريقة العرض
+#[derive(Serialize, Clone)]
+pub struct DisplayResult {
+    /// انكتب في `settings.txt` الآن؟
+    pub applied: bool,
+    /// اللعبة تدعم المفتاح؟ (لو لا — الاختيار محفوظ لكن اللعبة تحكم بنفسها)
+    pub supported: bool,
+    pub file: Option<String>,
+}
+
+/// يحفظ اختيار المستخدم (ملء الشاشة/نافذة) **ويطبّقه فوراً** على `settings.txt`.
+///
+/// ليش هنا وليس في التشغيل فقط؟ عشان يرى المستخدم النتيجة مباشرة، ولو
+/// اللعبة ما تدعم المفتاح نرجّع `supported=false` بصدق بدل وعد كاذب.
+#[tauri::command]
+pub async fn steam_game_display_set(
+    app: AppHandle,
+    appid: u32,
+    display: String,
+) -> Result<DisplayResult, String> {
+    let _t = crate::debuglog::trace(
+        "steam",
+        "steam_game_display_set",
+        format!("appid={appid} display={display}"),
+    );
+    if appid == 0 {
+        return Err("رقم اللعبة غير صالح".into());
+    }
+    let mode = match display.trim().to_ascii_lowercase().as_str() {
+        "fullscreen" | "full" => crate::combo::DisplayMode::Fullscreen,
+        "windowed" | "window" => crate::combo::DisplayMode::Windowed,
+        _ => return Err("طريقة العرض غير معروفة".into()),
+    };
+
+    let mut profile = profile_for(appid);
+    profile.set_display(mode);
+    crate::combo::save(&profile)?;
+
+    let mut applied = false;
+    let mut supported = false;
+    let mut file: Option<String> = None;
+    if let Some(dir) = install_dir(appid) {
+        supported = settings_support_windowed(&dir);
+        if supported {
+            match patch_settings_windowed(&dir, mode == crate::combo::DisplayMode::Windowed) {
+                Ok(f) => {
+                    applied = true;
+                    file = Some(f.display().to_string());
+                }
+                Err(e) => {
+                    crate::debuglog::raw("warn", "steam", &format!("display patch failed: {e}"));
+                }
+            }
+        }
+    }
+
+    log(
+        &app,
+        "info",
+        log_keys::STEAM_GAME_WINDOWED,
+        json!({
+            "appid": appid,
+            "display": mode.as_str(),
+            "applied": applied,
+            "supported": supported,
+            "file": file,
+        }),
+    );
+
+    Ok(DisplayResult {
+        applied,
+        supported,
+        file,
+    })
+}
+
 /// يفعّل (أو يعطّل) وضع النافذة للعبة عبر ملف settings.txt الخاص بها.
 /// السبب: ألعاب قديقة (DirectX 9) تاخذ الشاشة بالكامل في الوضع الكامل، وداخل
 /// Wine على الماك هذا يعني شاشة سودا. وضع النافذة يمنعها تماماً.
@@ -470,28 +577,15 @@ pub async fn steam_game_windowed(
     appid: u32,
     enabled: bool,
 ) -> Result<WindowedResult, String> {
-    let _t = crate::debuglog::trace(
-        "steam",
-        "steam_game_windowed",
-        format!("appid={appid} enabled={enabled}"),
-    );
-    if appid == 0 {
-        return Err("رقم اللعبة غير صالح".into());
-    }
-    let dir = install_dir(appid)
-        .ok_or_else(|| "ما لقيت مجلد اللعبة — تأكد إنها منزّلة بالكامل".to_string())?;
-    let file = patch_settings_windowed(&dir, enabled)?;
-
-    log(
-        &app,
-        "info",
-        log_keys::STEAM_GAME_WINDOWED,
-        json!({ "appid": appid, "enabled": enabled, "file": file.display().to_string() }),
-    );
-
+    let r = steam_game_display_set(
+        app,
+        appid,
+        if enabled { "windowed" } else { "fullscreen" }.to_string(),
+    )
+    .await?;
     Ok(WindowedResult {
-        applied: true,
-        file: Some(file.display().to_string()),
+        applied: r.applied,
+        file: r.file,
     })
 }
 
@@ -509,20 +603,16 @@ fn patch_settings_windowed(dir: &Path, enabled: bool) -> Result<PathBuf, String>
     let bytes = std::fs::read(&file).map_err(|e| format!("تعذّر قراءة إعدادات اللعبة: {e}"))?;
     // بعض الألعاب القديمة تحفظ إعداداتها بـ UTF-16 (مع BOM) — نحترم ترميزها
     let utf16 = bytes.starts_with(&[0xFF, 0xFE]);
-    let text = if utf16 {
-        let units: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        String::from_utf16_lossy(&units)
-    } else {
-        String::from_utf8_lossy(&bytes).to_string()
-    };
+    let text = decode_settings(&bytes);
     let Some(patched) = patch_windowed(&text, enabled) else {
         return Err(
             "هذي اللعبة ما تدعم windowedmode في settings.txt — جرّب من قائمة إعدادات اللعبة".into(),
         );
     };
+    // القيمة صحيحة أصلاً؟ لا نلمس الملف (ولا نحدّث وقت تعديله بلا داعي)
+    if patched == text {
+        return Ok(file);
+    }
 
     // نسخة احتياطية مرة واحدة (لا نلمس الأصل)
     let backup = file.with_extension("txt.jisr.bak");
@@ -786,6 +876,7 @@ fn scan() -> Vec<SteamGame> {
 
             let probe = probe_game_dir(&dir);
             let plan = plan_for_appid(&probe, appid);
+            let profile = profile_for(appid);
             games.insert(
                 appid,
                 SteamGame {
@@ -794,6 +885,8 @@ fn scan() -> Vec<SteamGame> {
                     size_bytes: size,
                     probe,
                     plan,
+                    display: profile.display.as_str().to_string(),
+                    display_supported: settings_support_windowed(&dir),
                 },
             );
         }
@@ -828,13 +921,19 @@ pub fn profile_for(appid: u32) -> crate::combo::GameProfile {
 ///
 /// **مطابقة الواقع:** ما نقول `native` إلا إذا كانت الملفات موجودة فعلاً،
 /// وإلا Wine يرجع للنسخة المدمجة بصمت ويبقى الملف «يكدب» على التطبيق.
-fn profile_overrides(profile: &crate::combo::GameProfile) -> graphics::LayerOverrides {
+fn profile_overrides(
+    profile: &crate::combo::GameProfile,
+    prefix: &Path,
+) -> graphics::LayerOverrides {
     use crate::combo::{Compiler, D3d9Layer, D3dx9Layer};
     let dxvk_ready = graphics::is_installed() && graphics::d3d9_available();
     let d3dx_ready = crate::d3dx::is_installed();
     let want_dxvk = profile.d3d9 == D3d9Layer::Dxvk;
     let want_native_d3dx = profile.d3dx9 == D3dx9Layer::Native;
-    let want_native_compiler = profile.compiler == Compiler::Native;
+    // الحارس مثبّت داخل القارورة ⇒ `d3dcompiler_43.dll` هو غلافنا مهما قال
+    // الملف القديم. لو خلّينا `builtin` هنا، Wine يتجاهل الغلاف كلياً.
+    let guard_on = crate::d3dx::guard_enabled(prefix);
+    let want_native_compiler = guard_on || profile.compiler == Compiler::Native;
     graphics::LayerOverrides {
         d3d9: if want_dxvk && dxvk_ready {
             "native"
@@ -856,7 +955,7 @@ fn profile_overrides(profile: &crate::combo::GameProfile) -> graphics::LayerOver
         } else {
             "builtin"
         },
-        d3dcompiler_43: if want_native_compiler && d3dx_ready {
+        d3dcompiler_43: if want_native_compiler && (d3dx_ready || guard_on) {
             "native"
         } else {
             "builtin"
@@ -872,7 +971,7 @@ async fn apply_profile(
     profile: &crate::combo::GameProfile,
     app_exe: Option<&str>,
 ) -> Result<(), String> {
-    let ov = profile_overrides(profile);
+    let ov = profile_overrides(profile, prefix);
     graphics::ensure_layer(wine, prefix, &ov, profile.appid, app_exe).await?;
 
     // محرك الرسم لـWineD3D: vulkan (عبر MoltenVK) أو gl (الأقدم)
@@ -1239,9 +1338,36 @@ async fn launch_game(
     if let Err(e) = &profile_result {
         crate::debuglog::raw("warn", "steam", &format!("profile apply failed: {e}"));
     }
-    // ⚠️ لا نفرض وضع النافذة تلقائياً: يكتب في ملف اللعبة الحقيقي داخل
-    // مكتبة ستيم (خارج مجلد التطبيق) وما فيه رجوع تلقائي. يبقى يدوياً
-    // من زر «نافذة» في بطاقة اللعبة.
+    // اختيار المستخدم: ملء الشاشة أو نافذة — يُحفظ لكل لعبة ويُطبّق على
+    // `settings.txt` قبل `-applaunch`. هذا قرار مستخدم، مو «تجربة تركيبة»:
+    // ما نغيّر أي طبقة، وما نعيد تشغيل ستيم.
+    if let Some((dir, _)) = &probe {
+        let want_windowed = profile.windowed();
+        match patch_settings_windowed(dir, want_windowed) {
+            Ok(file) => crate::debuglog::raw(
+                "info",
+                "steam",
+                &format!(
+                    "display={} applied file={}",
+                    profile.display.as_str(),
+                    file.display()
+                ),
+            ),
+            Err(e) => {
+                if want_windowed {
+                    crate::debuglog::raw(
+                        "warn",
+                        "steam",
+                        &format!("display=windowed not applied: {e}"),
+                    );
+                } else {
+                    // ملء الشاشة هو سلوك اللعبة الأصلي — ما فيه مشكلة لو
+                    // اللعبة ما عندها settings.txt.
+                    crate::debuglog::raw("debug", "steam", &format!("display=default: {e}"));
+                }
+            }
+        }
+    }
     // حزام أمان للعرض: يمنع الألعاب القديمة من تعتيم الشاشة أو احتكارها بالكامل
     let safety = bottle::ensure_mac_safety(&wine, &prefix).await;
 
@@ -1287,6 +1413,8 @@ async fn launch_game(
     // سجل الحارس يُكتب داخل القارورة (`C:\...`) — العملية ويندوز، فما ينفع
     // مسار ماك هنا (كان السجل يطلع فاضي دائماً).
     if crate::d3dx::guard_enabled(&prefix) {
+        // كل تشغيل له سجل مستقل: السابق → .1.log (نشوف آخر محاولة فقط)
+        crate::d3dx::rotate_shim_log(&prefix);
         cmd.env("JISR_D3DX_LOG", crate::d3dx::SHIM_LOG_WIN_PATH);
     }
     let (out, err) = launch_stdio(appid);
@@ -1498,7 +1626,8 @@ mod tests {
     fn profile_maps_to_registry_overrides() {
         use crate::combo::{Compiler, D3d9Layer, D3dx9Layer, GameProfile, Renderer};
         let mut p = GameProfile::default_for(48010);
-        let ov = profile_overrides(&p);
+        let no_prefix = Path::new("/nonexistent-jisr-prefix");
+        let ov = profile_overrides(&p, no_prefix);
         // **مطابقة الواقع:** ما نقول native إلا لو الملف موجود فعلاً
         // (على جهاز التطوير ما فيه DXVK ولا D3DX9 مثبّتين ⇒ builtin)
         let dxvk_ready = graphics::is_installed() && graphics::d3d9_available();
@@ -1513,14 +1642,14 @@ mod tests {
         p.d3d9 = D3d9Layer::WineD3D;
         p.d3dx9 = D3dx9Layer::Builtin;
         p.compiler = Compiler::Builtin;
-        let ov2 = profile_overrides(&p);
+        let ov2 = profile_overrides(&p, no_prefix);
         assert_eq!(ov2.d3d9, "builtin");
         assert_eq!(ov2.d3dx9_43, "builtin");
         assert_eq!(ov2.d3dcompiler_43, "builtin");
         // d3d10core/d3d11 يتبعان DXVK نفسه
         assert_eq!(ov2.d3d11, "builtin");
         // والقيم تتطابق مع سجل Gimme (الفرق الوحيد d3d10core/d3d11 يتبعان DXVK)
-        let ov3 = profile_overrides(&GameProfile::default_for(48010));
+        let ov3 = profile_overrides(&GameProfile::default_for(48010), no_prefix);
         assert_eq!(ov3.d3d9, ov.d3d9);
         let _ = p.renderer == Renderer::Vulkan;
     }

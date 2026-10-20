@@ -36,8 +36,11 @@ import {
   setExternalEngine,
   clearExternalEngine,
   steamGameLaunch,
-  steamGameWindowed,
+  steamGameDisplaySet,
   steamGamesList,
+  vcredistPrepare,
+  vcredistStatus,
+  type VcredistStatus,
   setCefMode,
   type CefMode,
   type Bottle,
@@ -442,11 +445,20 @@ export const LibraryPage = memo(function LibraryPage({
     [notify, t],
   );
 
-  // «تشغيل في نافذة»: يمنع اللعبة من أخذ شاشة الماك بالكامل (شاشة سودا)
-  const windowedSteamGame = useCallback(
-    (g: SteamGame) => {
-      steamGameWindowed(g.appid, true)
-        .then(() => notify(t("windowedApplied", { name: g.name })))
+  // اختيار طريقة العرض: ملء الشاشة أو نافذة — قرار المستخدم، محفوظ لكل لعبة
+  const setSteamDisplay = useCallback(
+    (g: SteamGame, display: "fullscreen" | "windowed") => {
+      steamGameDisplaySet(g.appid, display)
+        .then((r) => {
+          setSteamGames((prev) =>
+            prev.map((x) => (x.appid === g.appid ? { ...x, display } : x)),
+          );
+          notify(
+            r.supported
+              ? t("displayApplied", { name: g.name })
+              : t("displayUnsupportedToast", { name: g.name }),
+          );
+        })
         .catch((err) => notify(String(err)));
     },
     [notify, t],
@@ -484,7 +496,7 @@ export const LibraryPage = memo(function LibraryPage({
           running={steamRunning}
           onRefresh={loadSteamGames}
           onPlay={launchSteamGame}
-          onWindowed={windowedSteamGame}
+          onDisplay={setSteamDisplay}
         />
       )}
 
@@ -569,14 +581,14 @@ const SteamLibrary = memo(function SteamLibrary({
   running,
   onRefresh,
   onPlay,
-  onWindowed,
+  onDisplay,
 }: {
   games: SteamGame[];
   loading: boolean;
   running: boolean;
   onRefresh: () => void;
   onPlay: (g: SteamGame) => void;
-  onWindowed: (g: SteamGame) => void;
+  onDisplay: (g: SteamGame, mode: "fullscreen" | "windowed") => void;
 }) {
   const { t, choice: lang } = useI18n();
   // حالات الانهيار (يصنّفها التطبيق من تقرير Wine) — نعرضها تحت كل لعبة
@@ -690,6 +702,26 @@ const SteamLibrary = memo(function SteamLibrary({
                     </span>
                   )}
                 </div>
+                {g.display_supported ? (
+                  <div className="steam-display" title={t("displayHint")}>
+                    <Segmented
+                      id={"display-" + g.appid}
+                      value={g.display}
+                      onChange={(mode) => onDisplay(g, mode)}
+                      options={[
+                        { value: "fullscreen", label: t("displayFullscreen") },
+                        { value: "windowed", label: t("displayWindowed") },
+                      ]}
+                    />
+                  </div>
+                ) : (
+                  <span
+                    className="muted small"
+                    title={t("displayUnsupportedHint")}
+                  >
+                    {t("displayUnsupported")}
+                  </span>
+                )}
                 <Button
                   variant="filled"
                   icon={<Icon.Play size={13} />}
@@ -697,14 +729,6 @@ const SteamLibrary = memo(function SteamLibrary({
                   onClick={() => onPlay(g)}
                 >
                   {t("gamePlay")}
-                </Button>
-                {/* تشغيل في نافذة: يمنع الشاشة السوداء مع الألعاب القديمة */}
-                <Button
-                  variant="plain"
-                  title={t("windowedHint")}
-                  onClick={() => onWindowed(g)}
-                >
-                  {t("windowedBtn")}
                 </Button>
               </div>
             );
@@ -1208,6 +1232,25 @@ export const SettingsPage = memo(function SettingsPage({
       .catch(() => {});
   }, [d3dxDl?.phase, sys?.graphics_layer]);
 
+  // متطلبات ويندوز: Visual C++ 2015‑2022 (x86 + x64) — تنزيل رسمي + تثبيت صامت
+  const [vc, setVc] = useState<VcredistStatus | null>(null);
+  const [vcBusy, setVcBusy] = useState(false);
+  useEffect(() => {
+    vcredistStatus()
+      .then(setVc)
+      .catch(() => {});
+  }, []);
+  const prepareVc = useCallback(() => {
+    setVcBusy(true);
+    vcredistPrepare()
+      .then((st) => {
+        setVc(st);
+        notify(t("vcredistReady"));
+      })
+      .catch((e) => notify(String(e)))
+      .finally(() => setVcBusy(false));
+  }, [notify, t]);
+
   // غلاف CEF — مخرج طوارئ لو واجهة ستيم ما ظهرت
   const [shimOn, setShimOn] = useState(true);
   useEffect(() => {
@@ -1415,6 +1458,26 @@ export const SettingsPage = memo(function SettingsPage({
             </Button>
           )}
         </Row>
+        {/* Visual C++ 2015‑2022: متطلب كثير من الألعاب — نثبّته داخل القارورة */}
+        <Row
+          label={t("vcredistLabel")}
+          hint={vc?.installed ? t("vcredistInstalledHint") : t("vcredistHint")}
+        >
+          {vc?.installed ? (
+            <span className="value">{t("ready")}</span>
+          ) : vcBusy ? (
+            <span className="value muted">{t("vcredistPreparing")}</span>
+          ) : (
+            <Button variant="tinted" onClick={prepareVc}>
+              {t("vcredistInstall")}
+            </Button>
+          )}
+        </Row>
+        {vc && !vc.installed && vc.missing.length > 0 && (
+          <p className="muted small">
+            {t("vcredistMissing")}: {vc.missing.slice(0, 4).join(" · ")}
+          </p>
+        )}
         {/* غلاف CEF: مخرج طوارئ — لو واجهة ستيم ما ظهرت، عطّله وجرّب */}
         <Row label={t("cefShimLabel")} hint={t("cefShimHint")}>
           <Segmented

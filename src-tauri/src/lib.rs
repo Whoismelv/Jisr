@@ -23,6 +23,7 @@ mod pe;
 mod steam;
 mod steam_library;
 mod triage;
+mod vcredist;
 
 #[cfg(test)]
 mod sim_env;
@@ -927,6 +928,69 @@ fn build_report_from(info: &SystemInfo, steam_dir: Option<&Path>) -> String {
         }
     }
 
+    // ===== حارس مترجم d3dcompiler_43 — الحالة + آخر جلسة =====
+    let win = dc.join("windows");
+    let mut guard = String::new();
+    for (arch, rel) in [("x86", "syswow64"), ("x64", "system32")] {
+        let p = win.join(rel).join("d3dcompiler_43.dll");
+        let real = win.join(rel).join("d3dcompiler_43_ms.dll");
+        match std::fs::read(&p) {
+            Ok(b) => guard.push_str(&format!(
+                "{arch}: {} bytes shim={} real_saved={}\n  path={}\n",
+                b.len(),
+                d3dx::bytes_are_shim(&b),
+                real.is_file(),
+                p.display()
+            )),
+            Err(e) => guard.push_str(&format!("{arch}: غير مثبّت ({e})\n")),
+        }
+    }
+    push_section(&mut out, "d3dcompiler_43 guard", &guard);
+
+    // آخر جلستين للحارس — هنا يظهر `backend: loaded` و`D3DCompile => hr=0x0`
+    for name in ["jisr-d3dx-shim.1.log", "jisr-d3dx-shim.log"] {
+        let p = dc.join(name);
+        if p.is_file() {
+            push_section(
+                &mut out,
+                &format!("{name} (last lines)"),
+                &debuglog::tail_file(&p, 400, 160_000),
+            );
+        }
+    }
+
+    // ===== ملفات تعريف الألعاب (التركيبة الفعلية لكل لعبة) =====
+    if let Ok(rd) = std::fs::read_dir(combo::profiles_dir()) {
+        let mut files: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+            .collect();
+        files.sort();
+        for p in files.into_iter().take(8) {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            push_section(
+                &mut out,
+                &format!("profiles/{name}"),
+                &std::fs::read_to_string(&p).unwrap_or_default(),
+            );
+        }
+    }
+
+    // ===== متطلبات ويندوز: VC++ 2015‑2022 =====
+    let vc = vcredist::verify(&bottle::bottle_dir(bottle::MAIN_ID));
+    push_section(
+        &mut out,
+        "Visual C++ 2015-2022",
+        &format!(
+            "installed={} x86={} x64={} version={} missing={:?}\n",
+            vc.installed, vc.x86, vc.x64, vc.version, vc.missing
+        ),
+    );
+
     // نحفظ نسخة على القرص + نُبقي آخر 5 تقارير فقط
     let stamp = now_ms();
     let saved = logs_dir.join(format!("jisr-report-{stamp}.txt"));
@@ -1041,6 +1105,7 @@ pub fn run() {
             steam_library::steam_games_list,
             steam_library::steam_game_launch,
             steam_library::steam_game_windowed,
+            steam_library::steam_game_display_set,
             steam_library::steam_game_profile,
             steam_library::steam_game_profile_reset,
             steam_library::steam_crash_state,
@@ -1052,6 +1117,8 @@ pub fn run() {
             d3dx::d3dx_shim_status,
             graphics::graphics_mode,
             graphics::graphics_set_mode,
+            vcredist::vcredist_status,
+            vcredist::vcredist_prepare,
             d3dx::d3dx_status
         ])
         .setup(|app| {
