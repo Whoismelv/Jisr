@@ -288,6 +288,48 @@ unsafe fn count_defines(p: *const c_void) -> usize {
 //  الدوال المصدَّرة (نفس أسماء d3dcompiler_43)
 // ============================================================
 
+/// نستنتج الـprofile من نص الشيدر لمّا تجي NULL.
+///
+/// **الجذر المثبت معملياً:** `d3dcompiler_43` الأصلي يقرأ `pTarget[0]`
+/// بلا تحقّق ⇒ قفزة على 0x0 (نفس +0x1e96a9 في تقرير LIMBO). اللعبة تمرّر
+/// NULL لأن `D3DXGetPixelShaderProfile` ترجع NULL تحت Wine.
+///
+/// الاشتقاق: وجود `SV_Target`/`COLOR` ⇒ pixel، وجود `SV_Position`/`POSITION`
+/// ⇒ vertex، وإلا نفترض pixel (أغلب شيدرات الألعاب ثنائية الأبعاد).
+unsafe fn guess_profile(p_src: LPCVOID, size: usize) -> &'static [u8] {
+    const PS: &[u8] = b"ps_3_0\0";
+    const VS: &[u8] = b"vs_3_0\0";
+    if p_src.is_null() || size == 0 {
+        return PS;
+    }
+    let bytes = std::slice::from_raw_parts(p_src as *const u8, size.min(64 * 1024));
+    let text = String::from_utf8_lossy(bytes).to_ascii_lowercase();
+    let pixel = text.contains("sv_target") || text.contains(": color") || text.contains("color0");
+    let vertex = text.contains("sv_position") || text.contains(": position");
+    if vertex && !pixel {
+        VS
+    } else {
+        PS
+    }
+}
+
+/// حارس الهدف: لو `pTarget` فارغ نرجّع بديلاً مشتقّاً من المصدر.
+unsafe fn guard_target(target: LPCSTR, p_src: LPCVOID, size: usize) -> (*const c_char, bool) {
+    if !target.is_null() && *target != 0 {
+        return (target, false);
+    }
+    (guess_profile(p_src, size).as_ptr() as *const c_char, true)
+}
+
+/// حارس الدالة: `pEntrypoint` فارغ ينهار على +0x1c5c66 في المترجم الأصلي
+/// (مُثبت معملياً). نستبدله بـ`main` — لو ما فيه `main` يرجع خطأ ترجمة نظيف.
+unsafe fn guard_entry(entry: LPCSTR) -> (*const c_char, bool) {
+    if !entry.is_null() && *entry != 0 {
+        return (entry, false);
+    }
+    (b"main\0".as_ptr() as *const c_char, true)
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn D3DCompile(
     pSrcData: LPCVOID,
@@ -302,12 +344,16 @@ pub unsafe extern "system" fn D3DCompile(
     ppCode: *mut *mut c_void,
     ppErrorMsgs: *mut *mut c_void,
 ) -> HRESULT {
+    let (target, substituted) = guard_target(pTarget, pSrcData, SrcDataSize);
+    let (entry, entry_fixed) = guard_entry(pEntrypoint);
     log_line(&format!(
-        "[jisr] D3DCompile src={} size={} entry={} target={} flags1={} flags2={} defines={} include={}",
+        "[jisr] D3DCompile src={} size={} entry={}{} target={}{} flags1={} flags2={} defines={} include={}",
         if pSrcData.is_null() { "NULL" } else { "ok" },
         SrcDataSize,
-        cstr(pEntrypoint),
-        cstr(pTarget),
+        cstr(entry),
+        if entry_fixed { " (كان NULL ⇒ main)" } else { "" },
+        cstr(target),
+        if substituted { " (كان NULL ⇒ بدّلناه)" } else { "" },
         Flags1,
         Flags2,
         count_defines(pDefines),
@@ -333,8 +379,8 @@ pub unsafe extern "system" fn D3DCompile(
             pSourceName,
             pDefines,
             pInclude,
-            pEntrypoint,
-            pTarget,
+            entry,
+            target,
             Flags1,
             Flags2,
             ppCode,
@@ -363,11 +409,14 @@ pub unsafe extern "system" fn D3DCompile2(
     pNumErrors: *mut UINT,
     pFlags3: *mut DWORD,
 ) -> HRESULT {
+    let (target, substituted) = guard_target(pTarget, pSrcData, SrcDataSize);
+    let (entry, _) = guard_entry(pEntrypoint);
     log_line(&format!(
-        "[jisr] D3DCompile2 src={} size={} target={}",
+        "[jisr] D3DCompile2 src={} size={} target={}{}",
         if pSrcData.is_null() { "NULL" } else { "ok" },
         SrcDataSize,
-        cstr(pTarget),
+        cstr(target),
+        if substituted { " (كان NULL ⇒ بدّلناه)" } else { "" },
     ));
     if pSrcData.is_null() || SrcDataSize == 0 {
         return E_FAIL;
@@ -380,8 +429,8 @@ pub unsafe extern "system" fn D3DCompile2(
             pSourceName,
             pDefines,
             pInclude,
-            pEntrypoint,
-            pTarget,
+            entry,
+            target,
             Flags1,
             Flags2,
             ppCode,
@@ -509,3 +558,9 @@ pub unsafe extern "system" fn D3DGetError(pErrorData: LPCVOID) -> *const c_char 
 pub extern "system" fn D3DCompile_Ok() -> HRESULT {
     S_OK
 }
+
+/// **بصمة الغلاف** — التطبيق يقرأ هذه السلسلة من الملف ليعرف أن المثبَّت
+/// هو غلافنا (لا نسخة مايكروسوفت). بدونها كان `is_shim()` يرجع false دائماً
+/// ⇒ الحالة في الواجهة «غير مفعّل» حتى بعد التثبيت، وزر الإيقاف ما يشتغل.
+#[no_mangle]
+pub static JISR_D3DX_SHIM_V1: [u8; 17] = *b"JISR_D3DX_SHIM_V1";

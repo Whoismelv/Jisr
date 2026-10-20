@@ -1421,6 +1421,22 @@ export const SettingsPage = memo(function SettingsPage({
             </Button>
           )}
         </Row>
+        {shimStatus?.installed && shimStatus.tail ? (
+          <div className="d3dx-log">
+            <pre className="d3dx-log-text">{shimStatus.tail}</pre>
+            <Button
+              variant="tinted"
+              onClick={() => {
+                navigator.clipboard
+                  .writeText(shimStatus.tail)
+                  .then(() => notify(t("copied")))
+                  .catch(() => notify(t("logCopyFailed")));
+              }}
+            >
+              {t("copyFullLog")}
+            </Button>
+          </div>
+        ) : null}
         {/* محرّك خارجي (Whisky): نسل CodeWeavers — فيه رقعة winemac التي
             تُظهر واجهة ستيم عبر Metal. المستخدم يجيبه بنفسه (ما نوزّع GPL). */}
         <Row label={t("externalEngine")} hint={t("externalEngineHint")}>

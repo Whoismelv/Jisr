@@ -27,3 +27,4 @@ graphify-out/
 *.sln
 *.sw?
 tools/d3dx-shim/target/
+tools/d3dcompile-probe/target/

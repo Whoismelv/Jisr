@@ -158,12 +158,12 @@ const ar = {
   engineChoiceHint:
     "11.18 = الأحدث (فيها Vulkan/MoltenVK كامل). 11.6.1 = بديل فيه حزمة «إصلاح ستيم» من Gcenx — جرّبه لو واجهة ستيم ما ظهرت.",
   engineChoiceSaved: "بدّلنا نسخة المحرك — أعد تشغيل ستيم لتطبيقها.",
-  d3dxShimLabel: "تشخيص D3DX (مِجهر)",
+  d3dxShimLabel: "حماية مترجم D3DX",
   d3dxShimHint:
-    "يضع غلافاً بين اللعبة ومترجم الشيدرات: يسجّل كل استدعاء ويمنع القفزة على مدخل فارغ.Activate ثم شغّل اللعبة واقرأ السجل.",
-  d3dxShimInstall: "فعّل التشخيص",
-  d3dxShimRemove: "أوقف التشخيص",
-  d3dxShimOn: "مفعّل — اقرأ السجل",
+    "Fixes old DX9 game crashes: wraps the shader compiler and stops the null-input jump (pTarget=NULL) — the exact LIMBO crash, proven in a lab. The original is kept; revert with one click.",
+  d3dxShimInstall: "فعّل الحماية",
+  d3dxShimRemove: "أوقف الحماية",
+  d3dxShimOn: "مفعّلة — آخر الاستدعاءات",
   externalEngine: "محرّك خارجي (Whisky)",
   externalEngineHint:
     "محرّك Whisky (نسل CodeWeavers) فيه رقعة تُظهر واجهة ستيم عبر Metal + DXMT. نزّله بنفسك ونستخدمه كما هو — ما نوزّع أي ملف.",
@@ -476,12 +476,12 @@ const en: Record<TKey, string> = {
   engineChoiceHint:
     "11.18 = newest (full Vulkan/MoltenVK). 11.6.1 = alternative with Gcenx's Steam fix — try it if the Steam window never shows.",
   engineChoiceSaved: "Engine version changed — restart Steam to apply it.",
-  d3dxShimLabel: "D3DX diagnosis (microscope)",
+  d3dxShimLabel: "D3DX compiler guard",
   d3dxShimHint:
-    "Puts a wrapper between the game and the shader compiler: it logs every call and prevents the null-input crash. Enable it, run the game, then read the log.",
-  d3dxShimInstall: "Enable diagnosis",
-  d3dxShimRemove: "Stop diagnosis",
-  d3dxShimOn: "Enabled — read the log",
+    "Fixes old DX9 game crashes: wraps the shader compiler and stops the null-input jump (pTarget=NULL) — the exact LIMBO crash, proven in a lab. The original is kept; revert with one click.",
+  d3dxShimInstall: "Enable guard",
+  d3dxShimRemove: "Disable guard",
+  d3dxShimOn: "Enabled — recent calls",
   externalEngine: "External engine (Whisky)",
   externalEngineHint:
     "Whisky's engine (CodeWeavers lineage) carries the winemac patch that renders Steam's UI through Metal, plus DXMT. Install it yourself — we redistribute nothing.",

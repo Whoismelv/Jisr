@@ -284,6 +284,22 @@ impl GameProfile {
                 next.d3dx9 = D3dx9Layer::Builtin;
                 next.compiler = Compiler::Builtin;
             }
+            // **الجراحة الدقيقة**: نبدّل **المترجم فقط** ونترك D3DX9 الأصلي.
+            // ليه؟ لو الانهيار داخل `d3dcompiler_43` الأصلي، هذا يثبت إن
+            // المشكلة في المترجم (أو في المدخل اللي يوصله) — وليس في d3dx9.
+            // ولو نجح، اللعبة تشتغل على d3dx9 مايكروسوفت + مترجم Wine (توافق ABI كامل).
+            "try-builtin-compiler" => {
+                if self.compiler == Compiler::Builtin {
+                    return None;
+                }
+                next.compiler = Compiler::Builtin;
+            }
+            "try-native-compiler" => {
+                if self.compiler == Compiler::Native {
+                    return None;
+                }
+                next.compiler = Compiler::Native;
+            }
             // تفعيل/تعطيل DXVK: مصدر شائع لشاشة سودا في DX9.
             "enable-dxvk" => {
                 if self.d3d9 == D3d9Layer::Dxvk {
@@ -658,6 +674,24 @@ mod tests {
         assert_eq!(c.compiler, Compiler::Builtin);
         assert_eq!(c.attempts, 1);
         assert!(c.next_candidate("try-d3dx9-builtin").is_none());
+    }
+
+    #[test]
+    fn builtin_compiler_swap_keeps_native_d3dx() {
+        // الجراحة الدقيقة: نبدّل المترجم فقط — D3DX9 يبقى أصلياً
+        let mut p = GameProfile::default_for(1);
+        p.d3dx9 = D3dx9Layer::Native;
+        p.compiler = Compiler::Native;
+        let c = p.next_candidate("try-builtin-compiler").expect("فيه تغيير");
+        assert_eq!(c.d3dx9, D3dx9Layer::Native);
+        assert_eq!(c.compiler, Compiler::Builtin);
+        assert!(c.next_candidate("try-builtin-compiler").is_none());
+        // ونقدر نرجّع المترجم الأصلي من ملف تعريف مدمج (تركيبة عكسية)
+        let mut q = GameProfile::default_for(1);
+        q.d3dx9 = D3dx9Layer::Native;
+        q.compiler = Compiler::Builtin;
+        let back = q.next_candidate("try-native-compiler").expect("فيه تغيير");
+        assert_eq!(back.compiler, Compiler::Native);
     }
 
     #[test]

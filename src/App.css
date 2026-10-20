@@ -1149,3 +1149,33 @@ html.is-macos[dir="rtl"] .toolbar {
 ::selection {
   background: var(--accent-soft);
 }
+
+/* ---------- سجل حماية مترجم D3DX ---------- */
+.d3dx-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 4px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--card-bg);
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+}
+
+.d3dx-log-text {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  direction: ltr;
+  text-align: left;
+  color: var(--text-secondary, #555);
+}
+
+.d3dx-log button {
+  align-self: flex-start;
+}

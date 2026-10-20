@@ -360,6 +360,11 @@ pub async fn install_shim(wine: &Path, prefix: &Path) -> Result<(), String> {
             std::fs::write(&tmp, bytes).map_err(|e| format!("تعذّر كتابة الغلاف: {e}"))?;
             let _ = std::fs::remove_file(&target);
             std::fs::rename(&tmp, &target).map_err(|e| format!("تعذّر تثبيت الغلاف: {e}"))?;
+            // تحقّق: لو الملف ما انكتب (أو ما فيه البصمة) نفشل بصوت عالٍ
+            // بدل ما نقول «تم» واللعبة تشتغل على النسخة الأصلية.
+            if !is_shim(&target) {
+                return Err(format!("فشل التحقّق: الغلاف ما انكتب في {sys_dir} (صلاحيات؟)"));
+            }
         }
         let _ = arch;
     }
@@ -478,14 +483,14 @@ mod tests {
         h86.update(SHIM_X86);
         assert_eq!(
             format!("{:x}", h86.finalize()),
-            "d392b02d03457a06fbb601640c5855d383edb27c82c4330fcc200e2451e39890",
+            "c694ae15073b71ce53e17938e769071933edb6046b9d3eea00e8c343442b12da",
             "تغيّر غلاف D3DX (x86) — أعد البناء من tools/d3dx-shim وحدّث البصمة"
         );
         let mut h64 = Sha256::new();
         h64.update(SHIM_X64);
         assert_eq!(
             format!("{:x}", h64.finalize()),
-            "a38ce0c7815b8e518c26fd5816dddb9a002def70bb7c736964affc82757c674e",
+            "b0d0ce5b1c4dc000d65daaff2b1fca7ce5baaa4e693b786611c6acd50f8491d3",
             "تغيّر غلاف D3DX (x64) — أعد البناء من tools/d3dx-shim وحدّث البصمة"
         );
     }

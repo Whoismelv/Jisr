@@ -858,9 +858,9 @@ fn classify_graphics(
             class: FaultClass::D3dxNative,
             crashed_module: crashed,
             headline_ar: format!("الانهيار داخل {name} — نسخة مايكروسوفت الأصلية"),
-            next_ar: "نسخة مايكروسوفت هي اللي تنهار — جرّب نسخة Wine المدمجة أو مترجم أحدث (d3dcompiler_47)"
+            next_ar: "المترجم الأصلي ينهار على مدخل فارغ (pTarget=NULL مُثبت معملياً) — فعّل «حماية مترجم D3DX» في الإعدادات (زر واحد) وإلا نبدّل المترجم لنسخة Wine"
                 .to_string(),
-            action: "try-d3dx9-builtin".to_string(),
+            action: "try-builtin-compiler".to_string(),
             evidence: ev,
         });
     }
@@ -1147,10 +1147,14 @@ System information:
     fn classifies_real_report_one_as_native_d3dx() {
         let v = triage(REAL_1).expect("حكم");
         assert_eq!(v.class, FaultClass::D3dxNative);
-        assert_eq!(v.action, "try-d3dx9-builtin");
+        assert_eq!(v.action, "try-builtin-compiler");
         assert_eq!(v.crashed_module.as_deref(), Some("d3dcompiler_43"));
         assert!(!v.evidence.is_empty());
-        assert!(v.next_ar.contains("d3dcompiler_47"));
+        assert!(
+            v.next_ar.contains("pTarget"),
+            "لازم يشرح المدخل الفارغ: {}",
+            v.next_ar
+        );
     }
 
     #[test]
@@ -1214,7 +1218,7 @@ System information:
         );
         let v = triage(&text).expect("حكم");
         assert_eq!(v.class, FaultClass::D3dxNative);
-        assert_eq!(v.action, "try-d3dx9-builtin");
+        assert_eq!(v.action, "try-builtin-compiler");
         assert!(
             v.evidence
                 .iter()

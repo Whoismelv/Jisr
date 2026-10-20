@@ -1543,7 +1543,8 @@ mod tests {
         assert!(extract_crash_report("0188:fixme:foo something\n").is_none());
     }
 
-    /// الحلقة المغلقة: انهيار D3DX9 الأصلي ⇒ نجرّب نسخة Wine المدمجة
+    /// الحلقة المغلقة: انهيار D3DX الأصلي ⇒ نبدّل **المترجم فقط**
+    /// (D3DX9 يبقى أصلياً) — الجراحة الدقيقة.
     #[test]
     fn crash_verdict_drives_next_candidate() {
         let profile = crate::combo::GameProfile::default_for(48010);
@@ -1556,11 +1557,11 @@ mod tests {
                       System information:\n\
                       Wine build: wine-11.18\n";
         let verdict = crate::triage::triage(report).expect("لازم نصنّف");
-        assert_eq!(verdict.action, "try-d3dx9-builtin");
+        assert_eq!(verdict.action, "try-builtin-compiler");
         let next = profile
             .next_candidate(&verdict.action)
             .expect("لازم تكون هناك تركيبة تالية");
-        assert_eq!(next.d3dx9, crate::combo::D3dx9Layer::Builtin);
+        assert_eq!(next.d3dx9, crate::combo::D3dx9Layer::Native);
         assert_eq!(next.compiler, crate::combo::Compiler::Builtin);
         assert_eq!(next.attempts, profile.attempts + 1);
     }
