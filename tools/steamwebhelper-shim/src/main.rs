@@ -13,6 +13,11 @@
 //!
 //! يمكن تجاوز الفلاقين بدون بناء جديد عبر متغيّر البيئة `JISR_CEF_FLAGS`
 //! (تقرأه الواجهة من ملف اختياري — مفيد للتشخيص الميداني).
+//!
+//! **درس ميداني (0.1.19):** `--single-process` يجب أن يُطبَّق على **عملية
+//! المتصفح فقط** (اللي ما فيها `--type=`)، مو على كل نسخة مساعدة. تطبيقه على
+//! الأطفال كان يخلي كل واحد يبني نافذته ⇒ نافذة ستيم شبح ثانية. وإزالته كلياً
+//! ترجّع الشاشة السوداء (CEF متعدد العمليات ما يعرض نافذة على Wine/الماك).
 
 #![windows_subsystem = "windows"]
 
@@ -23,17 +28,43 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// بصمة يتعرّف بها ظهر Jisr على أن الملف الحالي هو غلافه (لا نلمس الأصل)
-static MARKER: &[u8; 16] = b"JISR_CEF_SHIM_V1";
+static MARKER: &[u8; 16] = b"JISR_CEF_SHIM_V2";
 
 const REAL_NAME: &str = "steamwebhelper_real.exe";
 const LOG_NAME: &str = "steamwebhelper_shim.log";
 const LOG_MAX_BYTES: u64 = 256 * 1024;
-/// الافتراضي: رسم واجهة ستيم على المعالج داخل عملية واحدة.
-/// أكثر الطرق ثباتاً على Apple Silicon (تستخدمها notpop وwisnuub افتراضياً):
-/// تُلغي تسليم الفريمات بين العمليات (سبب الشاشة السوداء) وتُنهي وميض النوافذ.
-/// الوضع المسرّع بالـGPU متاح عبر `cef-flags.txt`:
-/// `--in-process-gpu --use-angle=vulkan --ignore-gpu-blocklist`
-const DEFAULT_FLAGS: &str = "--disable-gpu --single-process";
+
+/// هل هذي عملية فرعية داخل CEF؟ (Chromium يضع `--type=` للأبناء فقط)
+fn is_child_process(args: &[String]) -> bool {
+    args.iter()
+        .any(|a| a == "--type" || a.starts_with("--type="))
+}
+
+/// الفلاقين الافتراضية حسب دور العملية:
+/// • المتصفح (بلا `--type=`): `--disable-gpu --single-process`
+///   — تعطيل الـGPU يحل الشاشة السوداء (سياق GLES 3.0)، والـsingle-process
+///     يخلي الواجهة تُعرض داخل عملية واحدة (الطريقة الوحيدة اللي أثبتت نجاحها).
+/// • الأطفال (`--type=renderer|gpu-process|utility`): `--disable-gpu` فقط
+///   — بلا `--single-process` حتى لا يبني كل طفل نافذته (نافذة شبح).
+fn flags_for(args: &[String], overridden: Option<&str>) -> Vec<String> {
+    let child = is_child_process(args);
+    let mut flags: Vec<String> = match overridden {
+        Some(raw) if !raw.trim().is_empty() => {
+            raw.split_whitespace().map(str::to_string).collect()
+        }
+        _ => {
+            let mut v = vec!["--disable-gpu".to_string()];
+            if !child {
+                v.push("--single-process".to_string());
+            }
+            v
+        }
+    };
+    if child {
+        flags.retain(|f| f != "--single-process");
+    }
+    flags
+}
 
 fn log_line(dir: &Path, line: &str) {
     let path = dir.join(LOG_NAME);
@@ -71,23 +102,20 @@ fn main() {
 
     let args: Vec<String> = env::args().skip(1).collect();
 
-    // الفلاقين: افتراضي مدروس، أو تجاوز اختياري من ظهر Jisr
+    // الفلاقين: افتراضي حسب الدور، أو تجاوز اختياري من ظهر Jisr
     let raw = env::var("JISR_CEF_FLAGS").unwrap_or_default();
-    let flags_raw = if raw.trim().is_empty() {
-        DEFAULT_FLAGS
-    } else {
-        raw.trim()
-    };
-    let flags: Vec<String> = flags_raw
-        .split_whitespace()
-        .map(str::to_string)
-        .collect();
+    let flags = flags_for(&args, Some(raw.as_str()));
 
     log_line(
         &dir,
         &format!(
-            "launch pid={} args={:?} flags={:?}",
+            "launch pid={} role={} args={:?} flags={:?}",
             std::process::id(),
+            if is_child_process(&args) {
+                "child"
+            } else {
+                "browser"
+            },
             args,
             flags
         ),
@@ -117,5 +145,41 @@ fn main() {
             log_line(&dir, &format!("error: spawn failed: {e}"));
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn browser_gets_single_process() {
+        let f = flags_for(&args(&["-lang=en_US", "-cachedir=C:\\cache"]), None);
+        assert!(f.iter().any(|x| x == "--single-process"));
+        assert!(f.iter().any(|x| x == "--disable-gpu"));
+    }
+
+    #[test]
+    fn children_never_get_single_process() {
+        let f = flags_for(&args(&["--type=renderer", "--no-sandbox"]), None);
+        assert!(!f.iter().any(|x| x == "--single-process"));
+        assert!(f.iter().any(|x| x == "--disable-gpu"));
+
+        let g = flags_for(
+            &args(&["--type=gpu-process"]),
+            Some("--in-process-gpu --single-process"),
+        );
+        assert!(!g.iter().any(|x| x == "--single-process"));
+    }
+
+    #[test]
+    fn type_switch_without_equals_is_detected() {
+        assert!(is_child_process(&args(&["--type", "utility"])));
+        assert!(is_child_process(&args(&["--type=utility"])));
+        assert!(!is_child_process(&args(&["-silent"])));
     }
 }

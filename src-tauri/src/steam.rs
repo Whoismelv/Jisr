@@ -146,8 +146,9 @@ pub(crate) fn steam_exe() -> Option<(PathBuf, String)> {
 /// غلاف CEF المدمج (يُبنى من tools/steamwebhelper-shim → assets/steamwebhelper.exe)
 static CEF_SHIM: &[u8] = include_bytes!("../assets/steamwebhelper.exe");
 
-/// بصمة داخل الغلاف نفسه — نتعرف بها على أن الملف الحالي غلافنا لا الأصل
-const CEF_SHIM_MARKER: &[u8] = b"JISR_CEF_SHIM_V1";
+/// بصمة داخل الغلاف نفسه — نتعرف بها على أن الملف الحالي غلافنا لا الأصل.
+/// نقبل V1 (نسخ قديمة منشورة) وV2 (الدور: المتصفح فقط) حتى نستبدلها بأمان.
+const CEF_SHIM_MARKERS: [&[u8]; 2] = [b"JISR_CEF_SHIM_V1", b"JISR_CEF_SHIM_V2"];
 
 /// هل الملف الحالي هو غلاف Jisr؟ (البصمة داخل أول ميغابايت)
 pub(crate) fn is_cef_shim(path: &Path) -> bool {
@@ -157,9 +158,9 @@ pub(crate) fn is_cef_shim(path: &Path) -> bool {
     };
     let mut buf = vec![0u8; 1 << 20];
     let n = f.read(&mut buf).unwrap_or(0);
-    buf[..n]
-        .windows(CEF_SHIM_MARKER.len())
-        .any(|w| w == CEF_SHIM_MARKER)
+    CEF_SHIM_MARKERS
+        .iter()
+        .any(|m| buf[..n].windows(m.len()).any(|w| w == *m))
 }
 
 /// هل الملف نسخة أصلية سليمة من Valve؟ (حجم غلاف CEF الحقيقي أكبر من ميغابايت)
@@ -544,13 +545,9 @@ pub(crate) fn desktop_scaling() -> &'static str {
     if retina_display() { "2" } else { "1" }
 }
 
-/// فلاقين CEF الافتراضية: رسم برمجي **متعدد العمليات**.
-///
-/// `--single-process` كان يخلي كل نسخة مساعدة من `steamwebhelper` تبني
-/// نافذتها الخاصة ⇒ **نافذتان لستيم** (وحدة حقيقية ووحدة شبح). أزلناه:
-/// تعطيل الـGPU وحده يحل الشاشة السوداء (سببها سياق GLES 3.0)، ونبقى
-/// متعددي العمليات = أسرع وأثبت.
-pub(crate) const DEFAULT_CEF_FLAGS: &str = "--disable-gpu --disable-gpu-compositing";
+/// (الافتراضي صار داخل الغلاف نفسه `tools/steamwebhelper-shim`:
+///  المتصفح يحصل `--disable-gpu --single-process`، والأطفال `--disable-gpu` فقط.
+///  المفتاح هنا للتجاوز الاختياري — رسم GPU عبر ANGLE/Vulkan.)
 
 fn set_phase(state: &SteamState, phase: Phase) {
     if let Ok(mut p) = state.phase.lock() {
@@ -960,10 +957,11 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         cmd.env("WINEPREFIX", &prefix);
         bottle::apply_wine_env(&mut cmd, true);
         graphics::apply_env(&mut cmd, true);
-        // فلاقين CEF: الافتراضي الجديد (متعدد العمليات، بلا GPU) أو تجاوز المستخدم
-        // — بدون --single-process اللي كان يسبب نافذة ستيم شبح ثانية
-        let cef_flags = cef_flags_override().unwrap_or_else(|| DEFAULT_CEF_FLAGS.to_string());
-        cmd.env("JISR_CEF_FLAGS", &cef_flags);
+        // فلاقين CEF: الغلاف نفسه يطبّق الافتراضي حسب دور العملية.
+        // نمرّر تجاوز المستخدم فقط لمّا يفعّل «رسم GPU» من الواجهة.
+        if let Some(flags) = cef_flags_override() {
+            cmd.env("JISR_CEF_FLAGS", flags);
+        }
         cmd.arg(&dos_exe)
             // معيار ستيم على Wine: بند Chromium الداخلي ما يشتغل صح تحت Wine
             .arg("-no-cef-sandbox")
@@ -1276,7 +1274,7 @@ mod tests {
         h.update(CEF_SHIM);
         let got = format!("{:x}", h.finalize());
         assert_eq!(
-            got, "3f9fc346e423a573e87cba74ef31e7c3400c3b0b5094a4f76197040935a9dfa7",
+            got, "437203bad808f4038c2cb8425dafd99471b8b12f3a3d8425eb6e4417e5925b59",
             "تغيّر غلاف CEF — أعد بناءه من tools/steamwebhelper-shim ثم حدّث البصمة هنا"
         );
     }
