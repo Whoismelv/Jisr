@@ -108,26 +108,26 @@ pub(crate) fn apply_env(cmd: &mut tokio::process::Command, steam: bool) -> bool 
     if !dxvk_enabled() {
         return false;
     }
-    // تجاوزات d3d* **هنا** ضرورية: اللعبة تُطلقها عملية ستيم الشغّالة، فترث
-    // بيئتها. بدونها يعتمد التحميل على ريجستري القارورة فقط (وهو ما يفشل أحياناً).
-    let mut overrides = String::from("winemenubuilder.exe=d;d3d9=n;d3d10core=n;d3d11=n");
-    if steam {
-        overrides.push_str(";steamservice=d");
-    }
+    let _ = steam;
+    // ⚠️ ما نكتب `d3d*` في `WINEDLLOVERRIDES` أبداً (درس ميداني 0.1.21):
+    // المتغيّر البيئي يتقدّم على الريجستري ⇒ `d3d11=n` يغيّر سلوك **كل** عمليات
+    // ستيم بما فيها CEF ⇒ نافذة ستيم ما تظهر. نكتفي بالريجستري ونتحقق منه.
     cmd.env("WINEDLLPATH_PREPEND", install_dir())
         .env("DXVK_ASYNC", "1")
-        .env("DXVK_HUD", "devinfo")
-        .env("WINEDLLOVERRIDES", overrides);
+        .env("DXVK_HUD", "devinfo");
     true
 }
 
 /// يكتب تجاوزات DXVK في **ريجستري القارورة** (تسري على كل العمليات الجديدة).
 /// native = تحميل ملفات DXVK الأصلية (وليس wined3d الداخلي).
-pub async fn apply_registry_overrides(wine: &Path, prefix: &Path) -> bool {
-    let mut ok = true;
+///
+/// **تحقّق إلزامي:** بعد الكتابة نقرأ القيمة من الريجستري — الكتابة اللي
+/// تفشل بصمت كانت سبب «DXVK ما انحمّل» (اللعبة سقطت على WineD3D وانهارت).
+pub async fn apply_registry_overrides(wine: &Path, prefix: &Path) -> Result<(), String> {
     for dll in ["d3d9", "d3d10core", "d3d11"] {
         let mut cmd = tokio::process::Command::new(wine);
         cmd.env("WINEPREFIX", prefix)
+            .env("WINEMSYNC", "1")
             .arg("reg")
             .arg("add")
             .arg("HKCU\\Software\\Wine\\DllOverrides")
@@ -138,15 +138,42 @@ pub async fn apply_registry_overrides(wine: &Path, prefix: &Path) -> bool {
             .arg("/d")
             .arg("native")
             .arg("/f")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.status()).await {
-            Ok(Ok(st)) if st.success() => {}
-            _ => ok = false,
+            .stdin(std::process::Stdio::null());
+        let out = match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await
+        {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => return Err(format!("reg add {dll} فشل: {e}")),
+            Err(_) => return Err(format!("reg add {dll} تجاوز الوقت")),
+        };
+        if !out.status.success() {
+            return Err(format!(
+                "reg add {dll} فشل: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
         }
     }
-    ok
+
+    // قراءة التحقق — نعرف فعلياً إن الريجستري صار فيه native
+    for dll in ["d3d9", "d3d10core", "d3d11"] {
+        let mut cmd = tokio::process::Command::new(wine);
+        cmd.env("WINEPREFIX", prefix)
+            .arg("reg")
+            .arg("query")
+            .arg("HKCU\\Software\\Wine\\DllOverrides")
+            .arg("/v")
+            .arg(dll)
+            .stdin(std::process::Stdio::null());
+        let out = match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await
+        {
+            Ok(Ok(o)) => o,
+            _ => return Err(format!("تعذّر التحقق من تجاوز {dll}")),
+        };
+        let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+        if !text.contains("native") {
+            return Err(format!("تجاوز {dll} ما انكتب في الريجستري"));
+        }
+    }
+    Ok(())
 }
 
 /// علامة «الطبقة منشورة داخل القارورة» (نكتبها بعد نسخ الملفات بنجاح)
@@ -191,14 +218,17 @@ pub async fn ensure_layer(wine: &Path, prefix: &Path) -> Result<bool, String> {
     }
     let deployed = deploy_to_prefix(prefix).is_ok();
     let reg = apply_registry_overrides(wine, prefix).await;
-    if deployed && reg {
+    if deployed && reg.is_ok() {
         let _ = std::fs::write(prefix_marker(prefix), b"ok\n");
         return Ok(true);
     }
     Err(if !deployed {
         "تعذّر نشر ملفات DXVK داخل القارورة".into()
     } else {
-        "تعذّر كتابة تجاوزات DXVK في ريجستري القارورة".into()
+        match reg {
+            Ok(()) => "تعذّر تجهيز الطبقة".into(),
+            Err(e) => e,
+        }
     })
 }
 

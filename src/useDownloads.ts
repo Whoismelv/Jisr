@@ -77,7 +77,22 @@ export function useDownloads(): Downloads {
   }, []);
 
   const start = useCallback((id: string) => {
-    startDownload(id).catch(() => {});
+    startDownload(id).catch((e) => {
+      // ما نخفي الخطأ عن المستخدم: نبيّنه في صندوق التنزيل نفسه
+      setItems((prev) => ({
+        ...prev,
+        [id]: {
+          id,
+          received: 0,
+          total: 0,
+          speed_bps: 0,
+          files: 0,
+          op: "download",
+          phase: "error",
+          error: String((e as Error)?.message ?? e),
+        } as DownloadProgress,
+      }));
+    });
   }, []);
 
   const cancel = useCallback((id: string) => {

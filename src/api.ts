@@ -291,3 +291,8 @@ export const setGraphicsMode = (mode: GraphicsMode) =>
 /** حالة D3DX9 الأصلي (نسخة مايكروسوفت) — إصلاح ألعاب DirectX 9 */
 export type D3dxStatus = { installed: boolean; deployed: boolean };
 export const d3dxStatus = () => call<D3dxStatus>("d3dx_status");
+
+/** غلاف CEF مفعّل؟ (مخرج طوارئ لو واجهة ستيم ما ظهرت) */
+export const cefShimStatus = () => call<boolean>("cef_shim_status");
+export const cefShimEnable = () => call<void>("cef_shim_enable");
+export const cefShimDisable = () => call<boolean>("cef_shim_disable");

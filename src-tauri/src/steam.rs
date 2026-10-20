@@ -148,10 +148,11 @@ static CEF_SHIM: &[u8] = include_bytes!("../assets/steamwebhelper.exe");
 
 /// بصمة داخل الغلاف نفسه — نتعرف بها على أن الملف الحالي غلافنا لا الأصل.
 /// نقبل النسخ القديمة (V1/V2 منشورة) وV3 الحالي حتى نستبدلها بأمان.
-const CEF_SHIM_MARKERS: [&[u8]; 3] = [
+const CEF_SHIM_MARKERS: [&[u8]; 4] = [
     b"JISR_CEF_SHIM_V1",
     b"JISR_CEF_SHIM_V2",
     b"JISR_CEF_SHIM_V3",
+    b"JISR_CEF_SHIM_V4",
 ];
 
 /// هل الملف الحالي هو غلاف Jisr؟ (البصمة داخل أول ميغابايت)
@@ -217,6 +218,62 @@ fn cef_dirs(steam_dir: &Path) -> Vec<PathBuf> {
         .collect();
     out.sort();
     out
+}
+
+/// هل الغلاف معطّل يدوياً؟ (`no-shim.txt` في مجلد البيانات)
+fn shim_disabled() -> bool {
+    crate::data_dir().join("no-shim.txt").is_file()
+}
+
+/// تعطيل غلاف CEF (مخرج طوارئ): نرجّع أصل Valve ونوقف تعديل الملفات.
+/// مفيد لو واجهة ستيم ما ظهرت — نعرف هل السبب من غلافنا ولا من ستيم نفسه.
+#[tauri::command]
+pub fn cef_shim_disable() -> Result<bool, String> {
+    let _trace = crate::debuglog::trace("steam", "cef_shim_disable", "");
+    let steam_dir = steam_exe().map(|(mac, _)| mac);
+    let backup_dir = crate::data_dir().join("steam-cef-backup");
+    let mut restored = false;
+    if let Some(dir) = steam_dir.as_ref().and_then(|p| p.parent()) {
+        for cef in cef_dirs(dir) {
+            let helper = cef.join("steamwebhelper.exe");
+            let real = cef.join("steamwebhelper_real.exe");
+            // الأصل المحفوظ هو نسخة Valve الكاملة
+            if looks_like_real_helper(&backup_dir.join("steamwebhelper.exe")) {
+                if write_atomic(
+                    &helper,
+                    &std::fs::read(backup_dir.join("steamwebhelper.exe")).unwrap_or_default(),
+                )
+                .is_ok()
+                {
+                    restored = true;
+                }
+            } else if looks_like_real_helper(&real) && std::fs::copy(&real, &helper).is_ok() {
+                restored = true;
+            }
+        }
+    }
+    std::fs::write(crate::data_dir().join("no-shim.txt"), b"1\n")
+        .map_err(|e| format!("تعذّر حفظ الإعداد: {e}"))?;
+    crate::debuglog::raw(
+        "warn",
+        "cef",
+        &format!("cef shim disabled by user (restored={restored})"),
+    );
+    Ok(restored)
+}
+
+/// إعادة تفعيل الغلاف (الافتراضي) — يُثبَّت عند تشغيل ستيم التالي
+#[tauri::command]
+pub fn cef_shim_enable() -> Result<(), String> {
+    let _trace = crate::debuglog::trace("steam", "cef_shim_enable", "");
+    let _ = std::fs::remove_file(crate::data_dir().join("no-shim.txt"));
+    Ok(())
+}
+
+/// حالة الغلاف للواجهة
+#[tauri::command]
+pub fn cef_shim_status() -> bool {
+    !shim_disabled()
 }
 
 /// يضمن الغلاف في مجلد CEF واحد.
@@ -306,6 +363,11 @@ fn ensure_shim_in(dir: &Path, backup_dir: &Path) -> Option<bool> {
 /// نضمن أن ستيم يستخدم غلافنا مع الأصل المحفوظ بجانبه (قبل كل تشغيل —
 /// تحديث ستيم ممكن يرجّع الأصل).
 pub(crate) fn ensure_cef_shim(steam_dir: &Path, backup_dir: &Path) -> Option<bool> {
+    // مخرج طوارئ: المستخدم عطّل الغلاف ⇒ ما نلمس ملفات ستيم إطلاقاً
+    if shim_disabled() {
+        crate::debuglog::raw("warn", "cef", "cef shim disabled (no-shim.txt) — skipping");
+        return Some(false);
+    }
     let dirs = cef_dirs(steam_dir);
     if dirs.is_empty() {
         return None;
@@ -394,15 +456,42 @@ fn dirty_flag() -> PathBuf {
     crate::data_dir().join("steam-dirty.flag")
 }
 
-/// تنظيف بقايا الكاش **بعد خروج غير نظيف فقط**.
-/// إعادة تسمية `htmlcache` عند كل تشغيل كانت تمسح كاش CEF (أول رسم بطيء)
-/// وتترك مجلدات `.jisr-bak-*` تنمو بلا حد.
+/// تنظيف بقايا الكاش **بعد كل تشغيل** + تقليم النسخ القديمة.
+///
+/// لماذا كل تشغيل؟ كاش CEF التالف سبب موثّق لـ«ستيم يفتح بدون نافذة»،
+/// والتجربة الميدانية (0.1.21) أكّدت: إيقاف التنظيف ⇐ واجهة ما تظهر.
+/// عشان ما ينمو المجلد بلا حد: نحتفظ بأحدث نسختين فقط (`.jisr-bak-*`).
 pub(crate) fn cleanup_after_unclean_exit(steam_dir: &Path) {
-    if !dirty_flag().is_file() {
+    cleanup_stale_steam_state(steam_dir);
+}
+
+/// نحتفظ بأحدث نسختين من النسخ الاحتياطية ونحذف الأقدم
+fn prune_backups(dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut backups: Vec<(std::time::SystemTime, PathBuf)> = rd
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.contains(".jisr-bak-") {
+                return None;
+            }
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((modified, e.path()))
+        })
+        .collect();
+    if backups.len() <= 2 {
         return;
     }
-    cleanup_stale_steam_state(steam_dir);
-    let _ = std::fs::remove_file(dirty_flag());
+    backups.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in backups.into_iter().skip(2) {
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// ستيم انطلق — حتى نشوف خروجه النظيف تعتبر الجلسة «وسخة»
@@ -446,6 +535,8 @@ pub(crate) fn cleanup_stale_steam_state_with(steam_dir: &Path, steam_running: bo
     // داخل مجلد ستيم (احتمال ثانوي — بعض الإصدارات تضع الكاش هنا)
     rename_stale_items(steam_dir, stamp, &mut renamed);
     rename_stale_items(&steam_dir.join("config"), stamp, &mut renamed);
+    prune_backups(steam_dir);
+    prune_backups(&steam_dir.join("config"));
 
     // بروفايل مستخدم البottle — المسار الحقيقي لكاش CEF وأقفال Singleton
     if let Some(drive_c) = steam_dir.parent().and_then(|p| p.parent()) {
@@ -459,6 +550,7 @@ pub(crate) fn cleanup_stale_steam_state_with(steam_dir: &Path, steam_running: bo
                 let local = user_dir.join("AppData").join("Local").join("Steam");
                 if local.is_dir() {
                     rename_stale_items(&local, stamp, &mut renamed);
+                    prune_backups(&local);
                 }
             }
         }
@@ -1461,7 +1553,7 @@ mod tests {
         h.update(CEF_SHIM);
         let got = format!("{:x}", h.finalize());
         assert_eq!(
-            got, "34e1d0b297c1dfa1686a86492bb77fa813c401fd2e9ee50c57d2123886eafe4d",
+            got, "b3550fb7ccba5ce639059bc8e57569f1ea6c8a637fe09ff8116d1adce7292c74",
             "تغيّر غلاف CEF — أعد بناءه من tools/steamwebhelper-shim ثم حدّث البصمة هنا"
         );
     }

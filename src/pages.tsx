@@ -24,6 +24,9 @@ import {
   getGraphicsMode,
   setGraphicsMode,
   d3dxStatus,
+  cefShimDisable,
+  cefShimEnable,
+  cefShimStatus,
   steamGameLaunch,
   steamGameWindowed,
   steamGamesList,
@@ -152,6 +155,15 @@ export const HomePage = memo(function HomePage({
   const { t } = useI18n();
   const engineDl = dl.items[ENGINE_ID];
   const engineBtn = engineButtonState(engineDl, !!sys?.engine_installed);
+  // الطبقات: DXVK (تسريع DirectX) + D3DX9 (إصلاح ألعاب DX9 القديمة)
+  const gfxDl = dl.items[GRAPHICS_ID];
+  const d3dxDl = dl.items[D3DX9_ID];
+  const [d3dx, setD3dx] = useState<D3dxStatus | null>(null);
+  useEffect(() => {
+    d3dxStatus()
+      .then(setD3dx)
+      .catch(() => {});
+  }, [d3dxDl?.phase]);
 
   return (
     <div className="stack">
@@ -195,6 +207,26 @@ export const HomePage = memo(function HomePage({
             installed={!!sys?.engine_installed}
             onCancel={() => dl.cancel(ENGINE_ID)}
           />
+        </div>
+      )}
+
+      {/* شريط تنزيل الطبقات — نفس شكل شريط محرك Wine */}
+      {(gfxDl || d3dxDl) && (
+        <div className="dl-panel">
+          {gfxDl && (
+            <EngineDownloadBox
+              p={gfxDl}
+              installed={!!sys?.graphics_layer}
+              onCancel={() => dl.cancel(GRAPHICS_ID)}
+            />
+          )}
+          {d3dxDl && (
+            <EngineDownloadBox
+              p={d3dxDl}
+              installed={!!d3dx?.installed}
+              onCancel={() => dl.cancel(D3DX9_ID)}
+            />
+          )}
         </div>
       )}
 
@@ -245,6 +277,39 @@ export const HomePage = memo(function HomePage({
           <Button variant="plain" onClick={() => go("library")}>
             {t("openLibrary")}
           </Button>
+        </Card>
+
+        {/* الطبقات: تنزيلها من هنا مباشرة (نفس شريط محرك Wine) */}
+        <Card title={t("layersSection")} icon={<Icon.Download size={16} />}>
+          <Row
+            label={t("dxvkLayer")}
+            hint={sys?.graphics_layer ? t("layerInstalled") : t("dxvkMissingHint")}
+          >
+            {sys?.graphics_layer ? (
+              <span className="value">{sys.graphics_layer}</span>
+            ) : isActive(gfxDl) ? (
+              <span className="value muted">{t("installing")}</span>
+            ) : (
+              <Button variant="tinted" onClick={() => dl.start(GRAPHICS_ID)}>
+                {t("install")}
+              </Button>
+            )}
+          </Row>
+          <Row label={t("d3dxLayer")} hint={t("d3dxHint")}>
+            {d3dx?.installed ? (
+              <span className="value">{t("ready")}</span>
+            ) : isActive(d3dxDl) ? (
+              <span className="value muted">
+                {d3dxDl?.phase === "downloading" && (d3dxDl.total ?? 0) > 0
+                  ? `${t("installing")} ${Math.round(((d3dxDl.received ?? 0) / (d3dxDl.total || 1)) * 100)}%`
+                  : t("installing")}
+              </span>
+            ) : (
+              <Button variant="tinted" onClick={() => dl.start(D3DX9_ID)}>
+                {t("install")}
+              </Button>
+            )}
+          </Row>
         </Card>
 
         <Card title={t("yourDevice")} icon={<Icon.Monitor size={16} />}>
@@ -1037,6 +1102,19 @@ export const SettingsPage = memo(function SettingsPage({
       .catch(() => {});
   }, [d3dxDl?.phase, sys?.graphics_layer]);
 
+  // غلاف CEF — مخرج طوارئ لو واجهة ستيم ما ظهرت
+  const [shimOn, setShimOn] = useState(true);
+  useEffect(() => {
+    cefShimStatus()
+      .then(setShimOn)
+      .catch(() => {});
+  }, []);
+  const setShim = useCallback((on: boolean) => {
+    setShimOn(on);
+    const call = on ? cefShimEnable() : cefShimDisable();
+    call.catch(() => {});
+  }, []);
+
   return (
     <div className="stack narrow">
       {/* المظهر */}
@@ -1152,6 +1230,18 @@ export const SettingsPage = memo(function SettingsPage({
               {t("install")}
             </Button>
           )}
+        </Row>
+        {/* غلاف CEF: مخرج طوارئ — لو واجهة ستيم ما ظهرت، عطّله وجرّب */}
+        <Row label={t("cefShimLabel")} hint={t("cefShimHint")}>
+          <Segmented
+            id="shim"
+            value={shimOn ? "on" : "off"}
+            onChange={(v) => setShim(v === "on")}
+            options={[
+              { value: "on", label: t("shimOn") },
+              { value: "off", label: t("shimOff") },
+            ]}
+          />
         </Row>
       </Card>
 

@@ -271,6 +271,39 @@ pub(crate) async fn sha256_file(path: &Path) -> std::io::Result<String> {
 // ============================================================
 //  التنزيل نفسه (يعمل في الخلفية — الواجهة ما تتجمّد)
 // ============================================================
+/// إرسال الطلب مع **إعادة محاولة** (٣ محاولات + فترات انتظار متزايدة).
+/// الدرس الميداني: فشل أول تنزيل بسبب خطأ شبكة عابر، ونجح الثاني بلا أي
+/// تدخل من المستخدم — اللهجة: «لازم تدوس مرتين» ⇒ نعيد المحاولة بأنفسنا.
+async fn send_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    range_from: u64,
+) -> Result<reqwest::Response, String> {
+    let waits_ms = [0u64, 1500, 5000];
+    let mut last = String::new();
+    for (i, wait) in waits_ms.iter().enumerate() {
+        if *wait > 0 {
+            tokio::time::sleep(Duration::from_millis(*wait)).await;
+        }
+        let mut req = client.get(url);
+        if range_from > 0 {
+            req = req.header(reqwest::header::RANGE, format!("bytes={range_from}-"));
+        }
+        match req.send().await {
+            Ok(r) => return Ok(r),
+            Err(e) => {
+                last = e.to_string();
+                crate::debuglog::raw(
+                    "warn",
+                    "download",
+                    &format!("send attempt {} failed: {e}", i + 1),
+                );
+            }
+        }
+    }
+    Err(last)
+}
+
 async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     let id = asset.id;
 
@@ -396,12 +429,7 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
         }
     };
 
-    let mut req = client.get(asset.url);
-    if existing > 0 {
-        req = req.header(reqwest::header::RANGE, format!("bytes={existing}-"));
-    }
-
-    let mut resp = match req.send().await {
+    let mut resp = match send_with_retry(&client, &asset.url, existing).await {
         Ok(r) => r,
         Err(e) => {
             fail(
@@ -432,8 +460,8 @@ async fn run_download(app: AppHandle, asset: Asset, cancel: Arc<AtomicBool>) {
     if resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
         let _ = tokio::fs::remove_file(&part).await;
         existing = 0;
-        let again = client.get(asset.url); // بلا ترويسة Range = طلب كامل جديد
-        resp = match again.send().await {
+        // بلا ترويسة Range = طلب كامل جديد
+        resp = match send_with_retry(&client, &asset.url, 0).await {
             Ok(r) => r,
             Err(e) => {
                 fail(

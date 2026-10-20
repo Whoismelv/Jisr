@@ -129,10 +129,16 @@ const ar = {
   gfxHint:
     "DXVK يسرّع DirectX 10/11. لو ظهرت مشاكل في لعبة، بدّله إلى WineD3D. التغيير يحتاج إعادة تشغيل ستيم.",
   dxvkLayer: "طبقة DXVK",
+  layersSection: "الطبقات (تسريع الألعاب)",
   layerInstalled: "مثبّتة وجاهزة ✓",
   dxvkMissingHint:
     "مو مثبّتة — بدونها تشتغل الألعاب على WineD3D البطيء وقد تنهار. التنزيل 5 MB.",
   d3dxLayer: "D3DX9 (مايكروسوفت)",
+  cefShimLabel: "غلاف واجهة ستيم",
+  cefShimHint:
+    "إصلاح نافذة ستيم السوداء. عطّله لو ما ظهرت النافذة — بنرجع لستيم الأصلي (يحتاج إعادة تشغيل ستيم).",
+  shimOn: "مفعّل",
+  shimOff: "معطّل",
   d3dxHint:
     "يصلح ألعاب DirectX 9 القديمة اللي تنهار في d3dx9_43 (مثل LIMBO). تنزيل 96 MB من مايكروسوفت، ويُتحقق من بصمته.",
   font: "الخط",
@@ -413,10 +419,16 @@ const en: Record<TKey, string> = {
   gfxHint:
     "DXVK speeds up DirectX 10/11. If a game misbehaves, switch to WineD3D. Changing it requires restarting Steam.",
   dxvkLayer: "DXVK layer",
+  layersSection: "Layers (game acceleration)",
   layerInstalled: "Installed and ready ✓",
   dxvkMissingHint:
     "Not installed — without it games fall back to slow WineD3D and may crash. 5 MB download.",
   d3dxLayer: "D3DX9 (Microsoft)",
+  cefShimLabel: "Steam UI wrapper",
+  cefShimHint:
+    "Fixes the black Steam window. Turn it off if no window appears — we restore Valve's original (restart Steam after).",
+  shimOn: "On",
+  shimOff: "Off",
   d3dxHint:
     "Fixes old DirectX 9 games that crash in d3dx9_43 (e.g. LIMBO). 96 MB from Microsoft, signature verified.",
   font: "Font",

@@ -203,8 +203,7 @@ pub fn extract_from_redist(redist: &Path) -> Result<usize, String> {
 }
 
 /// كتابة تجاوزات `native` في ريجستري القارورة
-async fn apply_registry_overrides(wine: &Path, prefix: &Path) -> bool {
-    let mut ok = true;
+async fn apply_registry_overrides(wine: &Path, prefix: &Path) -> Result<(), String> {
     for dll in ["d3dx9_43", "d3dcompiler_43"] {
         let mut cmd = tokio::process::Command::new(wine);
         cmd.env("WINEPREFIX", prefix)
@@ -218,15 +217,43 @@ async fn apply_registry_overrides(wine: &Path, prefix: &Path) -> bool {
             .arg("/d")
             .arg("native")
             .arg("/f")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.status()).await {
-            Ok(Ok(st)) if st.success() => {}
-            _ => ok = false,
+            .stdin(std::process::Stdio::null());
+        let out = match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await
+        {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => return Err(format!("reg add {dll} فشل: {e}")),
+            Err(_) => return Err(format!("reg add {dll} تجاوز الوقت")),
+        };
+        if !out.status.success() {
+            return Err(format!(
+                "reg add {dll} فشل: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
         }
     }
-    ok
+    // تحقق بالقراءة — نعرف فعلياً إن التجاوزات مكتوبة
+    for dll in ["d3dx9_43", "d3dcompiler_43"] {
+        let mut cmd = tokio::process::Command::new(wine);
+        cmd.env("WINEPREFIX", prefix)
+            .arg("reg")
+            .arg("query")
+            .arg("HKCU\\Software\\Wine\\DllOverrides")
+            .arg("/v")
+            .arg(dll)
+            .stdin(std::process::Stdio::null());
+        let out = match tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await
+        {
+            Ok(Ok(o)) => o,
+            _ => return Err(format!("تعذّر التحقق من تجاوز {dll}")),
+        };
+        if !String::from_utf8_lossy(&out.stdout)
+            .to_lowercase()
+            .contains("native")
+        {
+            return Err(format!("تجاوز {dll} ما انكتب في الريجستري"));
+        }
+    }
+    Ok(())
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -256,9 +283,7 @@ pub async fn deploy_to_prefix(wine: &Path, prefix: &Path) -> Result<(), String> 
             std::fs::copy(&src, &dst).map_err(|e| format!("تعذّر نشر {file}: {e}"))?;
         }
     }
-    if !apply_registry_overrides(wine, prefix).await {
-        return Err("تعذّر كتابة تجاوزات D3DX9 في الريجستري".into());
-    }
+    apply_registry_overrides(wine, prefix).await?;
     let _ = std::fs::write(marker_path(prefix), b"ok\n");
     Ok(())
 }

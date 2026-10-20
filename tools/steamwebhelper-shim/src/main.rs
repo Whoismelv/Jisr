@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// بصمة يتعرّف بها ظهر Jisr على أن الملف الحالي هو غلافه (لا نلمس الأصل)
-static MARKER: &[u8; 16] = b"JISR_CEF_SHIM_V3";
+static MARKER: &[u8; 16] = b"JISR_CEF_SHIM_V4";
 
 const REAL_NAME: &str = "steamwebhelper_real.exe";
 const LOG_NAME: &str = "steamwebhelper_shim.log";
@@ -250,9 +250,11 @@ fn main() {
         }
     };
 
-    // نربط الأصل بـJob: موت الغلاف = موت الأصل (ما تبقى نافذة شبح)
+    // نربط الأصل بـJob: موت الغلاف = موت الأصل (ما تبقى نافذة شبح).
+    // ⚠️ **اختياري** (`JISR_CEF_JOB=1`): تفعيله افتراضياً كان يطيح واجهة
+    // ستيم (العملية الأصلية تموت مع الغلاف قبل ما ترسم). نخليها للاختبار.
     #[cfg(windows)]
-    {
+    if std::env::var("JISR_CEF_JOB").as_deref() == Ok("1") {
         match job::Job::new() {
             Some(j) => {
                 if !j.assign(&child) {
