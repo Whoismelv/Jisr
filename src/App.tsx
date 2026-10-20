@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  جسر — الهيكل الرئيسي (بأسلوب تطبيقات macOS)
 //  • شريط جانبي شفاف + شريط أدوات بمواد آبل، تبديل صفحات بنوابض
 //  • لغة تلقائية (عربي/إنجليزي) ومظهر (فاتح/داكن/تلقائي)
@@ -391,7 +391,7 @@ export default function App() {
                 )}
                 {page === "bottles" && <BottlesPage bottles={bottles} sys={sys} />}
                 {page === "settings" && (
-                  <SettingsPage sys={sys} dl={dl} updates={updates} />
+                  <SettingsPage notify={notify} sys={sys} dl={dl} updates={updates} />
                 )}
                 {page === "logs" && (
                   <LogsPage logs={logs} onClear={onClear} notify={notify} />

@@ -352,6 +352,13 @@ export const getEngineChoice = () => call<string>("engine_choice");
 export const setEngineChoice = (id: string) => call<string>("engine_set_choice", { id });
 export const getEngineChoices = () => call<string[]>("engine_choices");
 
+/** محرّك خارجي جاهز عند المستخدم (مثل Whisky) — نكتشفه ونستخدمه كما هو */
+export const detectExternalEngines = () => call<string[]>("engine_detect_external");
+export const externalEngineStatus = () => call<string | null>("engine_external_status");
+export const setExternalEngine = (path: string) =>
+  call<string>("engine_set_external", { path });
+export const clearExternalEngine = () => call<void>("engine_clear_external");
+
 /** حالة D3DX9 الأصلي (نسخة مايكروسوفت) — إصلاح ألعاب DirectX 9 */export type D3dxStatus = { installed: boolean; deployed: boolean };
 export const d3dxStatus = () => call<D3dxStatus>("d3dx_status");
 

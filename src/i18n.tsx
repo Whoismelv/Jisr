@@ -158,6 +158,13 @@ const ar = {
   engineChoiceHint:
     "11.18 = الأحدث (فيها Vulkan/MoltenVK كامل). 11.6.1 = بديل فيه حزمة «إصلاح ستيم» من Gcenx — جرّبه لو واجهة ستيم ما ظهرت.",
   engineChoiceSaved: "بدّلنا نسخة المحرك — أعد تشغيل ستيم لتطبيقها.",
+  externalEngine: "محرّك خارجي (Whisky)",
+  externalEngineHint:
+    "محرّك Whisky (نسل CodeWeavers) فيه رقعة تُظهر واجهة ستيم عبر Metal + DXMT. نزّله بنفسك ونستخدمه كما هو — ما نوزّع أي ملف.",
+  externalEngineUse: "استخدمه",
+  externalEngineSet: "تم ضبط المحرّك الخارجي — أعد تشغيل ستيم.",
+  externalEngineClear: "إزالة",
+  externalEngineNone: "ما لقينا محرّك خارجي على الجهاز",
   install: "تثبيت",
   saved: "تم الحفظ",
   comingSoon: "قريباً",
@@ -463,6 +470,13 @@ const en: Record<TKey, string> = {
   engineChoiceHint:
     "11.18 = newest (full Vulkan/MoltenVK). 11.6.1 = alternative with Gcenx's Steam fix — try it if the Steam window never shows.",
   engineChoiceSaved: "Engine version changed — restart Steam to apply it.",
+  externalEngine: "External engine (Whisky)",
+  externalEngineHint:
+    "Whisky's engine (CodeWeavers lineage) carries the winemac patch that renders Steam's UI through Metal, plus DXMT. Install it yourself — we redistribute nothing.",
+  externalEngineUse: "Use it",
+  externalEngineSet: "External engine set — restart Steam.",
+  externalEngineClear: "Remove",
+  externalEngineNone: "No external engine found on this Mac",
   install: "Install",
   saved: "Saved",
   comingSoon: "Coming soon",

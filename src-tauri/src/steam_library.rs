@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  جسر — مكتبة ستيم المثبّتة (قراءة محلية فقط)
 //  • نقرأ steamapps/libraryfolders.vdf + appmanifest_*.acf من قارورة ستيم
 //  • ما ننفّذ أي مسار من الملفات: التشغيل عبر Steam نفسه بأمر -applaunch
@@ -947,33 +947,48 @@ fn spawn_crash_watcher(
     tauri::async_runtime::spawn(async move {
         // **سجل ستيم** هو where تكتب أخطاء اللعبة: اللعبة يطلقها عميل ستيم
         // فترث مقابض stdout/stderr الخاصة بستيم (وليس سجل إطلاق الأمر).
-        let log = steam::steam_log_path();
-        // نبدأ من **نهاية** السجل الحالي: أي انهان قديم ما يخلّينا نعيد المحاولة
-        let mut seen = std::fs::metadata(&log)
-            .map(|m| m.len() as usize)
-            .unwrap_or(0);
+        // **السجلّان**: أخطاء اللعبة تكتب في أي منهما حسب طريقة الإطلاق
+        // (سجل ستيم = العميل الشغّال، سجل إطلاق الأمر = العملية التي أطلقت اللعبة).
+        let logs = [steam::steam_log_path(), launch_log_path()];
+        // نبدأ من **نهاية** كل سجل: أي انهيار قديم ما يخلّينا نعيد المحاولة
+        let mut seen: [usize; 2] = [
+            std::fs::metadata(&logs[0])
+                .map(|m| m.len() as usize)
+                .unwrap_or(0),
+            std::fs::metadata(&logs[1])
+                .map(|m| m.len() as usize)
+                .unwrap_or(0),
+        ];
         for _ in 0..120 {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let Ok(text) = std::fs::read_to_string(&log) else {
+            let mut report: Option<String> = None;
+            for (i, log) in logs.iter().enumerate() {
+                let Ok(text) = std::fs::read_to_string(log) else {
+                    continue;
+                };
+                // ستيم قُطع سجله عند إعادة التشغيل ⇒ نرجع للمؤشر صفر
+                if text.len() < seen[i] {
+                    seen[i] = 0;
+                }
+                if text.len() <= seen[i] {
+                    continue;
+                }
+                let fresh = &text[seen[i].min(text.len())..];
+                let Some(found) = extract_crash_report(fresh) else {
+                    // تقرير ناقص (يكتب) ⇒ ما نقدّم المؤشر، ننتظر الجولة الجاية
+                    continue;
+                };
+                seen[i] = text.len();
+                report = Some(found);
+                break;
+            }
+            let Some(report) = report else {
                 continue;
             };
-            // ستيم قُطع سجله عند إعادة التشغيل ⇒ نرجع للمؤشر صفر
-            if text.len() < seen {
-                seen = 0;
-            }
-            if text.len() <= seen {
-                continue;
-            }
-            let fresh = &text[seen.min(text.len())..];
-            let Some(report) = extract_crash_report(fresh) else {
-                // تقرير ناقص (يكتب) ⇒ ما نقدّم المؤشر، ننتظر الجولة الجاية
-                continue;
-            };
-            seen = text.len();
             // السجل مشترك بين الألعاب ⇒ نتأكد إن الانهيار لِهذه اللعبة
             // (وإلا نطبّق حكم لعبة أخرى على هذه)
             if let Some(exe) = &game_exe {
-                // جدول Wine يكتب اسم الم��دول **بلا** امتداد ⇒ نطبّع الطرفين
+                // جدول Wine يكتب اسم الموديول **بلا** امتداد ⇒ نطبّع الطرفين
                 let name = normalize_module_name(exe);
                 let parsed = crate::triage::parse_report(&report);
                 let mentions = parsed

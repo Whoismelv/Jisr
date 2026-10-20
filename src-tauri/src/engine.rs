@@ -111,7 +111,11 @@ pub fn is_installed(id: &str) -> bool {
 
 /// مسار ملف تشغيل Wine داخل محرك مثبّت (bin/wine ثم bin/wine64)
 pub fn wine_bin(engine_id: &str) -> Option<PathBuf> {
-    let root = find_root(&install_dir(engine_id))?;
+    let root = if engine_id == EXTERNAL_ENGINE_ID {
+        external_engine_root()?
+    } else {
+        find_root(&install_dir(engine_id))?
+    };
     for exe in ["wine", "wine64"] {
         let p = root.join("bin").join(exe);
         if std::fs::symlink_metadata(&p).is_ok() {
@@ -119,6 +123,98 @@ pub fn wine_bin(engine_id: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// معرّف «المحرك الخارجي» — محرك جاهز عند المستخدم (مثل Whisky) نستخدمه كما هو.
+///
+/// **لماذا:** محرّك WhiskyWine نسل CodeWeavers (فيه رقعة `winemac` اللي
+/// تخلي نافذة ستيم تُرسم عبر Metal، وDXMT/D3DMetal معه). إحنا ما نوزّع
+/// GPL ولا ملفات Apple المغلقة — المستخدم يجيب المحرك بنفسه، والتطبيق
+/// يكتشفه ويستخدمه.
+pub const EXTERNAL_ENGINE_ID: &str = "external";
+
+/// ملف ي��فظ مسار المحرك الخارجي
+fn external_path() -> PathBuf {
+    engines_dir().join("external-engine.txt")
+}
+
+/// مسار المحرك الخارجي (المحفوظ) — None لو ما حدده المستخدم
+pub fn external_engine_root() -> Option<PathBuf> {
+    let text = std::fs::read_to_string(external_path()).ok()?;
+    let raw = text.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let p = PathBuf::from(raw);
+    if p.is_dir() { Some(p) } else { None }
+}
+
+/// يحفظ مسار المحرك الخارجي (يقبل جذر التطبيق مثل
+/// `/Applications/Whisky.app/Contents/Resources/WhiskyWine` أو أي مجلد فيه `bin/wine`).
+pub fn set_external_engine(path: &Path) -> Result<String, String> {
+    // نقبل الجذر مباشرة أو مجلداً فيه bin/wine
+    let root =
+        if path.join("bin").join("wine").is_file() || path.join("bin").join("wine64").is_file() {
+            path.to_path_buf()
+        } else {
+            // نبحث عن جذر Wine داخل المسار (عمق 6)
+            match find_root(path) {
+                Some(r) => r,
+                None => {
+                    return Err("ما لقينا `bin/wine` داخل هذا المسار — اختر مجلد Wine نفسه".into());
+                }
+            }
+        };
+    let exe = root.join("bin").join("wine");
+    let exe64 = root.join("bin").join("wine64");
+    if !exe.is_file() && !exe64.is_file() {
+        return Err("المجلد المختار فيه ما فيه `bin/wine`".into());
+    }
+    let path_file = external_path();
+    if let Some(parent) = path_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = path_file.with_extension("tmp");
+    std::fs::write(&tmp, format!("{}\n", root.display()))
+        .map_err(|e| format!("تعذّر حفظ مسار المحرك: {e}"))?;
+    let _ = std::fs::remove_file(&path_file);
+    std::fs::rename(&tmp, &path_file).map_err(|e| format!("تعذّر حفظ مسار المحرك: {e}"))?;
+    Ok(root.display().to_string())
+}
+
+/// يمسح اختيار المحرك الخارجي (رجوع للمحرك المدمج)
+pub fn clear_external_engine() -> Result<(), String> {
+    let _ = std::fs::remove_file(external_path());
+    Ok(())
+}
+
+/// محركات Whisky المعروفة على الماك — نبحث عنها تلقائياً (مسارات ثابتة)
+pub fn detect_whisky_engines() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let candidates = [
+        "/Applications/Whisky.app/Contents/Resources/WhiskyWine",
+        "/Applications/Whisky.app/Contents/Resources/wine",
+        "/Applications/Whisky.app/Contents/Resources/WhiskyWine.app/Contents/Resources/wine",
+        "~/Library/Application Support/Whisky/WhiskyWine",
+        "~/Library/Containers/com.isaacmarovitz.Whisky/Data/WhiskyWine",
+    ];
+    for c in candidates {
+        let p = std::path::PathBuf::from(shellexpand_home(c));
+        if p.join("bin").join("wine").is_file() || p.join("bin").join("wine64").is_file() {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// يوسّع `~` إلى المسار الحقيقي
+fn shellexpand_home(p: &str) -> String {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{home}/{rest}");
+        }
+    }
+    p.to_string()
 }
 
 /// نظّف بقايا محاولات فك سابقة (تشتغل عند بدء التطبيق)

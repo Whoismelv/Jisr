@@ -166,13 +166,15 @@ pub fn chosen_engine_id() -> String {
         .unwrap_or_else(|| DEFAULT_ENGINE_ID.to_string())
 }
 
-/// كل محركات الكتالوج (لاختيار المستخدم)
+/// كل محركات الكتالوج (لاختيار المستخدم) + المحرك الخارجي (Whisky مثلاً)
 pub fn engine_choice_ids() -> Vec<String> {
-    download::catalog()
+    let mut ids: Vec<String> = download::catalog()
         .into_iter()
         .filter(|a| a.kind == "engine")
         .map(|a| a.id.to_string())
-        .collect()
+        .collect();
+    ids.push(crate::engine::EXTERNAL_ENGINE_ID.to_string());
+    ids
 }
 
 /// اختيار المحرك (مستخدم) — نتحقق إن المعرّف موجود فعلاً
@@ -571,6 +573,42 @@ async fn run_wineboot(id: &str) -> Result<(), String> {
 #[tauri::command]
 pub fn engine_choice() -> String {
     chosen_engine_id()
+}
+
+/// محركات خارجية موجودة عند المستخدم (Whisky) — نكتشفها تلقائياً
+#[tauri::command]
+pub fn engine_detect_external() -> Vec<String> {
+    crate::engine::detect_whisky_engines()
+        .into_iter()
+        .map(|p| p.display().to_string())
+        .collect()
+}
+
+/// حالة المحرك الخارجي المختار
+#[tauri::command]
+pub fn engine_external_status() -> Option<String> {
+    crate::engine::external_engine_root().map(|p| p.display().to_string())
+}
+
+/// يختار محرّك خارجياً (مسار مجلد Wine عند المستخدم)
+#[tauri::command]
+pub fn engine_set_external(path: String) -> Result<String, String> {
+    let _trace = crate::debuglog::trace("engine", "engine_set_external", format!("path={path}"));
+    let p = std::path::PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err("المسار غير موجود".into());
+    }
+    let root = crate::engine::set_external_engine(&p)?;
+    // نخزّنه كاختيار نشط
+    let _ = set_chosen_engine(crate::engine::EXTERNAL_ENGINE_ID);
+    crate::debuglog::raw("info", "engine", &format!("external engine = {root}"));
+    Ok(root)
+}
+
+/// يمسح المحرك الخارجي (رجوع للمدمج)
+#[tauri::command]
+pub fn engine_clear_external() -> Result<(), String> {
+    crate::engine::clear_external_engine()
 }
 
 /// تغيير المحرك المستخدم (بديل جاهز لو واجهة ستيم ما ظهرت)

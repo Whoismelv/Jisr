@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  جسر — الصفحات الخمس
 //  الرئيسية · المكتبة · القوارير · الإعدادات · السجل
 //  كل صفحة memo ⇒ لا تُعاد رسمها إلا لما تخصها يتغيّر فقط
@@ -34,6 +34,10 @@ import {
   cefShimStatus,
   getEngineChoice,
   setEngineChoice,
+  detectExternalEngines,
+  externalEngineStatus,
+  setExternalEngine,
+  clearExternalEngine,
   steamGameLaunch,
   steamGameWindowed,
   steamGamesList,
@@ -1192,10 +1196,12 @@ const BottleCard = memo(function BottleCard({
 //  الإعدادات — كل تغيير يُحفظ تلقائياً وفوراً
 // ============================================================
 export const SettingsPage = memo(function SettingsPage({
+  notify,
   sys,
   dl,
   updates,
 }: {
+  notify: (msg: string) => void;
   sys: SystemInfo | null;
   dl: Downloads;
   updates: Updates;
@@ -1230,6 +1236,17 @@ export const SettingsPage = memo(function SettingsPage({
   useEffect(() => {
     getEngineChoice()
       .then(setEngineChoiceState)
+      .catch(() => {});
+  }, []);
+  // محرّك خارجي (Whisky) — موجود عند المستخدم أو لا
+  const [detected, setDetected] = useState<string[]>([]);
+  const [externalStatus, setExternalStatus] = useState<string | null>(null);
+  useEffect(() => {
+    detectExternalEngines()
+      .then(setDetected)
+      .catch(() => {});
+    externalEngineStatus()
+      .then(setExternalStatus)
       .catch(() => {});
   }, []);
   const choiceDl = dl.items[engineChoice];
@@ -1353,11 +1370,50 @@ export const SettingsPage = memo(function SettingsPage({
             onCancel={() => dl.cancel(engineChoice)}
           />
         )}
-        {choiceBtn === "idle" && engineChoice !== ENGINE_ID && (
+        {choiceBtn === "idle" && engineChoice !== ENGINE_ID && engineChoice !== "external" && (
           <Button variant="tinted" onClick={() => dl.start(engineChoice)}>
             {t("install")} 11.6.1
           </Button>
         )}
+        {/* محرّك خارجي (Whisky): نسل CodeWeavers — فيه رقعة winemac التي
+            تُظهر واجهة ستيم عبر Metal. المستخدم يجيبه بنفسه (ما نوزّع GPL). */}
+        <Row label={t("externalEngine")} hint={t("externalEngineHint")}>
+          {externalStatus ? (
+            <span className="value muted">
+              {externalStatus}
+              <Button
+                variant="plain"
+                onClick={() => {
+                  clearExternalEngine()
+                    .then(() => {
+                      setExternalStatus(null);
+                      notify(t("saved"));
+                    })
+                    .catch((e) => notify(String(e)));
+                }}
+              >
+                {t("externalEngineClear")}
+              </Button>
+            </span>
+          ) : detected.length > 0 ? (
+            <Button
+              variant="tinted"
+              onClick={() => {
+                const first = detected[0];
+                setExternalEngine(first)
+                  .then(() => {
+                    setExternalStatus(first);
+                    notify(t("externalEngineSet"));
+                  })
+                  .catch((e) => notify(String(e)));
+              }}
+            >
+              {t("externalEngineUse")}
+            </Button>
+          ) : (
+            <span className="value muted">{t("externalEngineNone")}</span>
+          )}
+        </Row>
         <Row label={t("graphicsLayer")} hint={t("gfxHint")}>
           <Segmented
             id="gfx"
