@@ -359,6 +359,16 @@ export const setExternalEngine = (path: string) =>
   call<string>("engine_set_external", { path });
 export const clearExternalEngine = () => call<void>("engine_clear_external");
 
+/** غلاف تشخيص مترجم الـHLSL (D3DX shim) */
+export type D3dxShimStatus = {
+  installed: boolean;
+  log: string;
+  tail: string;
+};
+export const installD3dxShim = () => call<boolean>("d3dx_shim_install");
+export const removeD3dxShim = () => call<boolean>("d3dx_shim_remove");
+export const getD3dxShimStatus = () => call<D3dxShimStatus>("d3dx_shim_status");
+
 /** حالة D3DX9 الأصلي (نسخة مايكروسوفت) — إصلاح ألعاب DirectX 9 */export type D3dxStatus = { installed: boolean; deployed: boolean };
 export const d3dxStatus = () => call<D3dxStatus>("d3dx_status");
 

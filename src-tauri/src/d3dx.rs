@@ -297,6 +297,158 @@ pub async fn deploy_to_prefix(wine: &Path, prefix: &Path) -> Result<(), String> 
     Ok(())
 }
 
+// ============================================================
+//  غلاف التشخيص (Microscope) لمترجم الـHLSL
+// ============================================================
+
+/// غلاف 32-بت (و64-بت) يجلس بين اللعبة و`d3dcompiler_43` الحقيقي:
+/// يسجّل كل استدعاء، يمنع القفزة على مدخل فارغ، ويقدر يوجّه الاستدعاء
+/// لمترجم آخر (بديل) عبر `JISR_D3DCOMPILER_BACKEND`.
+///
+/// **لماذا:** ألعاب DX9 القديمة تنهار داخل المترجم نفسه (page fault) —
+/// ونفس الانهيار يتكرّر مع مترجم Wine ⇒ إذن المشكلة في **الاستدعاء**
+/// أو في المترجم تحت WoW64. هذا الغلاف يخبرنا أيّهما بالضبط.
+const SHIM_X86: &[u8] = include_bytes!("../assets/d3dcompiler_43_x86.dll");
+const SHIM_X64: &[u8] = include_bytes!("../assets/d3dcompiler_43_x64.dll");
+
+/// بصمة داخل الغلاف — نعرف بها أنه غلافنا (لا نلمس الأصلي)
+const SHIM_MARKER: &[u8] = b"JISR_D3DX_SHIM_V1";
+
+/// مسار سجل التشخيص
+pub fn shim_log_path() -> PathBuf {
+    crate::data_dir().join("logs").join("d3dx-shim.log")
+}
+
+/// هل الملف المعطى هو غلافنا؟
+fn is_shim(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    bytes.windows(SHIM_MARKER.len()).any(|w| w == SHIM_MARKER)
+}
+
+/// هل الغلاف مثبّت داخل القارورة؟
+pub fn shim_installed(prefix: &Path) -> bool {
+    let win = prefix.join("drive_c").join("windows");
+    is_shim(&win.join("syswow64").join("d3dcompiler_43.dll"))
+}
+
+/// يثبّت الغلاف: نحفظ الأصل بجانبه (`d3dcompiler_43_ms.dll`) ونضع غلافنا مكانه.
+///
+/// الأصل **لا يُحذف** ⇒ الرجوع سهل (نرجّعه مكانه).
+pub async fn install_shim(wine: &Path, prefix: &Path) -> Result<(), String> {
+    let win = prefix.join("drive_c").join("windows");
+    for (arch, sys_dir, bytes) in [("x86", "syswow64", SHIM_X86), ("x64", "system32", SHIM_X64)] {
+        let dir = win.join(sys_dir);
+        if !dir.is_dir() {
+            return Err("القارورة مو جاهزة".into());
+        }
+        let target = dir.join("d3dcompiler_43.dll");
+        let real = dir.join("d3dcompiler_43_ms.dll");
+        if !is_shim(&target) {
+            // نحفظ الأصل مرة واحدة (لو موجود) ثم ننشر غلافنا
+            if target.is_file() && !real.is_file() {
+                std::fs::copy(&target, &real)
+                    .map_err(|e| format!("تعذّر حفظ نسخة المترجم الأصلية: {e}"))?;
+            }
+            if !real.is_file() {
+                return Err(format!(
+                    "ما لقينا المترجم الأصلي في {sys_dir} — ثبّت D3DX9 أولاً"
+                ));
+            }
+            let tmp = dir.join("d3dcompiler_43.dll.jisr-tmp");
+            std::fs::write(&tmp, bytes).map_err(|e| format!("تعذّر كتابة الغلاف: {e}"))?;
+            let _ = std::fs::remove_file(&target);
+            std::fs::rename(&tmp, &target).map_err(|e| format!("تعذّر تثبيت الغلاف: {e}"))?;
+        }
+        let _ = arch;
+    }
+
+    // التحويل لـnative (الغلاف أصلاً —原件) ونكتب مسار السجل للعبة
+    let mut cmd = tokio::process::Command::new(wine);
+    cmd.env("WINEPREFIX", prefix)
+        .env("WINEMSYNC", "1")
+        .arg("reg")
+        .arg("add")
+        .arg(r"HKCU\Software\Wine\DllOverrides")
+        .arg("/v")
+        .arg("d3dcompiler_43")
+        .arg("/t")
+        .arg("REG_SZ")
+        .arg("/d")
+        .arg("native")
+        .arg("/f")
+        .stdin(std::process::Stdio::null());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
+    Ok(())
+}
+
+/// يرجّع المترجم الأصلي مكان الغلاف (إلغاء التشخيص)
+pub fn remove_shim(prefix: &Path) -> Result<(), String> {
+    let win = prefix.join("drive_c").join("windows");
+    for sys_dir in ["syswow64", "system32"] {
+        let dir = win.join(sys_dir);
+        let target = dir.join("d3dcompiler_43.dll");
+        let real = dir.join("d3dcompiler_43_ms.dll");
+        if is_shim(&target) && real.is_file() {
+            let _ = std::fs::remove_file(&target);
+            std::fs::rename(&real, &target)
+                .map_err(|e| format!("تعذّر استرجاع المترجم الأصلي: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// يثبّت غلاف التشخيص داخل القارورة (مِجهر + مِطرقة لمترجم الـHLSL)
+#[tauri::command]
+pub async fn d3dx_shim_install() -> Result<bool, String> {
+    let _trace = crate::debuglog::trace("d3dx", "d3dx_shim_install", "");
+    let prefix = crate::bottle::bottle_dir(crate::bottle::MAIN_ID);
+    let Some(wine) = crate::bottle::wine_bin() else {
+        return Err("ما لقينا محرّك Wine".into());
+    };
+    install_shim(&wine, &prefix).await?;
+    crate::debuglog::raw(
+        "info",
+        "d3dx",
+        &format!("d3dx shim installed (log: {})", shim_log_path().display()),
+    );
+    Ok(true)
+}
+
+/// يرجّع المترجم الأصلي (إلغاء التشخيص)
+#[tauri::command]
+pub fn d3dx_shim_remove() -> Result<bool, String> {
+    let _trace = crate::debuglog::trace("d3dx", "d3dx_shim_remove", "");
+    let prefix = crate::bottle::bottle_dir(crate::bottle::MAIN_ID);
+    remove_shim(&prefix)?;
+    Ok(true)
+}
+
+/// حالة غلاف التشخيص + آخر أسطر السجل (حتى نقرأها من الواجهة)
+#[tauri::command]
+pub fn d3dx_shim_status() -> serde_json::Value {
+    let prefix = crate::bottle::bottle_dir(crate::bottle::MAIN_ID);
+    let log = shim_log_path();
+    let tail = std::fs::read_to_string(&log)
+        .map(|s| {
+            s.lines()
+                .rev()
+                .take(40)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    serde_json::json!({
+        "installed": shim_installed(&prefix),
+        "log": log.display().to_string(),
+        "tail": tail,
+    })
+}
+
 /// حالة الطبقة للواجهة
 #[derive(Serialize)]
 pub struct D3dxStatus {
@@ -316,6 +468,27 @@ pub fn d3dx_status() -> D3dxStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// حارس سلسلة التوريد: بصمة غلاف التشخيص (x86 + x64) مثبّتة.
+    /// أي تغيير في الـDLL لازم يتحدّث هنا (ونعيد البناء من tools/d3dx-shim).
+    #[test]
+    fn shim_assets_are_pinned() {
+        use sha2::{Digest, Sha256};
+        let mut h86 = Sha256::new();
+        h86.update(SHIM_X86);
+        assert_eq!(
+            format!("{:x}", h86.finalize()),
+            "d392b02d03457a06fbb601640c5855d383edb27c82c4330fcc200e2451e39890",
+            "تغيّر غلاف D3DX (x86) — أعد البناء من tools/d3dx-shim وحدّث البصمة"
+        );
+        let mut h64 = Sha256::new();
+        h64.update(SHIM_X64);
+        assert_eq!(
+            format!("{:x}", h64.finalize()),
+            "a38ce0c7815b8e518c26fd5816dddb9a002def70bb7c736964affc82757c674e",
+            "تغيّر غلاف D3DX (x64) — أعد البناء من tools/d3dx-shim وحدّث البصمة"
+        );
+    }
 
     #[test]
     fn targets_are_unique_and_named_sanely() {

@@ -1276,6 +1276,11 @@ pub async fn steam_run(app: AppHandle, state: State<'_, SteamState>) -> Result<(
         if let Some(flags) = cef_flags_override() {
             cmd.env("JISR_CEF_FLAGS", flags);
         }
+        // غلاف تشخيص D3DX (إن كان مثبّتاً) ⇒ يسجّل كل استدعاء للمترجم.
+        // اللعبة ترث بيئة عميل ستيم ⇒ reaches the game's own process.
+        if crate::d3dx::shim_installed(&prefix) {
+            cmd.env("JISR_D3DX_LOG", crate::d3dx::shim_log_path());
+        }
         cmd.arg(&dos_exe)
             // معيار ستيم على Wine: بند Chromium الداخلي ما يشتغل صح تحت Wine
             .arg("-no-cef-sandbox")

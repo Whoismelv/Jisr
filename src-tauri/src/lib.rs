@@ -1047,6 +1047,9 @@ pub fn run() {
             steam_library::steam_crash_states,
             steam_library::steam_auto_retry,
             steam_library::steam_auto_retry_status,
+            d3dx::d3dx_shim_install,
+            d3dx::d3dx_shim_remove,
+            d3dx::d3dx_shim_status,
             graphics::graphics_mode,
             graphics::graphics_set_mode,
             d3dx::d3dx_status

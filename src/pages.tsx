@@ -35,6 +35,10 @@ import {
   getEngineChoice,
   setEngineChoice,
   detectExternalEngines,
+  getD3dxShimStatus,
+  installD3dxShim,
+  removeD3dxShim,
+  type D3dxShimStatus,
   externalEngineStatus,
   setExternalEngine,
   clearExternalEngine,
@@ -1238,6 +1242,13 @@ export const SettingsPage = memo(function SettingsPage({
       .then(setEngineChoiceState)
       .catch(() => {});
   }, []);
+  // غلاف تشخيص D3DX
+  const [shimStatus, setShimStatus] = useState<D3dxShimStatus | null>(null);
+  useEffect(() => {
+    getD3dxShimStatus()
+      .then(setShimStatus)
+      .catch(() => {});
+  }, []);
   // محرّك خارجي (Whisky) — موجود عند المستخدم أو لا
   const [detected, setDetected] = useState<string[]>([]);
   const [externalStatus, setExternalStatus] = useState<string | null>(null);
@@ -1375,6 +1386,41 @@ export const SettingsPage = memo(function SettingsPage({
             {t("install")} 11.6.1
           </Button>
         )}
+        {/* غلاف تشخيص D3DX: مِجهر + مِطرقة لمترجم الشيدرات */}
+        <Row label={t("d3dxShimLabel")} hint={t("d3dxShimHint")}>
+          {shimStatus?.installed ? (
+            <span className="value muted">
+              {t("d3dxShimOn")}
+              <Button
+                variant="plain"
+                onClick={() => {
+                  removeD3dxShim()
+                    .then(() => {
+                      setShimStatus(null);
+                      notify(t("saved"));
+                    })
+                    .catch((e) => notify(String(e)));
+                }}
+              >
+                {t("d3dxShimRemove")}
+              </Button>
+            </span>
+          ) : (
+            <Button
+              variant="tinted"
+              onClick={() => {
+                installD3dxShim()
+                  .then(() => {
+                    setShimStatus({ installed: true, log: "", tail: "" });
+                    notify(t("d3dxShimOn"));
+                  })
+                  .catch((e) => notify(String(e)));
+              }}
+            >
+              {t("d3dxShimInstall")}
+            </Button>
+          )}
+        </Row>
         {/* محرّك خارجي (Whisky): نسل CodeWeavers — فيه رقعة winemac التي
             تُظهر واجهة ستيم عبر Metal. المستخدم يجيبه بنفسه (ما نوزّع GPL). */}
         <Row label={t("externalEngine")} hint={t("externalEngineHint")}>
