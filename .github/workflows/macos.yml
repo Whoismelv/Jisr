@@ -66,6 +66,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
+          # مفتاح منفصل عن وظيفة الاختبارات — وإلا تصادم الكاش يخلّي
+          # البناء يعيد编译 كل التبعيات من الصفر (٤٠٠ ثانية بدل ٦٠)
+          shared-key: build
 
       - name: مكتبات الواجهة
         run: npm ci
@@ -174,6 +177,8 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
+          # كاش منفصل: اختبارات بروفايل dev — ما نخليها تبتلع كاش البناء
+          shared-key: tests
 
       - name: "🧪 اختبارات الخلفية (شامل محاكاة macOS)"
         run: cargo test --lib --target aarch64-apple-darwin --manifest-path src-tauri/Cargo.toml
