@@ -588,14 +588,14 @@ mod tests {
         h86.update(SHIM_X86);
         assert_eq!(
             format!("{:x}", h86.finalize()),
-            "eae38efbb2496aa7a40ef4cdac126f30d6184be6dfe59869ba4aa65fb3c2f0e3",
+            "ab64971ba62e8056a55eefcb5af1754f331fc9505d0e74d758b10044cdaaa3ec",
             "تغيّر غلاف D3DX (x86) — أعد البناء من tools/d3dx-shim وحدّث البصمة"
         );
         let mut h64 = Sha256::new();
         h64.update(SHIM_X64);
         assert_eq!(
             format!("{:x}", h64.finalize()),
-            "a53d15f17e66b1cf853cb006c387cd2075cde68523902f2145b4db527c2f58a8",
+            "8baffbb0f3be0cfaf4007c89259d3adebe2c4fc7997be5cf03c0b00920576e72",
             "تغيّر غلاف D3DX (x64) — أعد البناء من tools/d3dx-shim وحدّث البصمة"
         );
     }

@@ -84,10 +84,15 @@ fn log_path() -> PathBuf {
     .clone()
 }
 
+/// عدّاد تسلسلي لكل سطر وكل ملف تشخيص (يبدأ من 1 في كل عملية)
+fn next_seq() -> u64 {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    SEQ.fetch_add(1, Ordering::Relaxed) + 1
+}
+
 /// نكتب سطراً واحداً (best-effort — ما نبيّن فشل التسجيل للعبة)
 fn log_line(line: &str) {
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let n = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    let n = next_seq();
     let pid = unsafe { GetCurrentProcessId() };
     let tick = unsafe { GetTickCount() };
     let path = log_path();
@@ -119,6 +124,168 @@ fn source_head(p: *const c_void, size: usize) -> String {
         })
         .collect();
     format!("{hex} |{printable}|")
+}
+
+// ============================================================
+//  ملفات التشخيص (مصدر الشيدر + ناتج التصريف)
+// ============================================================
+
+/// مجلد ملفات التشخيص = مجلد السجل نفسه (جذر القارورة).
+fn dump_dir() -> PathBuf {
+    log_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// حذف ملفات التشخيص القديمة — نُبقي الجلسة الحالية وحدها.
+fn dump_cleanup() {
+    let dir = dump_dir();
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.starts_with("jisr-d3dx-src-") || name.starts_with("jisr-d3dx-blob-") {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// مصدر الشيدر كاملاً (حتى 512KB) — يُرسَل مع تقرير الأخطاء للتحليل.
+fn dump_source(seq: u64, p: *const c_void, size: usize) -> Option<PathBuf> {
+    if p.is_null() || size == 0 {
+        return None;
+    }
+    let n = size.min(512 * 1024);
+    let bytes = unsafe { std::slice::from_raw_parts(p as *const u8, n) };
+    let path = dump_dir().join(format!("jisr-d3dx-src-{seq}.hlsl"));
+    std::fs::write(&path, bytes).ok()?;
+    Some(path)
+}
+
+/// بايتات الشيدر المُصرَّف (حتى 1MB).
+fn dump_blob(seq: u64, bytes: &[u8]) -> Option<PathBuf> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let n = bytes.len().min(1024 * 1024);
+    let path = dump_dir().join(format!("jisr-d3dx-blob-{seq}.bin"));
+    std::fs::write(&path, &bytes[..n]).ok()?;
+    Some(path)
+}
+
+// ============================================================
+//  تتبّع المستدعي (مَن استدعى D3DCompile؟)
+// ============================================================
+
+type CaptureFn = unsafe extern "system" fn(DWORD, DWORD, *mut *mut c_void, *mut DWORD) -> u16;
+
+/// `RtlCaptureStackBackTrace` من ntdll — نحمّله ديناميكياً حتى لا يعتمد
+/// تحميل الغلاف على وجود الرمز وقت الربط.
+fn capture_fn() -> Option<CaptureFn> {
+    static F: OnceLock<Option<CaptureFn>> = OnceLock::new();
+    *F.get_or_init(|| unsafe {
+        let name = CString::new("ntdll.dll").ok()?;
+        let m = LoadLibraryA(name.as_ptr());
+        if m.is_null() {
+            return None;
+        }
+        let f = CString::new("RtlCaptureStackBackTrace").ok()?;
+        let p = GetProcAddress(m, f.as_ptr());
+        if p.is_null() {
+            return None;
+        }
+        Some(std::mem::transmute::<*mut c_void, CaptureFn>(p))
+    })
+}
+
+/// عناوين الإطارات الخام — من النطاقات نعرف الوحدة المستدعية (اللعبة/الطبقة).
+fn caller_frames(skip: u32, count: u32) -> String {
+    let Some(cap) = capture_fn() else {
+        return String::from("<no-capture>");
+    };
+    let mut frames = [std::ptr::null_mut::<c_void>(); 8];
+    let count = count.min(8);
+    let n = unsafe { cap(skip, count, frames.as_mut_ptr(), std::ptr::null_mut()) } as usize;
+    let mut out = String::new();
+    for f in frames.iter().take(n) {
+        if f.is_null() {
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("{f:p}"));
+    }
+    if out.is_empty() {
+        String::from("<none>")
+    } else {
+        out
+    }
+}
+
+/// قيمة مؤشر المكدس الحالية (تعمل حتى بلا frame pointer).
+#[cfg(target_arch = "x86")]
+fn current_sp() -> usize {
+    let sp: usize;
+    unsafe {
+        core::arch::asm!("mov {}, esp", out(reg) sp, options(nomem, nostack, preserves_flags));
+    }
+    sp
+}
+
+#[cfg(target_arch = "x86_64")]
+fn current_sp() -> usize {
+    let sp: usize;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) sp, options(nomem, nostack, preserves_flags));
+    }
+    sp
+}
+
+/// اسم الوحدة التي يقع داخلها العنوان (heaps/stacks لا تنتمي لأي وحدة).
+fn module_of(v: usize) -> Option<String> {
+    unsafe {
+        let mut h: *mut c_void = std::ptr::null_mut();
+        let flags =
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+        if GetModuleHandleExA(flags, v as *const c_char, &mut h) == 0 || h.is_null() {
+            return None;
+        }
+        module_file_name(h).and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+    }
+}
+
+/// نفحص نافذة فوق مؤشر المكدس — عنوان رجوع المستدعي موجود فيها دائماً.
+/// نطبع فقط القيم التي تقع داخل وحدات محمّلة، مع اسم الوحدة.
+fn stack_scan(max: usize) -> String {
+    let sp = current_sp();
+    if sp == 0 {
+        return String::from("<none>");
+    }
+    let step = std::mem::size_of::<usize>();
+    let mut out = String::new();
+    let mut hits = 0usize;
+    let mut off = 0usize;
+    while off < max && hits < 8 {
+        let v = unsafe { *((sp + off) as *const usize) };
+        if v != 0 {
+            if let Some(m) = module_of(v) {
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push_str(&format!("+{off:#x}:{v:#x}@{m}"));
+                hits += 1;
+            }
+        }
+        off += step;
+    }
+    if out.is_empty() {
+        String::from("<none>")
+    } else {
+        out
+    }
 }
 
 // ============================================================
@@ -258,8 +425,9 @@ unsafe impl Sync for Backend {}
 fn load_backend() -> Option<Backend> {
     static BOOT: AtomicBool = AtomicBool::new(false);
     if !BOOT.swap(true, Ordering::Relaxed) {
+        dump_cleanup();
         log_line(&format!(
-            "BOOT shim=d3dcompiler_43 v2 module={:?} log={:?}",
+            "BOOT shim=d3dcompiler_43 v3 module={:?} log={:?}",
             shim_path().map(|p| p.display().to_string()),
             log_path().display().to_string()
         ));
@@ -353,6 +521,20 @@ unsafe fn blob_info(p: *mut c_void) -> (usize, String) {
         .trim()
         .to_string();
     (n, text)
+}
+
+/// (الحجم، المؤشر الخام) من `ID3D10Blob` — للتفريغ إلى ملف.
+unsafe fn blob_raw(p: *mut c_void) -> (usize, *const c_void) {
+    if p.is_null() {
+        return (0, std::ptr::null());
+    }
+    let vt = *(p as *const *const *const c_void);
+    if vt.is_null() {
+        return (0, std::ptr::null());
+    }
+    let get_buf: BlobGetBuffer = std::mem::transmute(*vt.add(3));
+    let get_size: BlobGetSize = std::mem::transmute(*vt.add(4));
+    (get_size(p), get_buf(p))
 }
 
 /// نقرأ نص C-string بحذر (قد يكون NULL)
@@ -524,8 +706,16 @@ pub unsafe extern "system" fn D3DCompile(
 ) -> HRESULT {
     let (target, t_sub, t_why) = guard_target(pTarget, pSrcData, SrcDataSize);
     let (entry, e_sub) = guard_entry(pEntrypoint);
+    // نفرّق بين مؤشر فاضٍ تماماً (null) وسلسلة فاضية ("") — السببان مختلفان.
+    let t_kind = if pTarget.is_null() {
+        "null"
+    } else if *pTarget == 0 {
+        "empty"
+    } else {
+        ""
+    };
     let guessed = if t_sub {
-        format!(" (NULL=>guessed:{t_why})")
+        format!(" ({t_kind}=>guessed:{t_why})")
     } else {
         String::new()
     };
@@ -540,6 +730,22 @@ pub unsafe extern "system" fn D3DCompile(
         count_defines(pDefines),
         if pInclude.is_null() { "null" } else { "set" },
     ));
+
+    // تشخيص عميق: مَن استدعى + المؤشرات الخام + تفريغ المصدر كاملاً.
+    let seq = next_seq();
+    log_line(&format!(
+        "D3DCompile#{seq} ptrs src={:p} entry={:p} target={:p} code_out={:p} err_out={:p} caller=[{}] stack=[{}]",
+        pSrcData,
+        pEntrypoint,
+        pTarget,
+        ppCode,
+        ppErrorMsgs,
+        caller_frames(1, 6),
+        stack_scan(512),
+    ));
+    if let Some(p) = dump_source(seq, pSrcData, SrcDataSize) {
+        log_line(&format!("D3DCompile#{seq} source dumped: {p:?}"));
+    }
 
     if pSrcData.is_null() || SrcDataSize == 0 {
         log_line(&format!(
@@ -596,11 +802,21 @@ pub unsafe extern "system" fn D3DCompile(
         blob_info(err).1
     };
     log_line(&format!(
-        "D3DCompile => hr=0x{:08X} code={:p} bytes={bytes} err={err_text} head={}",
+        "D3DCompile#{seq} => hr=0x{:08X} code={:p} bytes={bytes} err={err_text} head={}",
         hr,
         code,
         source_head(pSrcData, SrcDataSize)
     ));
+    if hr == S_OK && !code.is_null() {
+        let (n, raw) = blob_raw(code);
+        if !raw.is_null() && n > 0 {
+            let end = n.min(1024 * 1024);
+            let bytes = std::slice::from_raw_parts(raw as *const u8, end);
+            if let Some(p) = dump_blob(seq, bytes) {
+                log_line(&format!("D3DCompile#{seq} blob dumped: {p:?} ({n} bytes)"));
+            }
+        }
+    }
     hr
 }
 

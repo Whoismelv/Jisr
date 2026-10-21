@@ -959,6 +959,42 @@ fn build_report_from(info: &SystemInfo, steam_dir: Option<&Path>) -> String {
         }
     }
 
+    // ملفات تشخيص المترجم: مصدر الشيدر كاملاً + بايتات الشيدر المُصرَّف
+    if let Ok(rd) = std::fs::read_dir(&dc) {
+        let mut dumps: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("jisr-d3dx-src-") || n.starts_with("jisr-d3dx-blob-"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        dumps.sort();
+        for p in dumps.into_iter().take(6) {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if name.starts_with("jisr-d3dx-src-") {
+                let body = std::fs::read_to_string(&p).unwrap_or_default();
+                let body: String = body.chars().take(60_000).collect();
+                push_section(&mut out, &format!("{name} (source)"), &body);
+            } else {
+                let hex = std::fs::read(&p)
+                    .map(|b| {
+                        b.iter()
+                            .take(4096)
+                            .map(|x| format!("{x:02x}"))
+                            .collect::<String>()
+                    })
+                    .unwrap_or_default();
+                push_section(&mut out, &format!("{name} (hex 4KB)"), &hex);
+            }
+        }
+    }
+
     // ===== ملفات تعريف الألعاب (التركيبة الفعلية لكل لعبة) =====
     if let Ok(rd) = std::fs::read_dir(combo::profiles_dir()) {
         let mut files: Vec<PathBuf> = rd
