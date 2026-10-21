@@ -80,7 +80,13 @@ fn main() {
         }
         let compile: CompileFn = std::mem::transmute(sym);
 
-        let src: &[u8] = b"float4 main() : SV_Target { return float4(1,0,0,1); }\n";
+        let ps_src: &[u8] = b"float4 main() : SV_Target { return float4(1,0,0,1); }\n";
+        let vs_src: &[u8] = b"struct VS_OUT { float4 pos : POSITION; float4 col : COLOR0; float2 uv : TEXCOORD0; };\nVS_OUT main(float4 p : POSITION) { VS_OUT o; o.pos = p; o.col = 1; o.uv = 0; return o; }\n";
+        let src: &[u8] = if case == "null_target_vs" || case == "vs_ok" {
+            vs_src
+        } else {
+            ps_src
+        };
         let (p_src, len) = match case {
             "null_src" => (std::ptr::null(), 0usize),
             "empty_src" => (b"\0".as_ptr() as *const c_void, 0usize),
@@ -92,10 +98,10 @@ fn main() {
         } else {
             b"main\0".as_ptr()
         };
-        let target: *const u8 = if case == "null_target" {
-            std::ptr::null()
-        } else {
-            b"ps_3_0\0".as_ptr()
+        let target: *const u8 = match case {
+            "null_target" | "null_target_vs" => std::ptr::null(),
+            "vs_ok" => b"vs_3_0\0".as_ptr(),
+            _ => b"ps_3_0\0".as_ptr(),
         };
 
         let mut code: *mut c_void = std::ptr::null_mut();

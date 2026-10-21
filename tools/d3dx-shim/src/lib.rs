@@ -140,7 +140,8 @@ fn shim_path() -> Option<PathBuf> {
     unsafe {
         let mut h: *mut c_void = std::ptr::null_mut();
         let addr = std::ptr::addr_of!(MODULE_ANCHOR) as *const c_char;
-        let flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+        let flags =
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
         if GetModuleHandleExA(flags, addr, &mut h) == 0 || h.is_null() {
             return None;
         }
@@ -232,8 +233,7 @@ type PreprocessFn = unsafe extern "system" fn(
 
 type ReflectFn = unsafe extern "system" fn(LPCVOID, SIZE_T, REFIID, *mut *mut c_void) -> HRESULT;
 
-type StripShaderFn =
-    unsafe extern "system" fn(LPCVOID, SIZE_T, UINT, *mut *mut c_void) -> HRESULT;
+type StripShaderFn = unsafe extern "system" fn(LPCVOID, SIZE_T, UINT, *mut *mut c_void) -> HRESULT;
 
 struct Backend {
     module: *mut c_void,
@@ -295,9 +295,7 @@ fn load_backend() -> Option<Backend> {
             disassemble: unsafe { std::mem::transmute(sym("D3DDisassemble")) },
             get_blob_part: unsafe { std::mem::transmute(sym("D3DGetBlobPart")) },
             get_debug_info: unsafe { std::mem::transmute(sym("D3DGetDebugInfo")) },
-            get_inout_sig: unsafe {
-                std::mem::transmute(sym("D3DGetInputAndOutputSignatureBlob"))
-            },
+            get_inout_sig: unsafe { std::mem::transmute(sym("D3DGetInputAndOutputSignatureBlob")) },
             get_in_sig: unsafe { std::mem::transmute(sym("D3DGetInputSignatureBlob")) },
             get_out_sig: unsafe { std::mem::transmute(sym("D3DGetOutputSignatureBlob")) },
             preprocess: unsafe { std::mem::transmute(sym("D3DPreprocess")) },
@@ -392,29 +390,111 @@ unsafe fn count_defines(p: *const c_void) -> usize {
 //  الحراسة
 // ============================================================
 
-/// نستنتج الـprofile من نص الشيدر لمّا تجي NULL.
-unsafe fn guess_profile(p_src: LPCVOID, size: usize) -> &'static [u8] {
-    const PS: &[u8] = b"ps_3_0\0";
-    const VS: &[u8] = b"vs_3_0\0";
-    if p_src.is_null() || size == 0 {
-        return PS;
+const PS_PROFILE: &[u8] = b"ps_3_0\0";
+const VS_PROFILE: &[u8] = b"vs_3_0\0";
+
+/// نزيل تعليقات `//` و`/* */` قبل تحليل السمات — تعليق فيه `POSITION`
+/// ما لازم يغيّر نوع الشيدر. نُبقي الأسطر (نستبدل المحتوى بمسافات) حتى
+/// تبقى أرقام الأسطر في أخطاء المترجم صحيحة.
+fn without_comments(src: &[u8]) -> Vec<u8> {
+    let mut out = src.to_vec();
+    let n = out.len();
+    let mut i = 0;
+    while i < n {
+        if i + 1 < n && out[i] == b'/' && out[i + 1] == b'/' {
+            out[i] = b' ';
+            out[i + 1] = b' ';
+            i += 2;
+            while i < n && out[i] != b'\n' {
+                out[i] = b' ';
+                i += 1;
+            }
+        } else if i + 1 < n && out[i] == b'/' && out[i + 1] == b'*' {
+            out[i] = b' ';
+            out[i + 1] = b' ';
+            i += 2;
+            while i + 1 < n {
+                if out[i] == b'*' && out[i + 1] == b'/' {
+                    out[i] = b' ';
+                    out[i + 1] = b' ';
+                    i += 2;
+                    break;
+                }
+                if out[i] != b'\n' {
+                    out[i] = b' ';
+                }
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
     }
-    let bytes = std::slice::from_raw_parts(p_src as *const u8, size.min(64 * 1024));
-    let text = String::from_utf8_lossy(bytes).to_ascii_lowercase();
-    let pixel = text.contains("sv_target") || text.contains(": color") || text.contains("color0");
-    let vertex = text.contains("sv_position") || text.contains(": position");
-    if vertex && !pixel {
-        VS
-    } else {
-        PS
-    }
+    out
 }
 
-unsafe fn guard_target(target: LPCSTR, p_src: LPCVOID, size: usize) -> (*const c_char, bool) {
-    if !target.is_null() && *target != 0 {
-        return (target, false);
+/// هل توجد سمة `name` مسبوقة بنقطتين؟ يقبل `POSITION0` و`:POSITION`
+/// و`:  POSITION`، ويرفض اسم متغيّر عادي مثل `position`.
+fn has_semantic(text: &str, name: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = text[from..].find(name) {
+        let pos = from + rel;
+        let end = pos + name.len();
+        // بعد الاسم: مسموح رقم فهرس السمة (POSITION0)، وممنوع حرف/شرطة سفلية
+        let after_ok = match bytes.get(end) {
+            Some(c) => !c.is_ascii_alphabetic() && *c != b'_',
+            None => true,
+        };
+        if after_ok {
+            let mut j = pos;
+            while j > 0 && bytes[j - 1].is_ascii_whitespace() {
+                j -= 1;
+            }
+            if j > 0 && bytes[j - 1] == b':' {
+                return true;
+            }
+        }
+        from = end.max(from + 1);
     }
-    (guess_profile(p_src, size).as_ptr() as *const c_char, true)
+    false
+}
+
+/// نستنتج profile من نص الشيدر لمّا تجي NULL.
+///
+/// **قاعدة D3D9:** `POSITION` سمة مرحلة الرؤوس فقط؛ البكسل يستخدم `VPOS`
+/// ويُخرج `COLOR`/`DEPTH`. لذلك وجود `POSITION` (حتى لو معه `COLOR0`)
+/// يعني **vs_3_0**، وليس ps_3_0. هذا كان سبب خطأ LIMBO الجديد:
+/// شيدر رؤوس فيه POSITION + COLOR0، والكود القديم رآه «بكسل» بسبب COLOR0.
+fn profile_from_source(src: &[u8]) -> (&'static [u8], &'static str) {
+    let clean = without_comments(src);
+    let text = String::from_utf8_lossy(&clean).to_ascii_lowercase();
+    if text.contains("sv_position") || has_semantic(&text, "position") {
+        return (VS_PROFILE, "POSITION");
+    }
+    if text.contains("sv_target") || has_semantic(&text, "vpos") {
+        return (PS_PROFILE, "SV_Target/VPOS");
+    }
+    (PS_PROFILE, "default")
+}
+
+unsafe fn guess_profile(p_src: LPCVOID, size: usize) -> (&'static [u8], &'static str) {
+    if p_src.is_null() || size == 0 {
+        return (PS_PROFILE, "empty");
+    }
+    let bytes = std::slice::from_raw_parts(p_src as *const u8, size.min(64 * 1024));
+    profile_from_source(bytes)
+}
+
+unsafe fn guard_target(
+    target: LPCSTR,
+    p_src: LPCVOID,
+    size: usize,
+) -> (*const c_char, bool, &'static str) {
+    if !target.is_null() && *target != 0 {
+        return (target, false, "");
+    }
+    let (profile, why) = guess_profile(p_src, size);
+    (profile.as_ptr() as *const c_char, true, why)
 }
 
 unsafe fn guard_entry(entry: LPCSTR) -> (*const c_char, bool) {
@@ -442,8 +522,13 @@ pub unsafe extern "system" fn D3DCompile(
     ppCode: *mut *mut c_void,
     ppErrorMsgs: *mut *mut c_void,
 ) -> HRESULT {
-    let (target, t_sub) = guard_target(pTarget, pSrcData, SrcDataSize);
+    let (target, t_sub, t_why) = guard_target(pTarget, pSrcData, SrcDataSize);
     let (entry, e_sub) = guard_entry(pEntrypoint);
+    let guessed = if t_sub {
+        format!(" (NULL=>guessed:{t_why})")
+    } else {
+        String::new()
+    };
     log_line(&format!(
         "D3DCompile src={} size={} entry={}{} target={}{} flags=0x{Flags1:x}/0x{Flags2:x} defines={} include={}",
         if pSrcData.is_null() { "NULL" } else { "ok" },
@@ -451,7 +536,7 @@ pub unsafe extern "system" fn D3DCompile(
         cstr(entry),
         if e_sub { " (NULL=>main)" } else { "" },
         cstr(target),
-        if t_sub { " (NULL=>guessed)" } else { "" },
+        guessed,
         count_defines(pDefines),
         if pInclude.is_null() { "null" } else { "set" },
     ));
@@ -469,7 +554,10 @@ pub unsafe extern "system" fn D3DCompile(
         return E_FAIL;
     };
     let Some(f) = b.compile else {
-        log_line(&format!("D3DCompile: {} has no D3DCompile => E_FAIL", b.path));
+        log_line(&format!(
+            "D3DCompile: {} has no D3DCompile => E_FAIL",
+            b.path
+        ));
         return E_FAIL;
     };
 
@@ -561,10 +649,7 @@ pub unsafe extern "system" fn D3DAssemble(
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn D3DCreateBlob(
-    Size: SIZE_T,
-    ppBlob: *mut *mut c_void,
-) -> HRESULT {
+pub unsafe extern "system" fn D3DCreateBlob(Size: SIZE_T, ppBlob: *mut *mut c_void) -> HRESULT {
     let Some(b) = backend() else {
         return E_FAIL;
     };
@@ -785,3 +870,69 @@ pub static JISR_D3DX_SHIM_V1: [u8; 17] = *b"JISR_D3DX_SHIM_V1";
 // نمنع تحذير S_OK غير المستخدم في بعض إعدادات البناء
 #[allow(dead_code)]
 const _: HRESULT = S_OK;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn position_wins_over_color_output() {
+        // نفس شكل شيدر LIMBO: رؤوس فيه POSITION + COLOR0/TEXCOORD0.
+        // الكود القديم كان يختاره ps_3_0 بسبب color0 ⇒ أخطاء X4502.
+        let src = br#"
+            struct VS_OUT {
+                float4 pos : POSITION;
+                float4 col : COLOR0;
+                float2 uv  : TEXCOORD0;
+            };
+            VS_OUT main(float4 p : POSITION) {
+                VS_OUT o;
+                o.pos = p; o.col = 1; o.uv = 0;
+                return o;
+            }
+        "#;
+        assert_eq!(profile_from_source(src).0, VS_PROFILE);
+    }
+
+    #[test]
+    fn pixel_shader_stays_pixel() {
+        let src = br#"
+            sampler2D s;
+            float4 main(float2 uv : TEXCOORD0) : COLOR0 { return tex2D(s, uv); }
+        "#;
+        assert_eq!(profile_from_source(src).0, PS_PROFILE);
+    }
+
+    #[test]
+    fn position_in_comment_is_ignored() {
+        let src = br#"
+            // input : POSITION is handled by the vertex stage
+            float4 main(float2 uv : TEXCOORD0) : COLOR0 { return float4(uv, 0, 1); }
+        "#;
+        assert_eq!(profile_from_source(src).0, PS_PROFILE);
+    }
+
+    #[test]
+    fn no_space_after_colon_and_indexed_semantic() {
+        let src = br#"float4 main(float4 p:POSITION0) : POSITION { return p; }"#;
+        assert_eq!(profile_from_source(src).0, VS_PROFILE);
+    }
+
+    #[test]
+    fn identifier_named_position_is_not_a_semantic() {
+        let src = br#"
+            float4 main(float2 uv : TEXCOORD0) : COLOR0 {
+                float4 position = float4(uv, 0, 1);
+                return position;
+            }
+        "#;
+        assert_eq!(profile_from_source(src).0, PS_PROFILE);
+    }
+
+    #[test]
+    fn vpos_is_pixel() {
+        let src = br#"float4 main(float2 p : VPOS) : COLOR0 { return float4(p, 0, 1); }"#;
+        assert_eq!(profile_from_source(src).0, PS_PROFILE);
+        assert_eq!(profile_from_source(src).1, "SV_Target/VPOS");
+    }
+}
