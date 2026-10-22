@@ -202,6 +202,122 @@ D:\apple translate\
 
 ## 11) سجل الجلسات (الأحدث أولاً)
 
+### الجلسة #43 — 2026-10-22 (تشغيل الألعاب المستقلة: خط أنابيب كامل + حلقة تشخيص بعد الانهيار)
+- **`runner.rs` (جديد):** فحص الـPE ⇒ خطة الطبقات (`auto::plan_with_facts`) ⇒ ترجمة الخطة إلى تجاوزات DLL ⇒ `ensure_layer`/`ensure_renderer` ⇒ بيئة تشغيل ⇒ استخراج تقارير Wine الكاملة ⇒ سلّم التركيبة التالية. 6 اختبارات.
+- **`game.rs`:** `game_launch` صار غلافاً حول `launch(app, id, attempt)`؛ ملف التعريف يُحفظ داخل `games.json` نفسه (`GameMeta.profile`) لا في ملف جانبي؛ `d3dx::deploy_files` قبل كل تشغيل؛ مفتاح ثابت لكل لعبة (`runner::appid_for`) لعلامة الطبقة وتجاوزات الملف.
+- **بعد الانهيار:** تقرير ⇒ `triage` ⇒ `next_candidate` ⇒ حفظ ⇒ إعادة تشغيل تلقائية (≤3، `spawn_retry` لتجنّب دورة النوع/Send). **الحارس يبقى مفعّلاً دائماً**: `runner::overrides` يفرض `native` للمترجم حين تكون علامة الحارس موجودة — لا تراجع عن إصلاح LIMBO.
+- **الموانع تحذير لا قفل:** kernel anti-cheat / DX12 / DX8 / DRM تُسجَّل في السجل ويُترك للمستخدم التجربة — نفس سلوك المحرك التجاري.
+- **البوابات:** `cargo fmt` · `cargo check` نظيف · `cargo test --lib` → **206 passed / 0 failed / 3 ignored** · `npx tsc --noEmit` · `npm run build` (449 modules · 451.83 kB) · `vendor/check-licenses.sh` ✔ · graphify 2075 عقدة / 4376 حرف.
+
+### الجلسة #42 — 2026-10-22 (الإغلاق: تصدير قاعدة البروفايلات + فحص ذاتي لكل الأنظمة + خريطة النظام النهائي + README)
+- **تصدير البروفايلات**: `c4p::to_c4p()` يكتب قواعدنا بصيغة c4p (نفس مخطط CrossOver) ⇒ `compat_export` ⇒ زر «صدّر قاعدة البروفايلات» في لوحة التوافق ⇒ المشاركة بين المستخدمين سهلة، والمحتوى ملكنا.
+- **فحص ذاتي موسّع** (`lib.rs` selftest): يفحص الآن الأنظمة كلها ويكتب النتيجة في السجل — `compat_store` · `rules_db` · `fixes_db` · `graphics_backends` (مع حالة D3DMetal) · `bottle_templates`.
+- **الخريطة النهائية** في `docs/CROSSOVER_TEARDOWN.md` §8: جدول كامل (نظام CrossOver ↔ نظامنا ↔ الملف ↔ الحالة) + قائمة الأوامر الجديدة + البوابات.
+- **README** صار يشرح الأنظمة الثمانية للمستخدم العادي.
+- **البوابات النهائية:** `cargo fmt --check` ✔ · `cargo test --lib` → **191 passed / 0 failed / 3 ignored** ✔ · `cargo check` ✔ · `npx tsc --noEmit` ✔ · `npm run build` ✔ (451.83 kB js) · `vendor/check-licenses.sh` ✔
+- **الحجم:** 10 وحدات Rust جديدة (5,078 سطر) + 3 ملفات واجهة معدّلة + 3 وثائق + سكربتان في `vendor/` + CI لكل PR.
+
+### الجلسة #41 — 2026-10-22 (إغلاق الأنظمة الناقصة من CrossOver: اختصارات macOS + نظام الفحص والإصلاحات + مساعد القارورة + CI لكل PR)
+- **اختصارات macOS** (`src-tauri/src/menu_sync.rs`, 9 اختبارات): نسخة جسر من خط `cxmenu` عندهم — نطلب من `winemenubuilder.exe` توليد مدخلات Start Menu داخل القارورة، نحلّلها (صيغة XDG desktop)، ونبني لكل واحدة **حزمة `.app`** كاملة (Info.plist + مشغّل shell + أيقونة) ونسجّلها مع LaunchServices. أمر: `menu_sync_bottle`.
+- **نظام الفحص والإصلاحات** (`src-tauri/src/fixes.rs` + `resources/fixes/fixes.xml`): نسختنا من `cxdiag` + `cxfixes` — ست فحوص (GStreamer · 32-بت · مسار الرسم · DXVK · Rosetta · msync) بملف XML **بصيغتنا**، و`Probe` يُحقن في دوال نقية ⇒ اختبارات بلا ماك. أمر: `fixes_check` + `fixes_set_msync`.
+- **مساعد القارورة** (`resources/bottle-helper/BottleHelper.swift` + `build.sh`): نفس فكرة CrossOver's "Bottle Helper" — تطبيق macOS صغير يُثبَّت **داخل القارورة** ويسجّل نفسه كمعالج Apple Events (Open/Print/URL) ويعيد التوجيه لتطبيقنا عبر `jisr://open`. أمر: `helper_install`.
+- **إعدادات القارورة** (`src-tauri/src/bottle_settings.rs`): طبقة INI عامة per-bottle (`<prefix>/crossover.conf`) — رسم `graphics_backend` و`fixes` صارا يستخدمانها (بدل تكرار المنطق).
+- **CI لكل PR** (`.github/workflows/ci.yml`): Rust (fmt + test + check) + الواجهة (tsc + build) + **بوابة التراخيص** — على ubuntu (سريع) وبلا macOS.
+- **الواجهة:** `FixesPanel` (المشاكل + إجراءات سريعة: msync + بناء الاختصارات) + `RulesEditor` + `CompatPanel` + `GraphicsBackendCard`.
+- **البوابات:** `cargo fmt --check` ✔ · `cargo test --lib` → **189 passed / 0 failed / 3 ignored** ✔ · `cargo check` ✔ · `npx tsc --noEmit` ✔ · `npm run build` ✔ · `vendor/check-licenses.sh` ✔
+- **دروس:** (١) الماكرو تطلب `Serialize` على أنواع إرجاع الأوامر. (٢) `check` في مخطط الفحوص سمة على `<error>` (مش عنصر ابن) — خلط بين الاثنين كسر الاختبارات. (٣) `cab` 0.6 بلا `unpack`.
+
+### الجلسة #40 — 2026-10-22 (ورقة Metal: تشخيص مُثبَت لسورس Wine + خطة إصلاح + محرّر قواعد في الواجهة)
+- **ورقة Metal** (`docs/METAL-PORT.md`): فُحص سورس Wine فعلياً (نزّلنا `dlls/winemac.drv/` من وسوم 11.0/11.2/11.5/11.8/11.10/11.12/11.15/11.18/11.20 + master) وقُرئ الكود سطر سطر.
+  - **التشخيص مُثبَت:** `dlls/winemac.drv/window.c` (master سطر 1159) `macdrv_client_surface_acquire_metal_swapchain()` — لو النافذة child في **عملية أخرى** ⇒ `FIXME("Cross-process child window Metal swapchains are not implemented")` ⇒ `false`؛ و`dlls/winemac.drv/vulkan.c:44` يحوّلها إلى `VK_ERROR_INCOMPATIBLE_DRIVER` ⇒ **نافذة سوداء** (نفس نص FIXME اللي كنّا نعرفه من ملاحظاتنا).
+  - **متى أُضيف:** Metal swapchain للنوافذ العادية دخل **Wine 11.12** (11.0/11.2/11.5/11.8/11.10 بلا أثر) ⇒ لو محرّكنا على 11.0 فالطريق Metal غير موجود أصلاً. وحالة child عبر العمليات **ما زالت FIXME في master اليوم** ⇒ ما فيه حل جاهز في أي Wine released.
+  - **الطبقات المقترحة:** (أ) بلا fork: تأكّد 11.12+ + اجعل نافذة CEF في نفس العملية (`--single-process`) + `--in-process-gpu --use-angle=vulkan` (لأن الـ FIXME يُطلق فقط عبر العمليات) ⇒ قد يحلّ 80٪ اليوم. (ب) patch حقيقي: طلب خادم جديد `set_client_surface_metal_layer` + CAMetalLayer عبر IOSurface مشترك. (ج) بدائل: ادمج العملية، أو افصل مسار الرسم للعبة عن الواجهة.
+  - **مقارنة مع CrossOver:** الرقع عندهم `my_macdrv_*` (Metal device/view/layer) + `WineMetalLayer::nextDrawable` يمرّر `d3dmetal_client_surface` للخادم — من تفكيك `winemac.so`.
+- **محرّر القواعد في الواجهة** (`RulesEditor`): يعرض `rules_list` (المطابقات + أنواع الحيل) + محرّر XML + `rules_save` (تحقّق قبل الحفظ). وأُضيفت مفاتيح i18n (ar/en) + `rules_list`/`rules_save` في `api.ts`.
+- **البوابات:** `cargo fmt --check` ✔ · `cargo test --lib` ✔ · `cargo check` ✔ · `npx tsc --noEmit` ✔ · `npm run build` ✔ · `vendor/check-licenses.sh` ✔
+- **درس:** `Get-Content -Raw | Set-Content` كسر ترميز عربي في `i18n.tsx` (ظهر `وسوم التشغيل`) ⇒ كل تعديلات النصوص العربية تُكتب بأدوات UTF‑8 مباشرة، ومراجعة `git diff` قبل الاعتماد.
+
+### الجلسة #39 — 2026-10-22 (الواجهة: مُبدِّل محرّك الرسوميات لكل قارورة + لوحة التوافق، وبذور قاعدة `jisrdb` + أوامر Tauri كاملة)
+- **الواجهة (React):**
+  - `GraphicsBackendCard` في صفحة القوارير — مُبدِّل (Segmented) لاختيار المحرك: **تلقائي · DXVK · WineD3D · DXMT · D3DMetal**، مع سطر يوضّح إن D3DMetal **مثبّت/غير مثبّت** على جهاز المستخدم (GPTK من Apple).
+  - `CompatPanel` — **لوحة التوافق**: بحث حيّ (debounce 180ms) في قاعدة البروفايلات المحلية + عدّادات (بروفايلات/تقييمات) + عرض medal + قالب القارورة.
+  - `src/api.ts` — طبقة API جديدة: `getGraphicsBackends` · `getGraphicsBackend` · `setGraphicsBackend` · `d3dmetalPresent` · `compatSearch` · `compatGet` · `compatStats` · `compatImport`.
+  - `src/i18n.tsx` — 22 مفتاحاً جديداً (عربي + إنجليزي)؛ و`src/App.css` — صنف `.text-input` (أول حقل بحث في التطبيق).
+- **بذور `jisrdb`** (`src-tauri/resources/compat/jisr-seed.c4p` + `include_str!`): 4 بروفايلات **بياناتنا نحن** من توثيقنا الميداني: `com.jisr.steam` (overlay + msync + DXVK) · `com.jisr.cef` (نوافذ child لا تُعرض Metal في Wine الأصلي ⇒ CEF software/single) · `com.jisr.directx9` (DXVK إجباري — E5000 من GLSL آبل) · `com.jisr.directx12` (vkd3d-proton+MoltenVK، أو D3DMetal إن ثبّته المستخدم). تُكتب مرة أول ما يكون المخزن فارغ، والمستخدم يقدر يمسحها/يعدّلها.
+- **أوامر القواعد:** 
+ules_list (عرض كل قواعدنا) و
+ules_save (تحقّق من صحة XML قبل الحفظ) ⇒ محرّر القواعد صار جاهز للواجهة.
+- **درس:** أي نوع يرجعه أمر Tauri لازم `Serialize` — وإلا أخطاء الماكرو الغامضة. و`cab` 0.6 بلا `unpack` ⇒ CAB يُنفَّذ داخل Wine.
+- **البوابات:** `cargo fmt --check` ✔ · `cargo test --lib` → **170 passed / 0 failed / 3 ignored** ✔ · `cargo check` ✔ · `npx tsc --noEmit` ✔ · `npm run build` ✔ (445.92 kB js / 14.61 kB css) · `vendor/check-licenses.sh` ✔
+- **المتبقي:** محرّر القواعد في الواجهة (إضافة/تعديل `.jdb`) · `jisrdb` بمحتوى مجتمعي أكبر · **ورقة Metal** (PR لمحرّك Wine).
+
+### الجلسة #38 — 2026-10-22 (محرّك التثبيت الفعلي: `install_exec.rs` + أوامر Tauri للمحرك/القواعد/التوافق + ربط كل شي)
+- **الهدف:** تحويل «نسخ طريقةهم» من معمارية إلى تنفيذ فعلي: تشغيل داخل قارورة حقيقية.
+- **الجديد `src-tauri/src/install_exec.rs`** (مقابل `AIECore` عندهم):
+  - `download()` — تنزيل بـ`reqwest` + **كاش بمفتاح URL** (SHA-256 بدل MD5 عندهم — نفس الفكرة بلا hash ضعيف) + **تحقّق بصمة `sha256:hex`** + ملف مؤقت `.part` + رن-renaming ذرّي.
+  - `uncompress()` — `tar.gz` / `tgz` / `tar.xz` (وcab يُنفَّذ داخل Wine مباشرة مثل CrossOver).
+  - `run_wine()` — تشغيل أمر داخل Wine بـ`WINEPREFIX` + مهلة + التقاط stderr في رسالة الخطأ.
+  - `reboot()` — `wineboot.exe -- --end-session --shutdown --force --kill` (نفس أمرهم).
+  - `copy_tree()` — نسخ ملفات/أشجار، و`dry_run()` لمعاينة الخطوات قبل التنفيذ.
+  - `ExecReport`/`StepReport` + **توقّف عند أول فشل** (سلوك مثبّتات حقيقي).
+  - أوامر Tauri: `install_preview(appids)` (معاينة) و`install_run(appids, bottle)` (تنفيذ).
+- **توسعة المخطّط** (`install_plan.rs`): خطوة `Uncompress` جديدة (تعادل `_main_uncompress` عندهم) + `AppRequest.uncompress` + ربطها بين التنزيل والتشغيل.
+- **أوامر Tauri جديدة:** `graphics_backend_get/set` (مفتاح لكل قارورة) · `graphics_backends` (قائمة + هل D3DMetal متاح) · `d3dmetal_present` · `compat_stats/search/get/import` · `install_preview/run`.
+- **مثال قواعد** `src-tauri/resources/rules/example.jdb` (صيغتنا، examples معطّلة) + `src-tauri/resources/compat/default.c4p`.
+- **دروس من الأخطاء:** (١) `cab` 0.6 ما عنده `unpack` — الـ API الفعلية `Cabinet::new` + `folder_entries` + `read_file` ⇒ cab يُنفَّذ داخل Wine بدل فكّه عندنا. (٢) أوامر Tauri تحتاج `Serialize` على أنواع الإرجاع (وإلا أخطاء غامضة من الماكرو). (٣) `dry_run` يرجّع Vec لا ExecReport — لا تخلط.
+- **البوابات:** `cargo fmt --check` ✔ · `cargo test --lib` → **169 passed / 0 failed / 3 ignored** ✔ · `cargo check` ✔ · `vendor/check-licenses.sh` ✔
+- **المتبقي:** واجهة React (مُبدِّل المحرك + لوحة التوافق + محرّر القواعد) · `jisrdb` ببروفايلات مجتمعية · ورقة Metal (PR لمحرّك Wine).
+
+### الجلسة #37 — 2026-10-21 (ضمان «كل شيء مجاني» كآلة لا كوعد: بيان المصادر + بوابة تراخيص/استقلال في CI + توثيق)
+- **القرار:** جسر **مجاني بالكامل**: لا ترخيص، لا خادم تفعيل، لا اشتراك، لا تتبّع. الكود MIT وكل الاعتماديات مفتوحة (أو اختيارية ومجانية).
+- **ما بُني:**
+  1. `docs/FREE.md` — بيان كل مكوّن: الدور + الترخيص + التكلفة، + جدول «ما لا نفعله» (لا خادم ترخيص، لا تحقق تفعيل، لا تتبّع، لا بيع)، + كيف توصل لأعلى أداء مجاناً (D3D12 ← GPTK يثبّته المستخدم من Apple مجاناً).
+  2. `vendor/check-licenses.sh` — **بوابة механиكية** تفشل النشر إذا: (أ) مكوّن خارجي بلا `LICENSE`/`COPYING`، (ب) رابط `codeweavers.com` في كودنا، (ج) مفاهيم ترخيص/تفعيل في المنطق، (د) **بايتات مملوكة** داخل المستودع (`.pyc`/`.tie`/`D3DMetal.framework`/`.c4p` غير مسموح)، (هـ) ترخيص التطبيق ليس MIT، (و) تبعيات Rust برخص copyleft داخل الـlock.
+  3. `.github/workflows/macos.yml` — خطوة «🆓 بوابة: كل شيء مجاني ومفتوح» قبل تجهيز ملفات النشر (تفشل = لا نشر).
+  4. `README.md` — فقرة الترخيص صارت: MIT + «مجاني للأبد» + روابط `FREE.md` و`CROSSOVER_TEARDOWN.md`.
+- **نتيجة الفحص على المستودع الحالي:** ✔ كل الفحوصات نجحت (لا روابط CodeWeavers، لا مفاهيم ترخيص، لا بايتات مملوكة، LICENSE=MIT، لا تبعيات copyleft).
+- **ملاحظة تصميم:** ذكر «CodeWeavers» كسلالةِ محرّك Whisky في نصوص الواجهة **مقصود ومفيد** (نُ للمستخدم真相: انحدار المحرك) — لذلك فحص الاستقلال يفحص **الروابط والخوادم** لا ذكر الاسم.
+- **الأثر على خارطة الطريق:**既然 كل شيء مجاني ⇒ لا نحتاج بوابة تفعيل ولا خادم ⇒ نركّز على **الجودة والأداء**: محرك D3D12 (vkd3d-proton + MoltenVK، وGPTK اختياري)، طبقة Metal (PR لمحرّك Wine)، وقاعدة توافق مجتمعية (`jisrdb`).
+- **البوابات:** `bash vendor/check-licenses.sh` ✔ · `cargo fmt --check` ✔ · `cargo test --lib` → 161 passed / 0 failed / 3 ignored ✔ · `cargo check` ✔
+
+### الجلسة #36 — 2026-10-21 (بناء «نسخة جسر» بمعمارية CrossOver: محرك رسوميات لكل قارورة + محرك قواعد لكل لعبة + 13 قالب قارورة + سكربت جلب السورس المفتوح)
+- **الطلب:** «ننسخ طريقتهم» ثم «انسخ كودهم» —<Response ?>** ما نسخنا proprietary (بايت-كود CodeWeavers + `crossover.tie` + D3DMetal من Apple) ولا شلنا ملفات ترخيص LGPL/GPL/Apache (خرق من أول سطر وLGPL تفرض السورس). **بدلاً من ذلك: نفس المكوّنات المفتوحة من نفس مصادرها (سورس، بإصداراتها) + إعادة كتابة أنظمتهم proprietary بأنفسنا + D3DMetal يُثبّته المستخدم من Apple.** النتيجة: نفس المعمارية، مستودع صالح للنشر.
+- **وحدات جديدة (كلها Rust، بلا تبعيات جديدة غير `quick-xml`):**
+  - `src-tauri/src/graphics_backend.rs` — **طريقة CrossOver كاملة**: اختيار محرك الرسوميات لكل قارورة (`auto/dxvk/wined3d/dxmt/d3dmetal`) يُحفظ في `crossover.conf` داخل البوتل (مثل `cxbottle.conf`Their) + كتابة `HKCU\Software\Wine\Direct3D\renderer=vulkan` و`DllOverrides` (native/builtin) + `CX_GRAPHICS_BACKEND`/`CX_ACTIVE_GRAPHICS_BACKEND` + كشف D3DMetal المثبّت من المستخدم + marker file.
+  - `src-tauri/src/compat_rules.rs` — **محرك القواعد** (نسخة `cxcompatdb.so` عندنا، **خارج Wine**): مطابقة `steam_game_id`/`path_suffix`/`product` + hacks (`graphics_backend`, `env_vars`, `append_args`, `dll_overrides`) — أول قاعدة مطابقة تفوز (مثلهم).
+  - `src-tauri/src/bottle_template.rs` — **13 قالب قارورة** (win98…win11_64: 7×32-بت + 6×64-بت) + خطة الإنشاء (INF مرّتين لـ Wow64 مثلهم) + INF خاصتنا + `cxbottle.conf` خاصتنا.
+  - `src-tauri/src/game.rs` — موصول فعلياً: عند كل تشغيل نقرأ إعداد البوتل → نطبّق القواعد → نكتب الريجستري + البيئة + نطبع المحرك في السجل.
+  - `vendor/fetch-sources.sh` — يجلب **سورس** Wine 11.0 / DXVK v2.4.1 / DXMT / MoltenVK v1.2.10 / vkd3d-proton / msync / Sparkle 2.4.1 **مع إبقاء ملفات الترخيص** + `vendor/SOURCES.md`.
+  - `src-tauri/resources/rules/example.jdb` + `src-tauri/resources/compat/default.c4p` — صيغتنا وبياناتنا.
+- **البوابات:** `cargo fmt --check` ✅ · `cargo test --lib` → **161 passed / 0 failed / 3 ignored** ✅ (كان 130 قبل الجلسة) · `cargo check` ✅. الواجهة (React/TS) لم تُمس.
+- **درس عملي (Python/PowerShell):** لا تستخدم `Get-Content -Raw` + `Set-Content` على ملفات فيها عربي — الـ encoding يخرّبها (mojibake). استعمل أدوات الكتابة المباشرة أو Python بـ `encoding='utf-8'`.
+- **المتبقي:** تنفيذ `TaskKind` على الأرض (تنزيل/فك/تشغيل/ريجستري) · واجهة لاختيار المحرك والقواعد · ورقة Metal (PR لمحرّك Wine: `WineMetalView/WineMetalLayer`) · `jisrdb` ببروفايلات مجتمعية.
+
+### الجلسة #35 — 2026-10-21 (تفكيك CrossOver 26.3.0 for macOS كامل + بناء محرك توافق عندنا: `c4p.rs` + `compat.rs` + `install_plan.rs`)
+- **الطلب:** "فككه بالكامل واستخدم كل الأدوات، شوف مشاريع مفتوحة المصدر تساعد في RE، ونعمل نسخة جديدة منه."
+- **نزّلنا الحزمة:** `crossover-26.3.0.zip` (387,192,026 B) من `media.codeweavers.com/pub/crossover/cxmac/demo/` → `CrossOver.app` (982.3MB، 8,332 ملف، SHA-256 `1b40a0da…a705b69`، إصدار `26.3.0.39832` بتاريخ `2026/07/13`).
+- **الأدوات المستخدمة:** REA 6.7.0 (artifact graph: 6,611 node / 8,332 occurrence / 0 تناقض + dylib graph) · **Ghidra 12.1.4** (من `D:\gogo gaga\tools\ghidra`) على Mach-O arm64 (5,979 دالة · 34,365 رمز · تفكيك `_InitializePython` و`CXSetupLib::initialize`) · radare2 5.9.8 · Python 3.13 لتفكيك 50 `.pyc` · die. **مزوّد REA الأصلي لا يدعم Mach-O على Windows** (يحتاج macOS) فاستُخدم Ghidra مباشرة.
+- **12 وكيل RE متوازٍ** كتبوا 12 تقريراً في `E:
+ea_lab
+eports..12_*.md` + التقرير الموحّد `00_MASTER.md` (كله **خارج git** كمنهج REA).
+- **أهم النتائج:**
+  1. **CrossOver على الماك هجين ObjC + Python 3.13 داخل نفس العملية**: `_InitializePython` يضبط `PYTHONPATH` ويستورد `cxutils` ويشغّل `libcxsetupbase.py`/`libcxsetup.py`، ثم `CXSetupLib::initialize` يبحث عن أصناف Python بـ`NSClassFromString` (18 صنفاً).
+  2. **محرك Wine عندهم 11.0** (`wine-11.0-8726-g2e2f5fca349`) و**x86_64 فقط ⇒ Rosetta إلزامي** عندهم مثلنا.
+  3. **`winemac.so` = macdrv + رقع CodeWeavers** (`my_*`): Metal device/view/layer + شيم Win32 للـ HiDPI + شيم ريجستري. و`WineMetalLayer : CAMetalLayer` يعترض `nextDrawable` ويمرّر `d3dmetal_client_surface` لخادم Wine. **⇒ الحل الجذري لشاشة ستيم السوداء عندنا هو port هذه الطبقة إلى Gcenx، لا CEF wrapper.**
+  4. **تبديل محرك الرسوميات لكل تطبيق يتم داخل Wine** عبر `cxcompatdb.so` + `CX_GRAPHICS_BACKEND` (5 أنواع hacks) ⇒ نبني نفس المخطط **خارج Wine** عندنا.
+  5. **قاعدة CrossTie**: 5,308 تطبيق · 90,890 medal · 4,601 install profile · 1,828 بروفايل فيه `steamid` ⇒ صيغتنا `jisrdb`.
+  6. **D3DMetal = Apple GPTK 3.0** (مغلق، macOS 15.4+)، DXMT v0.72 (D3D11 + backend `airconv`)، MoltenVK 1.2.10، DXVK نسخة **أحدث من 1.5.1** (تحقّق بالهاش: MD5 لا يطابق جدول القالب).
+  7. **تصحيحات تحقّقنا منها شخصياً**: عدد القوالب **13** لا 12 · Hardened Runtime **مفعّل** بعلم `CS_RUNTIME_NOLIBVALIDATION` · وسام الـ medal **نص العنصر** لا سمة · `crossover.tie` فيه 1,828 `steamid`.
+  8. WoW64 = **Binary Translation حديث** (`wow64.dll`/`wow64cpu.dll`/`wow64win.dll`) + دعم 16-بت.
+- **ما بنيناه (داخل `src-tauri`):**
+  - `src/c4p.rs` — محرك بروفايلات التوافق (صيغة c4p/tie) بلا تبعيات غير `quick-xml` (MIT): streaming، بحث، medals، إبطال، منع path traversal. **اختبار على قاعدة CrossOver الحقيقية (23MB) يقرأها في 2.5 ثانية.**
+  - `src/install_plan.rs` — مخطّط تثبيت (مقابل AIE): رسم graph، كشف الدورات، ترتيب تنفيذي حتمي، 11 اختبار.
+  - `src/compat.rs` — مخزن بروفايلاتنا (`~/Library/Application Support/Jisr/compat`) + `import` يتحقق قبل النسخ + 4 أوامر Tauri، 6 اختبارات.
+  - `docs/CROSSOVER_TEARDOWN.md` — المخطط العام + خارطة التنفيذ + تصحيحات الافتراضات.
+- **البوابات:** `cargo fmt` ✅ · `cargo test --lib` → **130 passed / 0 failed / 3 ignored** ✅ · `cargo check` ✅. الواجهة (React/TS) **لم تُمس** ⇒ لم يُشغَّل `tsc/build` (لا تغيير فيها).
+- **الحدّ الصريح:** لا كسر ترخيص ولا تعديل حماية ولا نسخ كود CodeWeavers. `D3DMetal` + `crossover.tie` + البايت-كود proprietary **ممنوع النسخ**؛ نبني أنظمة مماثلة من معماريتهم + Wine/DXVK/DXMT/MoltenVK/vkd3d. `tie.pub`/البيانات استُعملت **للبحث فقط**.
+- **المتبقي:** ورقة Metal (port إلى Gcenx) · `compat_rules.rs` (تنفيذ الـ hacks) · 13 قالب قارورة عندنا · تنفيذ `TaskKind` على الأرض.
+
 ### الجلسة #34 — 2026-10-21 (أداة التطوير: تثبيت REA — مهارة هندسة عكسية + خادم MCP كامل داخل OpenCode)
 - **الطلب:** «حمل skill دي بالكامل ب mcp بكل شيء» — من `github.com/morluto/rea` (REA — Reverse Engineer Anything).
 - **ما تم:** `npx rea-agents@6.7.0 setup --client opencode` (خطة مُراجَعة بـ`--dry-run` أولاً) ⇒ (١) تسجيل خادم MCP باسم `rea` في `~/.config/opencode/opencode.json` ضمن جدول `mcp.servers` — الأمر `cmd.exe /d /c npx -y rea-agents@6.7.0 mcp` (مُثبَّت على إصدار محدّد، لا `@latest`) مع نسخة احتياطية `opencode.json.rea.backup`؛ (٢) تثبيت المهارة `reverse-engineer-anything` **v42** (تعليمات + ٦ مراجع) في `~/.agents/skills/`؛ (٣) مزامنة نسخة OpenCode في `~/.config/opencode/skills/` لتطابق النسخة الموقّعة (كانت من `main` بأمر `@latest` ⇒ ثبّتّا `6.7.0` + حقل `tool_count: 207`).
