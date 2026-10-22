@@ -215,7 +215,7 @@ pub(crate) fn wine_bin() -> Option<PathBuf> {
 ///   (وعد «كل شيء داخل القارورة» + ما نلوّث ~/Applications)
 /// • `steamservice=d` يمنع أخطاء خدمة ستيم داخل Wine (لعميل ستيم فقط)
 /// • `WINEMSYNC=1` يفعّل msync (مزامنة Mach) إن كانت مبنية في المحرك —
-///   أكبر مكسب أداء مجاني على Apple Silicon لدى Whisky/CrossOver
+///   أكبر مكسب أداء مجاني على Apple Silicon في محركات Wine الحديثة
 /// • ستيم فقط: لغة UTF-8 إنجليزية (CEF ينهار مع بعض اللغات) + تعطيل sandbox
 pub(crate) fn apply_wine_env(cmd: &mut tokio::process::Command, steam: bool) {
     let overrides = if steam {
@@ -566,10 +566,15 @@ async fn run_wineboot(id: &str) -> Result<(), String> {
             ),
         }
     }
+    // قالب القارورة: نسخة ويندوز + مكوّنات D3D + الخطوط + استعادة y:
+    // (غير حرج: لو فشل، القارورة تبقى صالحة ونكتب السبب في سجل التطوير)
+    if let Some(wine) = wine_bin() {
+        if let Err(e) = crate::bottle_template::provision(&wine, &prefix, id) {
+            crate::debuglog::write("warn", "bottle", &format!("template provision: {e}"));
+        }
+    }
     Ok(())
 }
-
-/// المحرك المختار حالياً (للواجهة)
 #[tauri::command]
 pub fn engine_choice() -> String {
     chosen_engine_id()

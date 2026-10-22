@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  مثال على صيغة قواعد جسر (jisrdb / .jdb).
+  كل سطر <rule> = قاعدة تُطابَق ثم تُنفَّذ.
+
+  أنواع المطابقة:
+    <match steam_game_id="440"/>        ← معرّف ستيم
+    <match path_suffix="\game.exe"/>     ← نهاية مسار الملف التنفيذي
+    <match product="jisr" platform="Mac"/>
+
+  أنواع الحيل (hacks):
+    graphics_backend : يكتب CX_GRAPHICS_BACKEND + يبدّل DllOverrides
+    env_vars         : متغيّرات بيئة (set = قيمة ثابتة، by_setting = مشتقّة)
+    append_args      : وسائط تشغيل (append/insert/forbidden/required)
+    dll_overrides    : تجاوزات DLL داخل الريجستري (dll=قيمة، load_order=ترتيب)
+
+  ملاحظة: أول قاعدة مطابقة تفوز لكل نوع حيلة. القواعد تتكرر في نفس الملف
+  بالترتيب — لو أردت قاعدة أقوى ضعها أولاً.
+-->
+<jdb>
+  <rules>
+    <!-- مثال (معطّل): لعبة DX12 معروفة تحتاج مسار 64-بت كامل -->
+    <!--
+    <rule>
+      <match steam_game_id="1245620"/>
+      <hack type="graphics_backend" backend="dxvk" force="true"/>
+      <hack type="env_vars" set="DXVK_ASYNC=1" by_setting="VKD3D_CONFIG=report_spill_stats"/>
+    </rule>
+    -->
+
+    <!-- مثال (معطّل): ألعاب Direct3D9 القديمة تعمل أسرع على WineD3D -->
+    <!--
+    <rule>
+      <match path_suffix="\hl2.exe"/>
+      <hack type="graphics_backend" backend="wined3d" force="true"/>
+    </rule>
+    -->
+
+    <!-- مثال (معطّل): تجاوز DLL واحد فقط -->
+    <!--
+    <rule>
+      <match steam_game_id="620"/>
+      <hack type="dll_overrides" dll="winemenubuilder=disabled" load_order="d3d11,d3d9"/>
+      <hack type="append_args" append="-novid" forbidden="-windowed"/>
+    </rule>
+    -->
+  </rules>
+</jdb>

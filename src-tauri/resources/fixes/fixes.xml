@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  قواعد التشخيص والإصلاح عندنا (مخطّطنا، مبني على تجاربنا الميدانية).
+  كل <error> = فحص واحد + وصف المشكلة + طريقة حلّها.
+  الأنواع المدعومة لـ check:
+    gstreamer · 32bit · renderer · dxvk · rosetta · msync
+-->
+<fixes>
+  <error id="MissingGStreamer" level="error" check="gstreamer"
+         title="GStreamer ناقص"
+         desc="محرّك Wine يحتاج GStreamer لتشغيل الفيديو والصوت داخل الألعاب."
+         fix="ثبّته: brew install --cask gstreamer"
+         command="brew install --cask gstreamer"/>
+
+  <error id="NoRosetta" level="error" check="rosetta"
+         title="Rosetta 2 ناقص"
+         desc="محرك Wine عندنا x86_64 بالكامل — بدون Rosetta لا يشتغل أي شيء على Apple Silicon."
+         fix="ثبّته: softwareupdate --install-rosetta --agree-to-license"
+         command="softwareupdate --install-rosetta --agree-to-license"/>
+
+  <error id="SlowRenderer" level="warning" check="renderer"
+         title="المحرّك على مسار OpenGL البطيء"
+         desc="القارورة تستخدم renderer=gl. المسار السريع هو vulkan (wined3d ← winevulkan ← MoltenVK ← Metal)، وهو أسرع约4× ويزيل انهيار wow64cpu في 32-بت."
+         fix="غيّر renderer إلى vulkan من إعدادات القارورة."/>
+
+  <error id="NoDxvk" level="warning" check="dxvk"
+         title="لعبة DirectX بدون طبقة DXVK"
+         desc="بدون DXVK يمرّ الشيدر عبر GLSL من Apple، وهذا يرفضه ⇒ شاشة سودا (Pixel shader error E5000)."
+         fix="فعّل طبقة DXVK من الإعدادات ثم أعد نشرها داخل القارورة."/>
+
+  <error id="No32bit" level="info" check="32bit"
+         title="لا دعم لبرامج 32-بت"
+         desc="عدد كبير من الألعاب القديمة 32-بت. تأكّد أن محركك فيه wow64 (يوجد مجلد i386-windows)."
+         fix="اختر محركاً فيه مجلد i386-windows، أو استخدم Proton 32-بت."/>
+
+  <error id="NoMsync" level="info" check="msync"
+         title="msync غير مفعّل"
+         desc="msync يقلّل تأخير الإدخال في بعض الألعاب. فعّله من إعدادات القارورة."
+         fix="فعّل msync من إعدادات القارورة (يكتب WINEMSYNC=1)."/>
+</fixes>

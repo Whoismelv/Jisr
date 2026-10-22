@@ -891,6 +891,27 @@ html.is-macos[dir="rtl"] .toolbar {
   justify-content: flex-start;
 }
 
+/* ---------- حقل بحث (لوحة التوافق) ---------- */
+.text-input {
+  width: 100%;
+  margin: 6px 0 2px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line, rgba(127, 127, 127, 0.35));
+  background: var(--panel, rgba(127, 127, 127, 0.08));
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+
+.text-input:focus {
+  border-color: var(--accent, #6aa9ff);
+}
+
+.text-input::placeholder {
+  color: var(--muted, rgba(127, 127, 127, 0.75));
+}
+
 /* ---------- مكتبة ستيم ---------- */
 .steam-games {
   display: flex;

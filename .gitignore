@@ -16,6 +16,12 @@ tools/steamwebhelper-shim/target
 # graphify knowledge-graph outputs (local dev tool)
 graphify-out/
 
+# vendored upstream sources (fetched on demand, licenses stay inside the tree)
+vendor/src/
+
+# built macOS helper app (built on the Mac, not committed)
+src-tauri/resources/bottle-helper/dist/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -12,14 +12,25 @@ use tauri::{AppHandle, Emitter, Manager};
 
 mod auto;
 mod bottle;
+pub mod bottle_settings;
+pub mod bottle_template;
+pub mod c4p;
 mod combo;
+pub mod compat;
+pub mod compat_rules;
 mod d3dx;
 mod debuglog;
 mod download;
 mod engine;
+pub mod fixes;
 mod game;
 mod graphics;
+pub mod graphics_backend;
+pub mod install_exec;
+pub mod install_plan;
+pub mod menu_sync;
 mod pe;
+mod runner;
 mod steam;
 mod steam_library;
 mod triage;
@@ -126,7 +137,47 @@ mod selftest {
             Err(e) => bad("selftest", "steam_games_list", e),
         }
 
-        // 8) التقرير الكامل — أهم واحد: لازم ينتج نص فيه كل الأقسام
+        // 8) الأنظمة الجديدة: التوافق + القواعد + الفحوص + المحرك
+        let store = compat::ProfileStore::open(None);
+        let stats = store.stats();
+        ok(
+            "selftest",
+            "compat_store",
+            format!(
+                "{} بروفايل · {} تقييم · {} ملف",
+                stats.profiles, stats.ratings, stats.files
+            ),
+        );
+        ok(
+            "selftest",
+            "rules_db",
+            format!("{} قاعدة", compat_rules::rules_list().len()),
+        );
+        ok(
+            "selftest",
+            "fixes_db",
+            format!("{} فحص", fixes::default_db().rules.len()),
+        );
+        ok(
+            "selftest",
+            "graphics_backends",
+            format!(
+                "{} محرك · D3DMetal {}",
+                graphics_backend::graphics_backends().len(),
+                if graphics_backend::d3dmetal_present() {
+                    "مثبّت"
+                } else {
+                    "غير مثبّت"
+                }
+            ),
+        );
+        ok(
+            "selftest",
+            "bottle_templates",
+            format!("{} قالب", bottle_template::TEMPLATES.len()),
+        );
+
+        // 9) التقرير الكامل — أهم واحد: لازم ينتج نص فيه كل الأقسام
         match tauri::async_runtime::block_on(export_debug_report(app.clone())) {
             Ok(report) => {
                 let sections: Vec<&str> = report
@@ -1153,6 +1204,23 @@ pub fn run() {
             d3dx::d3dx_shim_status,
             graphics::graphics_mode,
             graphics::graphics_set_mode,
+            graphics_backend::graphics_backend_get,
+            graphics_backend::graphics_backend_set,
+            graphics_backend::graphics_backends,
+            graphics_backend::d3dmetal_present,
+            compat::compat_stats,
+            compat::compat_search,
+            compat::compat_get,
+            compat::compat_import,
+            compat::compat_export,
+            install_exec::install_preview,
+            install_exec::install_run,
+            compat_rules::rules_list,
+            compat_rules::rules_save,
+            fixes::fixes_check,
+            fixes::fixes_set_msync,
+            menu_sync::menu_sync_bottle,
+            menu_sync::helper_install,
             vcredist::vcredist_status,
             vcredist::vcredist_prepare,
             d3dx::d3dx_status

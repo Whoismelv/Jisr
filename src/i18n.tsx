@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  جسر — نظام اللغات (عربي / إنجليزي) + الاتجاه (RTL / LTR)
 //  اللغة الافتراضية = لغة النظام تلقائياً، والمستخدم يقدر يغيّرها.
 // ============================================================
@@ -344,6 +344,61 @@ const ar = {
   "log.steamExited": "انسكّر ستيم",
   "log.steamStopped": "أوقفت ستيم",
   "log.steamLaunchFailed": "فشل تشغيل ستيم: {error}",
+
+  // محرّك الرسوميات لكل قارورة
+  gfxBackendTitle: "محرّك الرسوميات",
+  gfxBackendDesc:
+    "اختر كيف تُرسم ألعاب DirectX داخل القارورة. DXVK هو الأسرع لـ D3D9/10/11، وD3DMetal هو الأفضل لـ D3D12 (يحتاج Game Porting Toolkit من Apple).",
+  gfxBackendAuto: "تلقائي",
+  gfxBackendDxvk: "DXVK",
+  gfxBackendWineD3d: "WineD3D",
+  gfxBackendDxmt: "DXMT",
+  gfxBackendD3dMetal: "D3DMetal",
+  gfxBackendSaved: "حفظنا محرّك الرسوميات ✓",
+  gfxBackendSaveFailed: "تعذّر حفظ محرّك الرسوميات: {error}",
+  gfxD3dMetalMissing:
+    "D3DMetal غير مثبّت — ثبّت Game Porting Toolkit من Apple (مجاني) وسنكتشفه تلقائياً.",
+  gfxD3dMetalPresent: "D3DMetal مثبّت على جهازك ✓",
+
+  // لوحة التوافق (قاعدة البروفايلات)
+  compatTitle: "لوحة التوافق",
+  compatDesc:
+    "ابحث عن اللعبة لمعرفة تقييمها وقالب القارورة المقترح. البيانات محلية بالكامل — بلا خادم.",
+  compatSearchPlaceholder: "اسم اللعبة أو المعرّف…",
+  compatEmpty: "ما لقينا نتائج",
+  compatSearchHint: "اكتب حرفين على الأقل",
+  compatMedal: "التقييم",
+  compatTemplate: "قالب القارورة",
+  compatDeps: "اعتماديات",
+  compatProfiles: "بروفايل",
+  compatRatings: "تقييم",
+  compatNone: "ما في بروفايل محلي لهذه اللعبة بعد — أضفه بنفسك.",
+  compatExport: "صدّر قاعدة البروفايلات",
+
+  // محرّر القواعد
+  rulesTitle: "قواعد التوافق",
+  rulesDesc:
+    "القواعد تغيّر سلوك لعبة بعينها: محرك الرسوميات، متغيّرات البيئة، وسوم التشغيل، وتجاوزات DLL. كل قاعدة تطابق لعبة أو مسار ملف.",
+  rulesFileName: "اسم الملف",
+  rulesSave: "احفظ القاعدة",
+  rulesSaved: "حفظنا القاعدة ✓",
+  rulesSaveFailed: "تعذّر حفظ القاعدة: {error}",
+
+  // لوحة الفحص والإصلاحات
+  fixesTitle: "فحص القارورة",
+  fixesDesc:
+    "نفحص القارورة بحثاً عن المشاكل المعروفة (GStreamer، 32-بت، مسار الرسم، DXVK، Rosetta) ونقترح الحل.",
+  fixesAllGood: "ما لقينا مشاكل — القارورة جاهزة ✓",
+  fixesLevelError: "خطأ",
+  fixesLevelWarning: "تحذير",
+  fixesLevelInfo: "معلومة",
+  fixesEnableMsync: "فعّل msync",
+  fixesDisableMsync: "أوقف msync",
+  fixesMsyncSaved: "حفظنا إعداد msync ✓",
+  fixesSyncShortcuts: "ابنِ اختصارات macOS",
+  fixesSyncing: "بنني الاختصارات…",
+  fixesShortcutsDone: "بنينا {count} اختصار",
+  fixesSaveFailed: "تعذّر تنفيذ الإجراء: {error}",
 };
 
 export type TKey = keyof typeof ar;
@@ -676,6 +731,61 @@ const en: Record<TKey, string> = {
   "log.steamExited": "Steam exited",
   "log.steamStopped": "Stopped Steam",
   "log.steamLaunchFailed": "Failed to launch Steam: {error}",
+
+  // Graphics backend per bottle
+  gfxBackendTitle: "Graphics backend",
+  gfxBackendDesc:
+    "Choose how DirectX games are rendered inside the bottle. DXVK is fastest for D3D9/10/11; D3DMetal is best for D3D12 (needs Apple's Game Porting Toolkit).",
+  gfxBackendAuto: "Auto",
+  gfxBackendDxvk: "DXVK",
+  gfxBackendWineD3d: "WineD3D",
+  gfxBackendDxmt: "DXMT",
+  gfxBackendD3dMetal: "D3DMetal",
+  gfxBackendSaved: "Graphics backend saved ✓",
+  gfxBackendSaveFailed: "Couldn't save the graphics backend: {error}",
+  gfxD3dMetalMissing:
+    "D3DMetal is not installed — install Apple's Game Porting Toolkit (free) and we'll detect it automatically.",
+  gfxD3dMetalPresent: "D3DMetal is installed on this machine ✓",
+
+  // Compatibility panel (profile database)
+  compatTitle: "Compatibility",
+  compatDesc:
+    "Search for a game to see its rating and the suggested bottle template. Everything is local — no server.",
+  compatSearchPlaceholder: "Game name or id…",
+  compatEmpty: "No results",
+  compatSearchHint: "Type at least two letters",
+  compatMedal: "Rating",
+  compatTemplate: "Bottle template",
+  compatDeps: "Dependencies",
+  compatProfiles: "profiles",
+  compatRatings: "ratings",
+  compatNone: "No local profile for this game yet — add your own.",
+  compatExport: "Export the profile database",
+
+  // Rules editor
+  rulesTitle: "Compatibility rules",
+  rulesDesc:
+    "Rules change how a specific game behaves: graphics backend, environment variables, launch arguments, and DLL overrides. Each rule matches a game or an executable path.",
+  rulesFileName: "File name",
+  rulesSave: "Save rule",
+  rulesSaved: "Rule saved ✓",
+  rulesSaveFailed: "Couldn't save the rule: {error}",
+
+  // Diagnostics and fixes
+  fixesTitle: "Bottle check",
+  fixesDesc:
+    "We check the bottle for known problems (GStreamer, 32-bit, renderer path, DXVK, Rosetta) and suggest the fix.",
+  fixesAllGood: "No problems found — the bottle is ready ✓",
+  fixesLevelError: "Error",
+  fixesLevelWarning: "Warning",
+  fixesLevelInfo: "Info",
+  fixesEnableMsync: "Enable msync",
+  fixesDisableMsync: "Disable msync",
+  fixesMsyncSaved: "msync setting saved ✓",
+  fixesSyncShortcuts: "Build macOS shortcuts",
+  fixesSyncing: "Building shortcuts…",
+  fixesShortcutsDone: "Built {count} shortcuts",
+  fixesSaveFailed: "Action failed: {error}",
 };
 
 export const dicts = { ar, en }; // قواميس اللغة (يستخدمها الاختبار والواجهة)

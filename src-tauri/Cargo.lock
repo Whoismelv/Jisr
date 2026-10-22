@@ -1968,6 +1968,7 @@ dependencies = [
  "cab",
  "chrono",
  "flate2",
+ "quick-xml",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

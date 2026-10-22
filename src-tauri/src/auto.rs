@@ -269,7 +269,7 @@ const DXVK10_11_OK_NOTE: &str =
 const WINE_D3D_FALLBACK_NOTE: &str = "WineD3D هو المترجم المدمج في Wine (GLSL بدل HLSL) — أبطأ، وعلى ماك مُصرّف GLSL من Apple يرفض أغلب الـshaders.";
 
 const D3DX9_MISSING_NOTE: &str = "اللعبة تحتاج d3dx9_43.dll — النسخة المدمجة في Wine تنهار (page fault) في ألعاب DX9 القديمة. \
-ثبّت D3DX9 الأصلي (حزمة DirectX End-User Runtime) — نفس اللي CrossOver وwinetricks يسوونه.";
+ثبّت D3DX9 الأصلي (حزمة DirectX End-User Runtime) — نفس اللي تسويه الحزم المرجعية المعروفة.";
 const D3DX9_OK_NOTE: &str = "D3DX9 الأصلي جاهز — ألعاب DX9 القديمة ما تنهار على d3dx9_43.";
 
 const I386_VULKAN_WARN: &str = "اللعبة 32-بت، ومحرّك Wine ما فيه vulkan-1.dll للـi386 ⇒ DXVK ما يقدر يحمّل ⇒ Wine يرجع لـWineD3D \

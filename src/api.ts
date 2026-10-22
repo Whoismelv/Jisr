@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  جسر — جسر التواصل مع الخلفية (Rust) بشكل مكتوب الأنواع
 // ============================================================
 import { invoke } from "@tauri-apps/api/core";
@@ -343,8 +343,121 @@ export type CefMode = "software" | "single" | "gpu";
 export const getCefMode = () => call<CefMode>("cef_mode");
 export const setCefMode = (mode: CefMode) => call<CefMode>("cef_set_mode", { mode });
 
-/** ملف تعريف اللعبة: التركيبة التي نجحت معها (طبقات + محرك رسم + overlay) */
-export type GameProfile = {
+// ============================================================
+//  محرّك الرسوميات لكل قارورة
+// ============================================================
+export type GraphicsBackendId =
+  | "auto"
+  | "dxvk"
+  | "wined3d"
+  | "dxmt"
+  | "d3dmetal";
+
+/** وصف محرك رسم واحد (هل هو متاح على هذا الجهاز؟) */
+export type GraphicsBackendInfo = {
+  id: GraphicsBackendId;
+  available: boolean;
+  note: string;
+};
+
+/** كل المحركات المتاحة للاختيار */
+export const getGraphicsBackends = () =>
+  call<GraphicsBackendInfo[]>("graphics_backends");
+
+/** محرّك الرسوميات المختار لهذه القارورة */
+export const getGraphicsBackend = (bottle: string) =>
+  call<string>("graphics_backend_get", { bottle });
+
+/** يغيّر محرّك الرسوميات للقارورة (يُطبَّق على التشغيل التالي) */
+export const setGraphicsBackend = (bottle: string, backend: string) =>
+  call<string>("graphics_backend_set", { bottle, backend });
+
+/** هل D3DMetal (Game Porting Toolkit من Apple) مثبّت على الجهاز؟ */
+export const d3dmetalPresent = () => call<boolean>("d3dmetal_present");
+
+// ============================================================
+//  قاعدة بروفايلات التوافق (محلية بالكامل)
+// ============================================================
+export type ProfileSummary = {
+  appid: string;
+  name: string;
+  category: string;
+  medal: string | null;
+  rating: number | null;
+  bottle_template: string | null;
+  dependencies: string[];
+  is_application: boolean;
+};
+
+export type CompatStats = {
+  profiles: number;
+  files: number;
+  ratings: number;
+};
+
+/** بحث في قاعدة البروفايلات المحلية */
+export const compatSearch = (query: string, lang: string, limit: number) =>
+  call<ProfileSummary[]>("compat_search", { query, lang, limit });
+
+/** بروفايل واحد بمعرّفه */
+export const compatGet = (appid: string, lang: string) =>
+  call<ProfileSummary | null>("compat_get", { appid, lang });
+
+/** عدّادات قاعدة البروفايلات */
+export const compatStats = () => call<CompatStats>("compat_stats");
+
+/** يستورد ملف بروفايلات (.c4p) إلى مخزننا — يتحقق قبل النسخ */
+export const compatImport = (path: string) =>
+  call<CompatStats>("compat_import", { path });
+
+/** يصدّر قاعدة البروفايلات المدمجة كملف c4p (للمشاركة) */
+export const compatExport = (path: string) =>
+  call<string>("compat_export", { path });
+
+/** اسم ملف التصدير الافتراضي (في مجلد المستندات) */
+export const defaultExportName = () =>
+  "~/Documents/jisr-profiles.c4p";
+
+/** قاعدة توافق واحدة (كما تُعرض في المحرر) */
+export type RuleInfo = {
+  index: number;
+  matcher: string;
+  hacks: string[];
+};
+
+/** كل قواعدنا المحلية */
+export const rulesList = () => call<RuleInfo[]>("rules_list");
+
+/** يحفظ قاعدة (يتحقق من صحة XML قبل الحفظ) */
+export const rulesSave = (name: string, xml: string) =>
+  call<void>("rules_save", { name, xml });
+
+/** مشكلة مكتشفة في القارورة + طريقة حلّها */
+export type Issue = {
+  id: string;
+  level: "info" | "warning" | "error";
+  title: string;
+  description: string;
+  fix: string | null;
+  command: string | null;
+};
+
+/** يفحص القارورة ويعرض المشاكل */
+export const fixesCheck = (bottle: string) => call<Issue[]>("fixes_check", { bottle });
+
+/** يشغّل/يوقف msync للقارورة */
+export const fixesSetMsync = (bottle: string, enabled: boolean) =>
+  call<boolean>("fixes_set_msync", { bottle, enabled });
+
+/** يبني اختصارات macOS (.app) لكل تطبيقات القارورة */
+export const menuSyncBottle = (bottle: string) =>
+  call<string[]>("menu_sync_bottle", { bottle });
+
+/** يثبّت مساعد القارورة (تطبيق macOS يلتقط Apple Events) */
+export const helperInstall = (bottle: string) =>
+  call<string>("helper_install", { bottle });
+
+/** ملف تعريف اللعبة: التركيبة التي نجحت معها (طبقات + محرك رسم + overlay) */export type GameProfile = {
   appid: number;
   d3d9: "Dxvk" | "WineD3D";
   d3dx9: "Native" | "Builtin";

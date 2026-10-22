@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  بروفايل افتراضي لتطبيقات غير معروفة — مكتبنا بالكامل، بلا أي بيانات خارجية.
+-->
+<c4p>
+  <applications>
+    <app appid="com.jisr.unknown" timestamp="2026-10-21T00:00:00+03:00">
+      <name>Unknown application</name>
+      <name lang="ar">تطبيق غير معروف</name>
+      <appprofile>
+        <description>No specific profile matched. The bottle's default settings are used.</description>
+        <description lang="ar">ما طابق أي بروفايل. تُستعمل إعدادات القارورة الافتراضية.</description>
+        <category>Non-Applications/Components</category>
+        <flag>component</flag>
+      </appprofile>
+    </app>
+  </applications>
+</c4p>

@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  جسر — مكتبة الألعاب + التشغيل
 //  • إضافة لعبة: ملف .exe من أي مكان — تُحفظ في games.json (كتابة ذرّية)
 //  • التشغيل: نربط «قرصاً مخصصاً» لمجلد اللعبة فقط (البديل الآمن عن Z:)
@@ -16,12 +16,17 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::{bottle, data_dir, graphics, log, log_keys};
+use crate::{bottle, data_dir, graphics, log, log_keys, runner};
 
 /// تغيّرت قائمة الألعاب (أضفنا/حذفنا/بدأت/انتهت)
 const EVENT: &str = "jisr-games";
 /// لعبة انتهت — حمولة كاملة للتنبيه
 const EVENT_EXIT: &str = "jisr-game-exit";
+
+/// أقصى عدد إعادات تشغيل تلقائية بعد انهيار مُصنَّف.
+/// ثلاثة تكفي لتغطية المسارات المنطقية (DXVK↔WineD3D، مترجم أصلي↔مدمج،
+/// renderer) وبعدها أي محاولة إضافية تكون تخميناً بلا معلومة جديدة.
+const MAX_AUTO_ATTEMPTS: u8 = 3;
 
 /// لعبة محفوظة
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -36,6 +41,10 @@ pub struct GameMeta {
     pub args: String,   // وسائط إضافية (مستقبلاً: شاشة كاملة...)
     pub played_ms: u64, // مجموع وقت اللعب
     pub added_ms: u64,
+    /// تركيبة الطبقات المحفوظة لهذه اللعبة (combo::GameProfile كـJSON).
+    /// تُحدَّث تلقائياً بعد كل انهيار مُصنَّف — الحلقة المغلقة تحفظ التعلّم.
+    #[serde(default)]
+    pub profile: Option<serde_json::Value>,
 }
 
 /// نسخة اللعبة اللي تروح للواجهة
@@ -302,6 +311,7 @@ pub async fn game_add(
         args: String::new(),
         played_ms: 0,
         added_ms: crate::now_ms(),
+        profile: None,
     };
 
     let snapshot = {
@@ -361,13 +371,51 @@ pub async fn game_remove(
     Ok(())
 }
 
+/// يحفظ ملف التعريف داخل `games.json` نفسه — اللعبة وقرارها في مكان واحد،
+/// بلا ملفات جانبية تتفرّق أو تُحذف وحدها.
+fn persist_profile(app: &AppHandle, id: &str, profile: &crate::combo::GameProfile) {
+    let Some(st) = app.try_state::<GamesState>() else {
+        return;
+    };
+    let Ok(mut list) = st.list.lock() else {
+        return;
+    };
+    let Some(game) = list.iter_mut().find(|g| g.id == id) else {
+        return;
+    };
+    game.profile = Some(profile.to_json());
+    let snapshot = list.clone();
+    drop(list);
+    let _ = save_games(&snapshot);
+}
+
+/// يعيد التشغيل في مهمة مستقلة.
+///
+/// الانتظار المباشر لدالة `launch` من داخل المهمة التي أنشأتها يجعل نوع
+/// الـfuture يشير إلى نفسه (دورة في الاستدلال + شرط `Send`). مهمة جديدة
+/// تقطع الدورة: نوع ما يُرجَع هنا `JoinHandle<()>` محدَّد سلفاً.
+fn spawn_retry(app: AppHandle, id: String, attempt: u8) {
+    tauri::async_runtime::spawn(async move {
+        let _ = launch(app, id, attempt).await;
+    });
+}
+
 /// تشغيل لعبة داخل قارورتها — نرجع فوراً والمراقبة تكمل بالخلفية
 #[tauri::command]
 pub async fn game_launch(
     app: AppHandle,
-    state: State<'_, GamesState>,
+    _state: State<'_, GamesState>,
     id: String,
 ) -> Result<(), String> {
+    launch(app, id, 0).await
+}
+
+/// المحاولة رقم `attempt` من تشغيل لعبة (0 = تشغيل المستخدم الأول).
+///
+/// كل محاولة تعيد قراءة ملف التعريف من القرص، فالحلقة المغلقة تبدأ من
+/// آخر تركيبة تعلّمناها لا من الصفر.
+pub(crate) async fn launch(app: AppHandle, id: String, attempt: u8) -> Result<(), String> {
+    let state = app.state::<GamesState>();
     let _trace = crate::debuglog::trace("game", "game_launch", format!("id={id}"));
     let meta = {
         let list = state.list.lock().map_err(|_| "خطأ داخلي".to_string())?;
@@ -410,12 +458,117 @@ pub async fn game_launch(
     bottle::sync_ca_bundle(&prefix);
     // نشر طبقة DXVK داخل القارورة (لازم قبل التشغيل: بدونها Wine يتجاهل DXVK)
     let _ = graphics::deploy_to_prefix(&prefix);
+    // D3DX9 الأصلي + الحارس داخل القارورة: ألعاب DX9 القديمة تستدعي
+    // `d3dx9_43.dll` بالاسم. بلا نشر الملفات، Wine يرجّع نسخته المدمجة
+    // الناقصة وتنهار اللعبة عند الإقلاع قبل أن ترسم أول إطار.
+    let d3dx_files = crate::d3dx::deploy_files(&prefix).is_ok();
+
+    // ============================================================
+    //  خط الأنابيب الكامل: فحص بايتات اللعبة → خطة الطبقات → تطبيق
+    //  القرار من محتوى الملف لا من اسمه، وكل طبقة تُفعَّل فقط لو
+    //  ملفاتها موجودة فعلاً — نفس منهج محرك التوافق التجاري.
+    // ============================================================
+    let info = runner::probe(Path::new(&meta.exe));
+    let profile = {
+        let mut loaded = meta
+            .profile
+            .as_ref()
+            .and_then(|v| crate::combo::GameProfile::from_json_for(0, v))
+            .unwrap_or_else(|| runner::initial_profile(info.as_ref()));
+        // مفتاح ثابت لهذه اللعبة: علامة الطبقة والتجاوزات الخاصة بالملف
+        // تُكتب لكل لعبة، لا لكل قارورة.
+        loaded.appid = runner::appid_for(&id);
+        loaded
+    };
+    let plan = runner::plan(&profile, info.as_ref());
+    // الموانع تُسجَّل ولا تمنع: نفس سلوك محرك التوافق التجاري — المستخدم
+    // يجرّب، والتقرير يقول له الحقيقة بدل ما نقفل الزر من البداية.
+    if !plan.is_launchable() {
+        let why: Vec<String> = plan
+            .blockers
+            .iter()
+            .map(|b| b.label_ar().to_string())
+            .collect();
+        crate::debuglog::raw(
+            "warn",
+            "game",
+            &format!("expected blockers for {}: {}", meta.name, why.join(" · ")),
+        );
+    }
+    if let Some(info) = &info {
+        crate::debuglog::raw(
+            "info",
+            "game",
+            &format!("probe {} | {}", meta.exe, info.summary()),
+        );
+    }
+    let layers: Vec<&str> = plan.layers.iter().map(|l| l.as_str()).collect();
+    let actions: Vec<String> = plan
+        .actions
+        .iter()
+        .map(|a| match a.arg() {
+            Some(arg) => format!("{}:{}", a.kind(), arg),
+            None => a.kind().to_string(),
+        })
+        .collect();
+    crate::debuglog::raw(
+        "info",
+        "game",
+        &format!(
+            "plan attempt={attempt} layers=[{}] actions=[{}] profile={}",
+            layers.join(","),
+            actions.join(","),
+            profile.describe_ar()
+        ),
+    );
+    if !d3dx_files {
+        crate::debuglog::raw(
+            "warn",
+            "game",
+            "d3dx9 files not deployed — DX9 titles will fall back to Wine's incomplete builtin",
+        );
+    }
+    if let Err(e) = runner::apply(&wine, &prefix, &profile, Some(&dos_exe)).await {
+        crate::debuglog::raw("warn", "game", &format!("profile apply: {e}"));
+    }
+
+    // محرّك الرسوميات: إعداد القارورة + قواعد لكل لعبة
+    let mut backend = crate::graphics_backend::read_backend(&prefix);
+    let rules = crate::compat_rules::RulesDb::load_dir(&crate::data_dir().join("rules"))
+        .unwrap_or_default();
+    let resolution = rules.resolve(&crate::compat_rules::Context {
+        steam_game_id: meta.id.parse::<u32>().ok(),
+        exe_path: Some(dos_exe.clone()),
+        product: Some("jisr".to_string()),
+        platform: Some("Mac".to_string()),
+        cxversion: None,
+    });
+    if let Some(forced) = resolution.backend {
+        backend = forced;
+    }
+    let _ = crate::graphics_backend::apply(&wine, &prefix, backend).await;
+    if !resolution.dll_overrides.is_empty() {
+        let _ =
+            crate::graphics_backend::apply_dll_overrides(&wine, &prefix, &resolution.dll_overrides)
+                .await;
+    }
     let (out, err) = stdio_to_log(&meta.id);
     let mut cmd = tokio::process::Command::new(&wine);
     cmd.env("WINEPREFIX", &prefix);
     bottle::apply_wine_env(&mut cmd, false);
     // DXVK (إن كان مفعّلاً): DirectX 10/11 → Vulkan → Metal بدل WineD3D
     graphics::apply_env(&mut cmd, false);
+    // متغيّرات محرّك الرسوميات المختار + أي متغيّرات من قواعد اللعبة
+    for (key, value) in crate::graphics_backend::env(backend) {
+        cmd.env(key, value);
+    }
+    for (key, value) in &resolution.env {
+        cmd.env(key, value);
+    }
+    // تجاوزات الطبقات من ملف التعريف (native/builtin لكل DLL)
+    for (key, value) in runner::env(&profile) {
+        cmd.env(key, value);
+    }
     cmd.arg(&dos_exe)
         .current_dir(&cwd)
         .stdin(Stdio::null())
@@ -429,12 +582,13 @@ pub async fn game_launch(
         "info",
         "game",
         &format!(
-            "spawn wine={} exe={} prefix={} args={:?} graphics={}",
+            "spawn wine={} exe={} prefix={} args={:?} graphics={} backend={}",
             wine.display(),
             dos_exe,
             prefix.display(),
             meta.args,
-            graphics::active_layer()
+            graphics::active_layer(),
+            backend.as_str()
         ),
     );
 
@@ -450,6 +604,9 @@ pub async fn game_launch(
     })?;
 
     let started = crate::now_ms();
+    // نثبّت التركيبة المستخدمة حتى لو انهارت اللعبة في الثانية الأولى —
+    // الحلقة المغلقة تحتاج نقطة بداية محفوظة.
+    persist_profile(&app, &id, &profile);
     if let Ok(mut run) = state.run.lock() {
         run.insert(
             id.clone(),
@@ -470,6 +627,7 @@ pub async fn game_launch(
     let app2 = app.clone();
     let name2 = meta.name.clone();
     let id2 = id.clone();
+    let profile2 = profile.clone();
     tauri::async_runtime::spawn(async move {
         let res = child.wait_with_output().await;
         let played = crate::now_ms().saturating_sub(started);
@@ -563,6 +721,65 @@ pub async fn game_launch(
                 "quick_fail": quick_fail,
             }),
         );
+
+        // ============================================================
+        //  الحلقة المغلقة: تقرير انهيار ⇒ تصنيف ⇒ تركيبة تالية ⇒ إعادة تشغيل
+        //
+        //  السجل هنا خاص بهذه اللعبة (stdout/stderr ملكنا)، فما نحتاج
+        //  فلترة «هل الانهيار لهذه اللعبة» مثل مسار ستيم المشترك.
+        // ============================================================
+        if stop_requested || attempt >= MAX_AUTO_ATTEMPTS {
+            return;
+        }
+        let Ok(text) = std::fs::read_to_string(run_log_path(&id2)) else {
+            return;
+        };
+        let Some(report) = runner::extract_crash_report(&text) else {
+            return;
+        };
+        let Some(verdict) = crate::triage::triage(&report) else {
+            return;
+        };
+        crate::debuglog::raw(
+            "warn",
+            "game",
+            &format!(
+                "crash verdict game={} class={} action={} module={:?}",
+                name2,
+                crate::triage::class_as_str(verdict.class),
+                verdict.action,
+                verdict.crashed_module
+            ),
+        );
+        let Some(next) = runner::next_after_crash(&profile2, &verdict.action) else {
+            // ما فيه تركيبة تالية: المطلوب من المستخدم (ملف ناقص، تحديث لعبة)
+            log(
+                &app2,
+                "warn",
+                log_keys::GAME_LAUNCH_FAILED,
+                json!({
+                    "name": name2,
+                    "error": verdict.headline_ar,
+                    "next": verdict.next_ar,
+                }),
+            );
+            return;
+        };
+        persist_profile(&app2, &id2, &next);
+        log(
+            &app2,
+            "info",
+            log_keys::GAME_LAUNCHING,
+            json!({
+                "name": name2,
+                "attempt": attempt + 1,
+                "fix": verdict.next_ar,
+            }),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        // إعادة التشغيل عبر spawn مستقل: انتظار `launch` من داخل المهمة
+        // التي أنشأها يخلق دالة async تستدعي نفسها (دورة نوع + Send).
+        spawn_retry(app2.clone(), id2.clone(), attempt + 1);
     });
 
     Ok(())

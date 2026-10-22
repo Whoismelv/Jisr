@@ -1,0 +1,62 @@
+# ============================================================
+#  جسر — بوابة الجودة لكل PR
+#  • Rust: fmt + اختبارات + check
+#  • الواجهة: tsc + بناء
+#  • بوابة المجانية/التراخيص (تفشل = لا نشر)
+#  • سريع: يعمل على ubuntu (ما يحتاج macOS) — البناء الفعلي يبقى على macos.yml
+# ============================================================
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: "جودة (Rust + الواجهة + التراخيص)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - name: Cache (cargo)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          shared-key: ci
+
+      - name: مكتبات الواجهة
+        run: npm ci
+
+      - name: "🧪 اختبارات Rust"
+        run: cargo test --lib --manifest-path src-tauri/Cargo.toml
+
+      - name: "🎨 فحص تنسيق Rust"
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+
+      - name: "🔎 فحص أنواع الواجهة"
+        run: npx tsc --noEmit
+
+      - name: "🏗️ بناء الواجهة"
+        run: npm run build
+
+      - name: "🆓 بوابة: كل شيء مجاني ومفتوح"
+        run: bash vendor/check-licenses.sh

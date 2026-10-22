@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  بروفايلات جسر الأساسية (بياناتنا نحن — من توثيقنا الميداني في PROJECT.md).
+  صيغة الملف = صيغة c4p المفتوحة (نفس المخطط حتى لو تغيّر المخزن يوماً).
+-->
+<c4p>
+  <highlightedapps>
+    <highlightedapp appid="com.jisr.steam" platform="Mac"/>
+    <highlightedapp appid="com.jisr.cef" platform="Mac"/>
+  </highlightedapps>
+  <applications>
+    <!--
+      Steam: سيّدة المشاكل على الماك.
+      - واجهة ستيم CEF: child windows تحتاج Metal swapchain ⇒ لو hid窗口 سودا، فعّل CEF software/single.
+      - msync يقلّل التقطيع، DXVK أسرع في D3D9/10/11.
+    -->
+    <app appid="com.jisr.steam" timestamp="2026-10-22T00:00:00+03:00">
+      <name>Steam</name>
+      <name lang="ar">ستيم</name>
+      <appprofile>
+        <description>Steam client. Disable the overlay, keep msync on, and use DXVK for DirectX titles.</description>
+        <description lang="ar">عميل ستيم. عطّل الـ overlay، وخلي msync شغّال، واستخدم DXVK لألعاب DirectX.</description>
+        <category>Applications/Launchers</category>
+        <flag>application</flag>
+        <bottletemplate>win10_64</bottletemplate>
+      </appprofile>
+      <installprofile>
+        <cxdiagcheck>AppRequire:MissingLibGL</cxdiagcheck>
+        <postinstallreboot>true</postinstallreboot>
+      </installprofile>
+    </app>
+
+    <!--
+      CEF (واجهة ستيم/المتصفحات المدمجة):
+      نوافذ child لا تُعرض Metal في محرّك Stock ⇒ الحل العملي: CEF software/single process.
+    -->
+    <app appid="com.jisr.cef" timestamp="2026-10-22T00:00:00+03:00">
+      <name>Chromium Embedded Framework (CEF)</name>
+      <name lang="ar">واجهة Chromium المدمجة (CEF)</name>
+      <appprofile>
+        <description>Embedded Chromium windows. Child windows are not presented through Metal on stock Wine — use the software/single-process flags.</description>
+        <description lang="ar">نوافذ Chromium المدمجة. النوافذ الفرعية ما تُعرض عبر Metal في Wine الأصلي — استخدم وضع software/single-process.</description>
+        <category>Components/Runtime</category>
+        <flag>component</flag>
+        <bottletemplate>win10_64</bottletemplate>
+      </appprofile>
+    </app>
+
+    <!-- Direct3D 9 عام: DXVK هو المسار الصحيح (شيدرات GLSL ترفضها Apple) -->
+    <app appid="com.jisr.directx9" timestamp="2026-10-22T00:00:00+03:00">
+      <name>DirectX 9 (generic)</name>
+      <name lang="ar">DirectX 9 (عام)</name>
+      <appprofile>
+        <description>Generic DirectX 9 guidance: DXVK is required — Apple's GLSL compiler rejects WineD3D shaders (Pixel shader error E5000).</description>
+        <description lang="ar">توجيه عام لـ DirectX 9: DXVK مطلوب — مترجم GLSL من Apple يرفض شيدرات WineD3D (خطأ E5000).</description>
+        <category>Components/Runtime</category>
+        <flag>component</flag>
+        <bottletemplate>win7_64</bottletemplate>
+      </appprofile>
+    </app>
+
+    <!-- Direct3D 12: المسار المفتوح vkd3d-proton + MoltenVK، أو D3DMetal إن ثبّته المستخدم -->
+    <app appid="com.jisr.directx12" timestamp="2026-10-22T00:00:00+03:00">
+      <name>DirectX 12 (generic)</name>
+      <name lang="ar">DirectX 12 (عام)</name>
+      <appprofile>
+        <description>Generic DirectX 12 guidance: vkd3d-proton + MoltenVK is the open path; Apple's D3DMetal (Game Porting Toolkit) is the fastest and is detected automatically when installed.</description>
+        <description lang="ar">توجيه عام لـ DirectX 12: المسار المفتوح vkd3d-proton + MoltenVK، وD3DMetal من Apple (Game Porting Toolkit) هو الأسرع ونكتشفه تلقائياً إن ثبّته.</description>
+        <category>Components/Runtime</category>
+        <flag>component</flag>
+        <bottletemplate>win10_64</bottletemplate>
+      </appprofile>
+    </app>
+  </applications>
+</c4p>

@@ -50,6 +50,25 @@ import {
   type LogEntry,
   type SteamGame,
   type SystemInfo,
+  getGraphicsBackends,
+  getGraphicsBackend,
+  setGraphicsBackend,
+  d3dmetalPresent,
+  compatSearch,
+  compatStats,
+  compatExport,
+  defaultExportName,
+  rulesList,
+  rulesSave,
+  fixesCheck,
+  fixesSetMsync,
+  menuSyncBottle,
+  type Issue,
+  debugLog,
+  type GraphicsBackendInfo,
+  type ProfileSummary,
+  type CompatStats,
+  type RuleInfo,
 } from "./api";
 import {
   D3DX9_ID,
@@ -1063,6 +1082,14 @@ export const BottlesPage = memo(function BottlesPage({
         <BottleCard key={b.id} b={b} bottles={bottles} sys={sys} />
       ))}
 
+      {main && <GraphicsBackendCard bottle={main.id} />}
+
+      {main && <FixesPanel bottle={main.id} />}
+
+      <CompatPanel />
+
+      <RulesEditor />
+
       <div className="row-actions">
         <Button
           variant="plain"
@@ -1081,8 +1108,325 @@ export const BottlesPage = memo(function BottlesPage({
   );
 });
 
-/** بطاقة قارورة واحدة: النبض (الحالة) + الحجم + الأزرار حسب الحالة */
-const BottleCard = memo(function BottleCard({
+/** بطاقة محرّك الرسوميات لكل قارورة (الاختيار لكل بوتل) */
+const GraphicsBackendCard = memo(function GraphicsBackendCard({
+  bottle,
+}: {
+  bottle: string;
+}) {
+  const { t } = useI18n();
+  const [current, setCurrent] = useState<string>("auto");
+  const [backends, setBackends] = useState<GraphicsBackendInfo[]>([]);
+  const [d3dmetal, setD3dmetal] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void getGraphicsBackends()
+      .then((b) => {
+        if (alive) setBackends(b);
+      })
+      .catch(() => {});
+    void d3dmetalPresent()
+      .then((v) => {
+        if (alive) setD3dmetal(v);
+      })
+      .catch(() => {});
+    void getGraphicsBackend(bottle)
+      .then((v) => {
+        if (alive) setCurrent(v);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [bottle]);
+
+  const pick = useCallback(
+    (v: string) => {
+      setCurrent(v);
+      void setGraphicsBackend(bottle, v)
+        .then(() => debugLog("info", `graphics backend = ${v}`))
+        .catch((e) =>
+          debugLog("error", `set graphics backend failed: ${String(e)}`),
+        );
+    },
+    [bottle],
+  );
+
+  const label = (id: string) =>
+    id === "dxvk"
+      ? t("gfxBackendDxvk")
+      : id === "wined3d"
+        ? t("gfxBackendWineD3d")
+        : id === "dxmt"
+          ? t("gfxBackendDxmt")
+          : id === "d3dmetal"
+            ? t("gfxBackendD3dMetal")
+            : t("gfxBackendAuto");
+
+  const fallback: GraphicsBackendInfo[] = [
+    { id: "auto", available: true, note: "" },
+    { id: "dxvk", available: true, note: "" },
+    { id: "wined3d", available: true, note: "" },
+  ];
+  const options = (backends.length ? backends : fallback).map((b) => ({
+    value: b.id,
+    label: label(b.id),
+  }));
+
+  return (
+    <Card title={t("gfxBackendTitle")} icon={<Icon.Bolt size={16} />}>
+      <p className="muted">{t("gfxBackendDesc")}</p>
+      <div className="row">
+        <div className="row-text">
+          <span className="row-label">{t("gfxBackendTitle")}</span>
+          <span className="row-hint">
+            {d3dmetal ? t("gfxD3dMetalPresent") : t("gfxD3dMetalMissing")}
+          </span>
+        </div>
+        <div className="row-control">
+          <Segmented
+            id="gfx-backend"
+            value={current}
+            options={options}
+            onChange={pick}
+          />
+        </div>
+      </div>
+    </Card>
+  );
+});
+
+/** لوحة التوافق: بحث في قاعدة البروفايلات المحلية (بلا خادم) */
+const CompatPanel = memo(function CompatPanel() {
+  const { t } = useI18n();
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<ProfileSummary[]>([]);
+  const [stats, setStats] = useState<CompatStats | null>(null);
+  const [exported, setExported] = useState("");
+
+  useEffect(() => {
+    void compatStats()
+      .then(setStats)
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setResults([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      void compatSearch(q, "ar", 20)
+        .then(setResults)
+        .catch(() => {});
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const exportDb = useCallback(() => {
+    void compatExport(`${defaultExportName()}`)
+      .then((path) => setExported(path))
+      .catch(() => {});
+  }, []);
+
+  return (
+    <Card title={t("compatTitle")} icon={<Icon.Sparkle size={16} />}>
+      <p className="muted">{t("compatDesc")}</p>
+      <input
+        className="text-input"
+        value={query}
+        placeholder={t("compatSearchPlaceholder")}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      {stats && (
+        <p className="small muted">
+          {stats.profiles} {t("compatProfiles")} · {stats.ratings}{" "}
+          {t("compatRatings")}
+        </p>
+      )}
+      <div className="row-actions">
+        <Button variant="plain" onClick={exportDb}>
+          {t("compatExport")}
+        </Button>
+        {exported && <span className="small muted">{exported}</span>}
+      </div>
+      {query.trim().length >= 2 && results.length === 0 && (
+        <p className="muted small">{t("compatEmpty")}</p>
+      )}
+      {results.map((p) => (
+        <div className="row" key={p.appid}>
+          <div className="row-text">
+            <span className="row-label">{p.name || p.appid}</span>
+            <span className="row-hint">
+              {p.category}
+              {p.bottle_template ? ` · ${t("compatTemplate")}: ${p.bottle_template}` : ""}
+            </span>
+          </div>
+          <div className="row-control">
+            <span className="value">
+              {p.medal ?? "-"}
+              {p.rating ? ` (${p.rating}/5)` : ""}
+            </span>
+          </div>
+        </div>
+      ))}
+    </Card>
+  );
+});
+
+/** لوحة الفحص: مشاكل القارورة + إجراءات سريعة (msync + اختصارات macOS) */
+const FixesPanel = memo(function FixesPanel({ bottle }: { bottle: string }) {
+  const { t } = useI18n();
+  const [issues, setIssues] = useState<Issue[]>([]);
+  const [msync, setMsync] = useState(false);
+  const [note, setNote] = useState("");
+
+  const refresh = useCallback(() => {
+    void fixesCheck(bottle)
+      .then((found) => {
+        setIssues(found);
+        setMsync(!found.some((i) => i.id === "NoMsync"));
+      })
+      .catch(() => {});
+  }, [bottle]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const toggleMsync = useCallback(() => {
+    const next = !msync;
+    setMsync(next);
+    void fixesSetMsync(bottle, next)
+      .then(() => {
+        setNote(t("fixesMsyncSaved"));
+        refresh();
+      })
+      .catch((e) => setNote(`${t("fixesSaveFailed")}: ${String(e)}`));
+  }, [bottle, msync, refresh, t]);
+
+  const syncShortcuts = useCallback(() => {
+    setNote(t("fixesSyncing"));
+    void menuSyncBottle(bottle)
+      .then((paths) => setNote(t("fixesShortcutsDone").replace("{count}", String(paths.length))))
+      .catch((e) => setNote(`${t("fixesSaveFailed")}: ${String(e)}`));
+  }, [bottle, t]);
+
+  return (
+    <Card title={t("fixesTitle")} icon={<Icon.Bolt size={16} />}>
+      <p className="muted">{t("fixesDesc")}</p>
+      {issues.length === 0 ? (
+        <p className="muted small">{t("fixesAllGood")}</p>
+      ) : (
+        issues.map((issue) => (
+          <div className="row" key={issue.id}>
+            <div className="row-text">
+              <span className="row-label">{issue.title}</span>
+              <span className="row-hint">
+                {issue.description}
+                {issue.fix ? ` — ${issue.fix}` : ""}
+              </span>
+            </div>
+            <div className="row-control">
+              <span className={"value " + (issue.level === "error" ? "danger" : issue.level === "warning" ? "warn" : "")}>
+                {issue.level === "error"
+                  ? t("fixesLevelError")
+                  : issue.level === "warning"
+                    ? t("fixesLevelWarning")
+                    : t("fixesLevelInfo")}
+              </span>
+            </div>
+          </div>
+        ))
+      )}
+      <div className="row-actions">
+        <Button variant="tinted" onClick={toggleMsync}>
+          {msync ? t("fixesDisableMsync") : t("fixesEnableMsync")}
+        </Button>
+        <Button variant="tinted" onClick={syncShortcuts}>
+          {t("fixesSyncShortcuts")}
+        </Button>
+        {note && <span className="small muted">{note}</span>}
+      </div>
+    </Card>
+  );
+});
+
+/** محرّر قواعد التوافق: يعرض قواعدنا ويسمح بحفظ قاعدة جديدة */
+const RulesEditor = memo(function RulesEditor() {
+  const { t } = useI18n();
+  const [rules, setRules] = useState<RuleInfo[]>([]);
+  const [name, setName] = useState("my-rules");
+  const [xml, setXml] = useState(
+    `<jdb>\n  <rules>\n    <rule>\n      <match steam_game_id="440"/>\n      <hack type="graphics_backend" backend="dxvk" force="true"/>\n    </rule>\n  </rules>\n</jdb>\n`,
+  );
+  const [status, setStatus] = useState("");
+
+  const refresh = useCallback(() => {
+    void rulesList()
+      .then(setRules)
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const save = useCallback(() => {
+    void rulesSave(name, xml)
+      .then(() => {
+        setStatus(t("rulesSaved"));
+        refresh();
+      })
+      .catch((e) => setStatus(`${t("rulesSaveFailed")}: ${String(e)}`));
+  }, [name, xml, refresh, t]);
+
+  return (
+    <Card title={t("rulesTitle")} icon={<Icon.Bolt size={16} />}>
+      <p className="muted">{t("rulesDesc")}</p>
+      {rules.length > 0 && (
+        <>
+          {rules.map((r) => (
+            <div className="row" key={r.index}>
+              <div className="row-text">
+                <span className="row-label">{r.matcher}</span>
+                <span className="row-hint">{r.hacks.join(" · ")}</span>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+      <div className="row">
+        <div className="row-text">
+          <span className="row-label">{t("rulesFileName")}</span>
+        </div>
+        <div className="row-control">
+          <input
+            className="text-input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+      </div>
+      <textarea
+        className="text-input"
+        rows={6}
+        value={xml}
+        onChange={(e) => setXml(e.target.value)}
+      />
+      <div className="row-actions">
+        <Button variant="filled" onClick={save}>
+          {t("rulesSave")}
+        </Button>
+        {status && <span className="small muted">{status}</span>}
+      </div>
+    </Card>
+  );
+});
+
+/** بطاقة قارورة واحدة: النبض (الحالة) + الحجم + الأزرار حسب الحالة */const BottleCard = memo(function BottleCard({
   b,
   bottles,
   sys,
